@@ -12,6 +12,7 @@ def _signed_delta(a: float, b: float) -> float:
 
 class OutcomeObserver:
     """Post-fire landing observer independent from the old adaptive learner."""
+
     def __init__(self, initial_latency_ms: float, session_base_speed: float = 278.0):
         self.initial_latency_ms = float(initial_latency_ms)
         self.session_base_speed = float(session_base_speed)
@@ -26,15 +27,24 @@ class OutcomeObserver:
         self.used_latency_ms: Optional[float] = None
         self.samples: List[Tuple[float, float, float]] = []
 
-    def on_trigger(self, press_time: float, target_angle: float, speed_deg_s: float,
-                   white_zone: Optional[Dict[str, Any]], black_zone: Optional[Dict[str, Any]],
-                   used_latency_ms: Optional[float] = None, **_: Any) -> None:
+    def on_trigger(
+        self,
+        press_time: float,
+        target_angle: float,
+        speed_deg_s: float,
+        white_zone: Optional[Dict[str, Any]],
+        black_zone: Optional[Dict[str, Any]],
+        used_latency_ms: Optional[float] = None,
+        **_: Any,
+    ) -> None:
         self.trigger_t = float(press_time)
         self.target_angle = float(target_angle) % 360.0
         self.speed_deg_s = abs(float(speed_deg_s)) if speed_deg_s else self.session_base_speed
         self.white_zone = dict(white_zone) if white_zone else None
         self.black_zone = dict(black_zone) if black_zone else None
-        self.used_latency_ms = float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
+        self.used_latency_ms = (
+            float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
+        )
         self.samples.clear()
 
     def observe_sample(self, t: float, angle: float, strength: float = 30.0) -> None:
@@ -44,60 +54,104 @@ class OutcomeObserver:
         if len(self.samples) > 40:
             del self.samples[:-40]
 
-    def _find_plateau(self, allow_before_new_motion: bool) -> Optional[float]:
-        if len(self.samples) < 3:
+    def _find_plateau(self) -> Optional[Tuple[float, float]]:
+        """Return (hit_angle, observed_response_ms) for the earliest stable freeze.
+
+        Four consecutive post-fire samples are used so the timestamp can be
+        interpreted as a real observed UI response delay, not just a final
+        screenshot position.  At 120 Hz this spans roughly 25 ms.
+        """
+        if len(self.samples) < 4 or self.trigger_t is None:
             return None
-        for i in range(len(self.samples) - 2):
-            chunk = self.samples[i:i+3]
-            if chunk[-1][0] - chunk[0][0] < 0.018:
-                continue
+
+        for i in range(len(self.samples) - 3):
+            chunk = self.samples[i : i + 4]
             ref = chunk[0][1]
             vals = [ref + _signed_delta(x[1], ref) for x in chunk]
             if max(vals) - min(vals) <= 1.4:
-                return statistics.median(vals) % 360.0
-        if not allow_before_new_motion and len(self.samples) >= 4:
-            chunk = self.samples[-4:]
-            ref = chunk[0][1]
-            vals = [ref + _signed_delta(x[1], ref) for x in chunk]
-            if max(vals) - min(vals) <= 1.0:
-                return statistics.median(vals) % 360.0
+                hit = float(statistics.median(vals) % 360.0)
+                response_ms = max(0.0, (chunk[0][0] - self.trigger_t) * 1000.0)
+                return hit, response_ms
+
+        # Conservative fallback: only accept the final four samples when they
+        # are exceptionally tight.  This preserves old replay compatibility.
+        chunk = self.samples[-4:]
+        ref = chunk[0][1]
+        vals = [ref + _signed_delta(x[1], ref) for x in chunk]
+        if max(vals) - min(vals) <= 1.0:
+            hit = float(statistics.median(vals) % 360.0)
+            response_ms = max(0.0, (chunk[0][0] - self.trigger_t) * 1000.0)
+            return hit, response_ms
         return None
 
-    def conclude_check(self, frenzy_transition: bool = False, no_fire_reason: Optional[str] = None) -> Dict[str, Any]:
+    def conclude_check(
+        self,
+        frenzy_transition: bool = False,
+        no_fire_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if no_fire_reason:
-            return {"outcome": "NO_FIRE", "no_fire_reason": no_fire_reason, "plateau_found": False,
-                    "hit_angle": None, "target_angle": self.target_angle}
+            return {
+                "outcome": "NO_FIRE",
+                "no_fire_reason": no_fire_reason,
+                "plateau_found": False,
+                "hit_angle": None,
+                "target_angle": self.target_angle,
+                "observed_response_ms": None,
+            }
+
         if frenzy_transition:
-            # In Violence District Frenzy the needle can continue moving directly
-            # into the next generation after Space; there is no normal freeze
-            # plateau to classify.  Report the lifecycle transition honestly
-            # instead of manufacturing UNCONFIRMED/MISS geometry.
+            # Frenzy transitions do not provide a normal freeze plateau.
             return {
                 "outcome": "FRENZY_TRANSITION",
                 "plateau_found": False,
                 "hit_angle": None,
                 "target_angle": self.target_angle,
                 "frenzy_transition": True,
+                "observed_response_ms": None,
             }
-        hit = self._find_plateau(False)
-        if hit is None:
-            return {"outcome": "UNCONFIRMED", "plateau_found": False, "hit_angle": None,
-                    "target_angle": self.target_angle}
+
+        plateau = self._find_plateau()
+        if plateau is None:
+            return {
+                "outcome": "UNCONFIRMED",
+                "plateau_found": False,
+                "hit_angle": None,
+                "target_angle": self.target_angle,
+                "observed_response_ms": None,
+            }
+
+        hit, observed_response_ms = plateau
         white = self.white_zone
         black = self.black_zone
-        if white and is_angle_in_arc(hit, float(white["start"]), float(white["end"]), 0.0, 0.0):
+        if white and is_angle_in_arc(
+            hit, float(white["start"]), float(white["end"]), 0.0, 0.0
+        ):
             outcome = "GREAT"
-        elif black and is_angle_in_arc(hit, float(black["start"]), float(black["end"]), 0.0, 0.0):
+        elif black and is_angle_in_arc(
+            hit, float(black["start"]), float(black["end"]), 0.0, 0.0
+        ):
             outcome = "GOOD"
         else:
             outcome = "MISS"
-        target = self.target_angle if self.target_angle is not None else (float(white.get("center")) if white else hit)
+
+        target = (
+            self.target_angle
+            if self.target_angle is not None
+            else (float(white.get("center")) if white else hit)
+        )
         err_deg = _signed_delta(hit, target)
         speed = max(20.0, float(self.speed_deg_s or self.session_base_speed))
         err_ms = err_deg / speed * 1000.0
         return {
-            "outcome": outcome, "plateau_found": True, "hit_angle": hit, "target_angle": target,
-            "error_deg": err_deg, "error_ms": err_ms, "center_error_deg": err_deg, "center_error_ms": err_ms,
+            "outcome": outcome,
+            "plateau_found": True,
+            "hit_angle": hit,
+            "target_angle": target,
+            "error_deg": err_deg,
+            "error_ms": err_ms,
+            "center_error_deg": err_deg,
+            "center_error_ms": err_ms,
+            "observed_response_ms": observed_response_ms,
             "white_source": white.get("source") if white else None,
             "black_source": black.get("source") if black else None,
             "frenzy_transition": bool(frenzy_transition),
