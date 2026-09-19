@@ -50,6 +50,7 @@ class LeadLevelController:
         self.accepted_total = 0
         self.rejected_total = 0
         self.updates_total = 0
+        self.accepted_at_last_update = 0
         self.initialized = False
         self.last_result: Dict[str, Any] = {}
 
@@ -189,11 +190,14 @@ class LeadLevelController:
                 self.current_lead_ms = max(self.min_lead_ms, min(self.max_lead_ms, cold_med))
                 self.initialized = True
                 updated = abs(self.current_lead_ms - before) > 1e-9
+                if updated:
+                    self.accepted_at_last_update = self.accepted_total
                 update_reason = "COLD_MEDIAN"
         elif self.initialized:
-            # Explicit change-point detector.  A mixed old/new window naturally has
-            # large MAD, so long-window MAD must not veto a coherent new cluster.
-            if len(vals) >= self.recent_shift_samples:
+            # Require a fresh cluster after every update.  Reusing almost the same
+            # seven samples on each subsequent check creates staircase oscillation.
+            fresh_since_update = self.accepted_total - self.accepted_at_last_update
+            if len(vals) >= self.recent_shift_samples and fresh_since_update >= self.recent_shift_samples:
                 recent = vals[-self.recent_shift_samples:]
                 recent_med = float(statistics.median(recent))
                 recent_mad = self._mad(recent, recent_med)
@@ -205,6 +209,8 @@ class LeadLevelController:
                         min(self.max_lead_ms, self.current_lead_ms + step),
                     )
                     updated = abs(self.current_lead_ms - before) > 1e-9
+                    if updated:
+                        self.accepted_at_last_update = self.accepted_total
                     update_reason = "CONFIRMED_RECENT_LEVEL_SHIFT"
 
         if updated:
@@ -248,6 +254,8 @@ class LeadLevelController:
             "accepted_total": self.accepted_total,
             "rejected_total": self.rejected_total,
             "updates_total": self.updates_total,
+            "accepted_at_last_update": self.accepted_at_last_update,
+            "accepted_since_update": self.accepted_total - self.accepted_at_last_update,
             "initialized": self.initialized,
             "deadband_ms": self.deadband_ms,
         }
