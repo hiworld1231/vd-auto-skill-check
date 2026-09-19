@@ -17,13 +17,13 @@ import math
 import statistics
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
-from core.predictor import (
-    SPEED_MODE_GEN_RUSH,
-    STATE_COMMITTED,
-    STATE_LOCKED,
-    STATE_NO_MOTION,
-    STATE_PROVISIONAL,
-)
+# Local runtime states: CLEAN V5 deliberately does not import the legacy
+# predictor/state machine.
+SPEED_MODE_GEN_RUSH = "GEN_RUSH_CONTINUOUS"
+STATE_NO_MOTION = "NO_MOTION"
+STATE_PROVISIONAL = "PROVISIONAL"
+STATE_LOCKED = "LOCKED"
+STATE_COMMITTED = "COMMITTED"
 
 
 class ContinuousAngularPredictor:
@@ -202,160 +202,4 @@ class ContinuousAngularPredictor:
         unwrapped_angle = prev_unwrapped + step
         self.history.append((t, angle))
         # Bound compatibility history too; the scheduler only needs recent samples.
-        if len(self.history) > 12:
-            del self.history[:-12]
-        self._unwrapped.append((t, unwrapped_angle))
-
-        measured = self._fit_recent_speed()
-        if measured is not None:
-            self.speed_deg_s = measured
-            self.shadow_live_speed = measured
-            self.speed_fits.append((t, measured))
-            self.has_adapted = True
-
-            recent = [x[1] for x in list(self.speed_fits)[-3:]]
-            self._last_fit_speed_spread = (max(recent) - min(recent)) if len(recent) >= 2 else 0.0
-
-        return True
-
-    def has_usable_speed(self) -> bool:
-        """Early-but-measured speed for short checks; never falls back to base prior."""
-        return bool(
-            self.has_adapted
-            and self._fit_sample_count >= 3
-            and self._fit_span_s >= 0.020
-            and 20.0 <= self.speed_deg_s <= 1500.0
-            and (self._fit_residual_mad_deg is None or self._fit_residual_mad_deg <= 4.0)
-        )
-
-    def has_stable_speed(self) -> bool:
-        if self.state in (STATE_LOCKED, STATE_COMMITTED):
-            return True
-        if not self.has_usable_speed():
-            return False
-        # Moonlight's real-match data shows short tracks are the dominant miss
-        # source.  Normal commits therefore wait for a longer fit; the explicit
-        # short-check path can still use >=3 measured samples when there is no
-        # time left to wait.
-        if self._fit_sample_count < 5 or self._fit_span_s < 0.045:
-            return False
-
-        recent = [x[1] for x in list(self.speed_fits)[-3:]]
-        if len(recent) < 2:
-            return False
-        med = float(statistics.median(recent))
-        spread = max(recent) - min(recent)
-        allowed_spread = max(30.0, 0.08 * abs(med))
-        if spread > allowed_spread:
-            return False
-        if self._fit_residual_mad_deg is not None and self._fit_residual_mad_deg > 2.5:
-            return False
-
-        self.state = STATE_LOCKED
-        self.locked_speed = self.speed_deg_s
-        return True
-
-    def get_shadow_telemetry(self) -> Dict[str, Any]:
-        return {
-            "speed_mode": SPEED_MODE_GEN_RUSH,
-            "configured_speed_mode": SPEED_MODE_GEN_RUSH,
-            "continuous_tracking": True,
-            "session_base_speed": self.session_base_speed,
-            "live_speed": self.shadow_live_speed,
-            "live_vs_prior_delta": self.shadow_live_speed - self.session_base_speed,
-            "prediction_speed_used": self.speed_deg_s,
-            "live_fit_spread": self._last_fit_speed_spread,
-            "fit_residual_mad_deg": self._fit_residual_mad_deg,
-            "fit_span_ms": self._fit_span_s * 1000.0,
-            "fit_sample_count": self._fit_sample_count,
-            "short_speed_shadow": self._short_speed_shadow,
-            "short_vs_long_delta": (
-                None if self._short_speed_shadow is None
-                else self._short_speed_shadow - self.speed_deg_s
-            ),
-            # Compatibility: this architecture never switches modes.
-            "mode_switched": False,
-            "switch_info": None,
-        }
-
-    def predict(self, current_t: float, current_angle: float, target: str = "GREAT") -> Optional[Dict[str, Any]]:
-        if not self.locked_zones:
-            return None
-        white_zone, black_zone = self.locked_zones
-
-        if target == "GREAT" and white_zone:
-            if white_zone.get("center") is not None:
-                target_angle = float(white_zone["center"]) % 360.0
-            elif white_zone.get("start") is not None and white_zone.get("width") is not None:
-                target_angle = (float(white_zone["start"]) + 0.5 * float(white_zone["width"])) % 360.0
-            else:
-                return None
-        elif target == "GOOD" and black_zone and black_zone.get("center") is not None:
-            target_angle = float(black_zone["center"]) % 360.0
-        else:
-            return None
-
-        speed = float(self.speed_deg_s)
-        if not math.isfinite(speed) or speed < 20.0:
-            return None
-
-        current_t = float(current_t)
-        current_angle = float(current_angle) % 360.0
-
-        # Work in the same unwrapped phase as the fit.  A signed circular diff is
-        # NOT sufficient here: when the target is >180° ahead clockwise it looks
-        # "negative" even though it has not been passed.  Pick the first target
-        # occurrence at/after this check's first measured phase instead.
-        if self._unwrapped:
-            current_u = float(self._unwrapped[-1][1])
-            start_u = float(self._unwrapped[0][1])
-        else:
-            current_u = current_angle
-            start_u = current_angle
-        target_u = float(target_angle)
-        while target_u + 1e-9 < start_u:
-            target_u += 360.0
-        remaining_to_target = target_u - current_u
-        passed_target = remaining_to_target < -0.25
-
-        # If the Great centre is already behind us, never pretend the next full
-        # revolution is the same check.  A reactive fallback is allowed only when
-        # the measured delivery travel still fits inside the trailing GOOD zone.
-        reactive_safe = False
-        if passed_target and black_zone and black_zone.get("end") is not None:
-            good_end_u = float(black_zone["end"])
-            while good_end_u + 1e-9 < target_u:
-                good_end_u += 360.0
-            remaining_success_deg = good_end_u - current_u
-            expected_delivery_deg = speed * self.latency_s
-            reactive_safe = (
-                remaining_success_deg > 0.0
-                and expected_delivery_deg + 2.0 <= remaining_success_deg
-                and len(self.history) >= 3
-            )
-
-        if passed_target:
-            angular_dist = 0.0
-            time_to_hit_s = 0.0
-            press_timestamp = current_t
-            should_press_now = reactive_safe
-        else:
-            angular_dist = max(0.0, remaining_to_target)
-            time_to_hit_s = angular_dist / speed
-            press_timestamp = current_t + time_to_hit_s - self.latency_s
-            should_press_now = press_timestamp <= current_t
-
-        return {
-            "target": target,
-            "target_angle": target_angle,
-            "speed_deg_s": speed,
-            "angular_distance_deg": angular_dist,
-            "time_to_hit_ms": time_to_hit_s * 1000.0,
-            "press_timestamp": press_timestamp,
-            "time_until_press_ms": (press_timestamp - current_t) * 1000.0,
-            "should_press_now": should_press_now,
-            "state": self.state,
-            "is_locked": self.state in (STATE_LOCKED, STATE_COMMITTED),
-            "continuous_tracking": True,
-            "reactive_safe_fallback": reactive_safe,
-        }
+        if len(self.history) > 1
