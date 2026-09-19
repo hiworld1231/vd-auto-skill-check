@@ -30,10 +30,10 @@ class LeadLevelController:
         window_size: int = 9,
         cold_min_samples: int = 4,
         deadband_ms: float = 15.0,
-        cold_max_mad_ms: float = 12.0,
-        recent_shift_samples: int = 4,
-        recent_shift_max_mad_ms: float = 8.0,
-        max_shift_step_ms: float = 20.0,
+        cold_max_mad_ms: float = 15.0,
+        recent_shift_samples: int = 7,
+        recent_shift_max_mad_ms: float = 15.0,
+        max_shift_step_ms: float = 12.0,
     ):
         self.seed_lead_ms = float(seed_lead_ms)
         self.current_lead_ms = float(seed_lead_ms)
@@ -105,52 +105,58 @@ class LeadLevelController:
         frenzy_transition: bool = False,
         short_vs_long_delta_deg_s: Optional[float] = None,
         target_passed: bool = False,
+        observed_response_ms: Optional[float] = None,
     ) -> Dict[str, Any]:
-        # A Frenzy generation does not have the normal post-hit plateau. Exclude
-        # it before all landing gates so telemetry says why it was rejected.
+        # Frenzy does not expose the normal post-hit freeze and must never
+        # train the session response model.
         if bool(frenzy_transition) or int(chain_count) > 1:
             return self._reject("FRENZY_UNVALIDATED")
         if bool(target_passed):
             return self._reject("TARGET_ALREADY_PASSED")
-        if not self._finite(center_error_ms):
-            return self._reject("NO_CENTER_ERROR")
-        if not self._finite(actual_used_delay_ms):
-            return self._reject("NO_USED_DELAY")
         if plateau_found is not True:
             return self._reject("NO_CONFIRMED_PLATEAU")
         if outcome not in {"GREAT", "GOOD", "MISS"}:
             return self._reject(f"OUTCOME_{outcome or 'UNKNOWN'}")
         if trigger_mode not in {"SCHEDULED", "IMMEDIATE"}:
             return self._reject(f"TRIGGER_{trigger_mode or 'UNKNOWN'}")
-        if not self._finite(scheduler_jitter_ms) or abs(float(scheduler_jitter_ms)) > 4.5:
-            return self._reject("SCHEDULER_JITTER")
         if not self._finite(frame_age_ms) or float(frame_age_ms) > 20.0:
             return self._reject("STALE_FIRE_FRAME")
         if detector_fallback:
             return self._reject("DETECTOR_FALLBACK")
         if compensation_regime != "CONTINUOUS_MEASURED_SPEED":
             return self._reject(f"REGIME_{compensation_regime or 'UNKNOWN'}")
-        if fit_sample_count is None or int(fit_sample_count) < 5:
-            return self._reject("SHORT_TRACK")
-        if self._finite(fit_residual_mad_deg) and float(fit_residual_mad_deg) > 3.0:
-            return self._reject("POOR_FIT_RESIDUAL")
-        if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 45.0:
-            return self._reject("UNSTABLE_SPEED_FIT")
-        if abs(float(center_error_ms)) > 90.0:
-            return self._reject("PHASE_OUTLIER")
-        if white_source and not str(white_source).startswith("MEASURED"):
-            return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
 
-        # speed_at_lock is an early convergence snapshot and can legitimately
-        # differ from the final fit.  Use the recency-vs-long-fit diagnostic
-        # instead; it measures disagreement at the time of fire.
-        if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 60.0:
-            return self._reject(
-                "RECENT_SPEED_DISAGREEMENT",
-                short_vs_long_delta_deg_s=float(short_vs_long_delta_deg_s),
-            )
+        direct_response = self._finite(observed_response_ms)
+        if direct_response:
+            ideal = float(observed_response_ms)
+            observation_source = "OBSERVED_FREEZE_DELAY"
+        else:
+            # Backward-compatible fallback for old replays/tests.  This path is
+            # noisier because it depends on zone geometry and speed estimation.
+            if not self._finite(center_error_ms):
+                return self._reject("NO_CENTER_ERROR")
+            if not self._finite(actual_used_delay_ms):
+                return self._reject("NO_USED_DELAY")
+            if not self._finite(scheduler_jitter_ms) or abs(float(scheduler_jitter_ms)) > 4.5:
+                return self._reject("SCHEDULER_JITTER")
+            if fit_sample_count is None or int(fit_sample_count) < 5:
+                return self._reject("SHORT_TRACK")
+            if self._finite(fit_residual_mad_deg) and float(fit_residual_mad_deg) > 3.0:
+                return self._reject("POOR_FIT_RESIDUAL")
+            if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 45.0:
+                return self._reject("UNSTABLE_SPEED_FIT")
+            if abs(float(center_error_ms)) > 90.0:
+                return self._reject("PHASE_OUTLIER")
+            if white_source and not str(white_source).startswith("MEASURED"):
+                return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
+            if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 60.0:
+                return self._reject(
+                    "RECENT_SPEED_DISAGREEMENT",
+                    short_vs_long_delta_deg_s=float(short_vs_long_delta_deg_s),
+                )
+            ideal = float(actual_used_delay_ms) + float(center_error_ms)
+            observation_source = "GEOMETRIC_FALLBACK"
 
-        ideal = float(actual_used_delay_ms) + float(center_error_ms)
         if not (self.min_lead_ms <= ideal <= self.max_lead_ms):
             return self._reject("IDEAL_LEAD_OUT_OF_RANGE", ideal_lead_ms=ideal)
 
@@ -197,6 +203,7 @@ class LeadLevelController:
         self.last_result = {
             "accepted": True,
             "ideal_lead_ms": ideal,
+            "observation_source": observation_source,
             "rolling_median_ms": med,
             "rolling_mad_ms": mad,
             "recent_median_ms": recent_med,
