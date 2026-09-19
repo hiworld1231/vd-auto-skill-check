@@ -27,13 +27,13 @@ class LeadLevelController:
         *,
         min_lead_ms: float = 35.0,
         max_lead_ms: float = 160.0,
-        window_size: int = 9,
+        window_size: int = 15,
         cold_min_samples: int = 4,
-        deadband_ms: float = 15.0,
+        deadband_ms: float = 12.0,
         cold_max_mad_ms: float = 15.0,
         recent_shift_samples: int = 7,
         recent_shift_max_mad_ms: float = 15.0,
-        max_shift_step_ms: float = 12.0,
+        max_shift_step_ms: float = 8.0,
     ):
         self.seed_lead_ms = float(seed_lead_ms)
         self.current_lead_ms = float(seed_lead_ms)
@@ -108,7 +108,7 @@ class LeadLevelController:
         observed_response_ms: Optional[float] = None,
     ) -> Dict[str, Any]:
         # Frenzy does not expose the normal post-hit freeze and must never
-        # train the session response model.
+        # train the session lead.
         if bool(frenzy_transition) or int(chain_count) > 1:
             return self._reject("FRENZY_UNVALIDATED")
         if bool(target_passed):
@@ -126,36 +126,46 @@ class LeadLevelController:
         if compensation_regime != "CONTINUOUS_MEASURED_SPEED":
             return self._reject(f"REGIME_{compensation_regime or 'UNKNOWN'}")
 
-        direct_response = self._finite(observed_response_ms)
-        if direct_response:
-            ideal = float(observed_response_ms)
-            observation_source = "OBSERVED_FREEZE_DELAY"
-        else:
-            # Backward-compatible fallback for old replays/tests.  This path is
-            # noisier because it depends on zone geometry and speed estimation.
-            if not self._finite(center_error_ms):
-                return self._reject("NO_CENTER_ERROR")
-            if not self._finite(actual_used_delay_ms):
-                return self._reject("NO_USED_DELAY")
-            if not self._finite(scheduler_jitter_ms) or abs(float(scheduler_jitter_ms)) > 4.5:
-                return self._reject("SCHEDULER_JITTER")
-            if fit_sample_count is None or int(fit_sample_count) < 5:
-                return self._reject("SHORT_TRACK")
-            if self._finite(fit_residual_mad_deg) and float(fit_residual_mad_deg) > 3.0:
-                return self._reject("POOR_FIT_RESIDUAL")
-            if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 45.0:
-                return self._reject("UNSTABLE_SPEED_FIT")
-            if abs(float(center_error_ms)) > 90.0:
-                return self._reject("PHASE_OUTLIER")
-            if white_source and not str(white_source).startswith("MEASURED"):
-                return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
-            if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 60.0:
+        # Primary controller invariant.  This directly answers the question
+        # "what lead would have landed this exact check at GREAT centre?"
+        if not self._finite(center_error_ms):
+            return self._reject("NO_CENTER_ERROR")
+        if not self._finite(actual_used_delay_ms):
+            return self._reject("NO_USED_DELAY")
+        if not self._finite(scheduler_jitter_ms) or abs(float(scheduler_jitter_ms)) > 4.5:
+            return self._reject("SCHEDULER_JITTER")
+        if fit_sample_count is None or int(fit_sample_count) < 5:
+            return self._reject("SHORT_TRACK")
+        if self._finite(fit_residual_mad_deg) and float(fit_residual_mad_deg) > 3.0:
+            return self._reject("POOR_FIT_RESIDUAL")
+        if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 45.0:
+            return self._reject("UNSTABLE_SPEED_FIT")
+        if abs(float(center_error_ms)) > 90.0:
+            return self._reject("PHASE_OUTLIER")
+        if white_source and not str(white_source).startswith("MEASURED"):
+            return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
+        if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 60.0:
+            return self._reject(
+                "RECENT_SPEED_DISAGREEMENT",
+                short_vs_long_delta_deg_s=float(short_vs_long_delta_deg_s),
+            )
+
+        ideal = float(actual_used_delay_ms) + float(center_error_ms)
+        observation_source = "GEOMETRIC_DISPATCH_INVARIANT"
+
+        # Freeze onset stays as an independent diagnostic.  When both physical
+        # measurements disagree wildly, reject the sample rather than letting
+        # either noisy observation move the session lead.
+        response_disagreement_ms = None
+        if self._finite(observed_response_ms):
+            response_disagreement_ms = float(observed_response_ms) - ideal
+            if abs(response_disagreement_ms) > 40.0:
                 return self._reject(
-                    "RECENT_SPEED_DISAGREEMENT",
-                    short_vs_long_delta_deg_s=float(short_vs_long_delta_deg_s),
+                    "RESPONSE_GEOMETRY_DISAGREE",
+                    ideal_lead_ms=ideal,
+                    observed_response_ms=float(observed_response_ms),
+                    response_disagreement_ms=response_disagreement_ms,
                 )
-            ideal = float(actual_used_delay_ms) + float(center_error_ms)
-            observation_source = "GEOMETRIC_FALLBACK"
 
         if not (self.min_lead_ms <= ideal <= self.max_lead_ms):
             return self._reject("IDEAL_LEAD_OUT_OF_RANGE", ideal_lead_ms=ideal)
@@ -204,6 +214,8 @@ class LeadLevelController:
             "accepted": True,
             "ideal_lead_ms": ideal,
             "observation_source": observation_source,
+            "observed_response_ms": float(observed_response_ms) if self._finite(observed_response_ms) else None,
+            "response_disagreement_ms": response_disagreement_ms,
             "rolling_median_ms": med,
             "rolling_mad_ms": mad,
             "recent_median_ms": recent_med,
