@@ -286,19 +286,26 @@ class ContinuousAngularPredictor:
             None if self._short_speed_shadow is None
             else float(self._short_speed_shadow) - raw
         )
+        short_track = self._fit_sample_count < 5 or self._fit_span_s < 0.045
         unstable = (
-            self._last_fit_speed_spread > max(60.0, 0.08 * abs(raw))
+            short_track
+            or self._last_fit_speed_spread > max(60.0, 0.08 * abs(raw))
             or (short_delta is not None and abs(short_delta) > 60.0)
         )
         chosen = raw
         reason = "ROBUST_LONG_FIT"
-        if raw >= 750.0 and unstable and local is not None and math.isfinite(local):
-            # Never speed the prediction up on an uncertain track.  The failure
-            # mode we can make safe is an optimistic speed estimate (early MISS);
-            # the trailing GOOD arc gives substantially more late margin.
-            chosen = max(0.80 * raw, min(raw, local))
-            if chosen < raw - 1e-6:
+        if raw >= 750.0 and unstable:
+            # Never speed the prediction up on an uncertain track.  If a local
+            # adjacent-segment median exists, prefer it.  Otherwise a very short
+            # 3-4 point fit gets a bounded 15% slowdown.  That buys another
+            # capture frame or two before the deadline and avoids committing on
+            # the first optimistic >1k deg/s estimate.
+            if local is not None and math.isfinite(local):
+                chosen = max(0.80 * raw, min(raw, local))
                 reason = "HIGH_SPEED_CONSERVATIVE_LOCAL"
+            elif short_track:
+                chosen = 0.85 * raw
+                reason = "HIGH_SPEED_PROVISIONAL_85PCT"
 
         self._actuation_speed = float(chosen)
         self._actuation_speed_reason = reason
