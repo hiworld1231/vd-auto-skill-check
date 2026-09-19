@@ -1,0 +1,15 @@
+{
+  "fps": 120,
+  "latency_ms": 122.1,
+  "chain_latency_offset_ms": 0.0,
+  "target": "GREAT",
+  "target_offset_ratio": 0.5,
+  "region": {
+    "left": 800,
+    "top": 420,
+    "width": 320,
+    "height": 240
+  },
+  "show_hud": false,
+  "require_lmb": true
+}
