@@ -182,4 +182,40 @@ class LeadLevelController:
             self.updates_total += 1
 
         self.last_result = {
-            "
+            "accepted": True,
+            "ideal_lead_ms": ideal,
+            "rolling_median_ms": med,
+            "rolling_mad_ms": mad,
+            "recent_median_ms": recent_med,
+            "recent_mad_ms": recent_mad,
+            "sample_count": len(vals),
+            "updated": updated,
+            "update_reason": update_reason,
+            "step_ms": self.current_lead_ms - before,
+            "lead_before_ms": before,
+            "current_lead_ms": self.current_lead_ms,
+            "initialized": self.initialized,
+        }
+        return dict(self.last_result)
+
+    def telemetry(self) -> Dict[str, Any]:
+        vals = list(self.samples)
+        med = float(statistics.median(vals)) if vals else None
+        mad = self._mad(vals, med) if med is not None else None
+        recent = vals[-self.recent_shift_samples:]
+        recent_med = float(statistics.median(recent)) if recent else None
+        recent_mad = self._mad(recent, recent_med) if recent_med is not None else None
+        return {
+            "seed_lead_ms": self.seed_lead_ms,
+            "current_lead_ms": self.current_lead_ms,
+            "rolling_median_ms": med,
+            "rolling_mad_ms": mad,
+            "recent_median_ms": recent_med,
+            "recent_mad_ms": recent_mad,
+            "sample_count": len(vals),
+            "accepted_total": self.accepted_total,
+            "rejected_total": self.rejected_total,
+            "updates_total": self.updates_total,
+            "initialized": self.initialized,
+            "deadband_ms": self.deadband_ms,
+        }
