@@ -52,6 +52,18 @@ class CleanV5Tests(unittest.TestCase):
         self.assertEqual(result["outcome"], "GREAT")
         self.assertAlmostEqual(result["observed_response_ms"], 50.0, delta=0.01)
 
+    def test_mask_gap_after_great_is_good_not_miss(self):
+        o = OutcomeObserver(60)
+        w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
+        # Deliberate 2 degree CV segmentation gap.
+        b = {"start": 107.0, "end": 149.0, "center": 128.0, "width": 42.0, "source": "MEASURED"}
+        o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=60)
+        for t, a in [(1.05, 106.0), (1.07, 106.1), (1.09, 105.9), (1.11, 106.0)]:
+            o.observe_sample(t, a, 30)
+        result = o.conclude_check()
+        self.assertTrue(result["plateau_found"])
+        self.assertEqual(result["outcome"], "GOOD")
+
     def test_frenzy_transition_is_not_reported_as_unconfirmed(self):
         o = OutcomeObserver(60)
         w = {"start": 20.0, "end": 30.0, "center": 25.0, "width": 10.0, "source": "MEASURED"}
