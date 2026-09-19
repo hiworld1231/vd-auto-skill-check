@@ -2,13 +2,37 @@
 
 Внешний CV-бот для Roblox **Violence District**. Один runtime обрабатывает обычные и ускоренные skill-check'и: он не определяет "perk mode", а измеряет фактическое движение стрелки в текущем check.
 
-## Быстрый старт
+## Быстрый старт (Arch Linux / Wayland)
+
+На Arch системный Python защищён PEP 668, поэтому зависимости ставятся **только в repo-local virtualenv**:
 
 ```bash
 git clone https://github.com/hiworld1231/vd-auto-skill-check.git
 cd vd-auto-skill-check
-python -m pip install -r requirements.txt
-python tools/preflight.py
+chmod +x setup.sh
+./setup.sh
+python run.py
+```
+
+`setup.sh` создаёт `.venv/`, ставит зависимости и запускает preflight. `run.py` автоматически перезапускает себя через `.venv/bin/python`, если virtualenv существует.
+
+Ручной вариант:
+
+```bash
+python -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python tools/preflight.py
+python run.py
+```
+
+**Не используй `sudo pip` и `--break-system-packages`.**
+
+## Запуск
+
+Интерактивно:
+
+```bash
 python run.py
 ```
 
@@ -62,40 +86,32 @@ VFR capture
 
 ## Linux / Wayland
 
-Предпочтительно установить:
+Желательно установить системными пакетами:
 
 - `gpu-screen-recorder`
 - `ffmpeg`
 - доступ к `/dev/uinput`
 
-Python-зависимости:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
 Проверка окружения:
 
 ```bash
-python tools/preflight.py
+.venv/bin/python tools/preflight.py
 ```
 
 ## Тесты
 
 ```bash
-python -m pytest -q
+.venv/bin/python -m pytest -q
 ```
-
-Чистое GitHub-дерево содержит только focused release-tests. Перед публикацией этот exact tree проходит их без ошибок.
 
 ## Обновление
 
-После первого клонирования дальше достаточно:
+После первого клонирования:
 
 ```bash
 git pull
-python -m pip install -r requirements.txt
-python tools/preflight.py
+./setup.sh
+python run.py
 ```
 
 ## Важно
