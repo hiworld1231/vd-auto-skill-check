@@ -235,7 +235,9 @@ def run_genrush_clean(
             info.update(
                 {
                     "trigger_mode": last_fire.mode,
-                    "actual_used_delay_ms": check_lead,
+                    "requested_lead_ms": check_lead,
+                    "actual_used_delay_ms": ctx.get("effective_dispatch_lead_ms", check_lead),
+                    "effective_dispatch_lead_ms": ctx.get("effective_dispatch_lead_ms", check_lead),
                     "frame_age_ms": ctx.get("frame_age_ms"),
                     "speed_at_lock": ctx.get("speed_at_lock"),
                     "speed_at_fire": ctx.get("speed_at_fire"),
@@ -248,7 +250,7 @@ def run_genrush_clean(
             fit = ctx.get("fit", {}) or {}
             lr = lead.record_outcome(
                 center_error_ms=info.get("center_error_ms"),
-                actual_used_delay_ms=check_lead,
+                actual_used_delay_ms=ctx.get("effective_dispatch_lead_ms", check_lead),
                 outcome=outcome,
                 plateau_found=info.get("plateau_found"),
                 trigger_mode=last_fire.mode,
@@ -265,6 +267,8 @@ def run_genrush_clean(
                 white_source=info.get("white_source"),
                 black_source=info.get("black_source"),
                 frenzy_transition=frenzy_transition,
+                short_vs_long_delta_deg_s=fit.get("short_vs_long_delta"),
+                target_passed=bool(ctx.get("target_passed", False)),
             )
             info["lead_level_update"] = lr
             info["lead_level_telemetry"] = lead.telemetry()
@@ -353,7 +357,8 @@ def run_genrush_clean(
                 )
                 tui.log(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
-                    f"lead={check_lead:.1f}ms"
+                    f"lead={check_lead:.1f}ms "
+                    f"eff={float(c.get('effective_dispatch_lead_ms') or check_lead):.1f}ms"
                 )
 
             if not in_check:
@@ -534,6 +539,13 @@ def run_genrush_clean(
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
+                        # Latest measured time from this frame to the GREAT centre.
+                        # Unlike the configured compensation, this is a valid
+                        # controller observation even for IMMEDIATE_SAFE.
+                        "effective_dispatch_lead_ms": max(
+                            0.0, float(pred.get("time_to_hit_ms", check_lead))
+                        ),
+                        "target_passed": bool(pred.get("target_passed", False)),
                     }
                 )
 
