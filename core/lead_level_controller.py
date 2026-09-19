@@ -38,6 +38,9 @@ class LeadLevelController:
         fast_late_error_ms: float = 8.0,
         fast_late_max_mad_ms: float = 12.0,
         max_late_step_ms: float = 16.0,
+        cold_late_nudge_samples: int = 3,
+        cold_late_nudge_error_ms: float = 20.0,
+        cold_late_nudge_step_ms: float = 12.0,
     ):
         self.seed_lead_ms = float(seed_lead_ms)
         self.current_lead_ms = float(seed_lead_ms)
@@ -54,6 +57,9 @@ class LeadLevelController:
         self.fast_late_error_ms = float(fast_late_error_ms)
         self.fast_late_max_mad_ms = float(fast_late_max_mad_ms)
         self.max_late_step_ms = float(max_late_step_ms)
+        self.cold_late_nudge_samples = max(3, int(cold_late_nudge_samples))
+        self.cold_late_nudge_error_ms = float(cold_late_nudge_error_ms)
+        self.cold_late_nudge_step_ms = float(cold_late_nudge_step_ms)
         self.samples: Deque[float] = deque(maxlen=self.window_size)
         self.center_errors: Deque[float] = deque(maxlen=self.window_size)
         self.accepted_total = 0
@@ -148,13 +154,13 @@ class LeadLevelController:
             return self._reject("SHORT_TRACK")
         if self._finite(fit_residual_mad_deg) and float(fit_residual_mad_deg) > 3.0:
             return self._reject("POOR_FIT_RESIDUAL")
-        if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 45.0:
+        if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 60.0:
             return self._reject("UNSTABLE_SPEED_FIT")
         if abs(float(center_error_ms)) > 90.0:
             return self._reject("PHASE_OUTLIER")
         if white_source and not str(white_source).startswith("MEASURED"):
             return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
-        if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 60.0:
+        if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 75.0:
             return self._reject(
                 "RECENT_SPEED_DISAGREEMENT",
                 short_vs_long_delta_deg_s=float(short_vs_long_delta_deg_s),
@@ -168,14 +174,9 @@ class LeadLevelController:
         # either noisy observation move the session lead.
         response_disagreement_ms = None
         if self._finite(observed_response_ms):
+            # Freeze onset is useful telemetry, but replay evidence shows it is
+            # too noisy to veto an otherwise clean geometric landing sample.
             response_disagreement_ms = float(observed_response_ms) - ideal
-            if abs(response_disagreement_ms) > 40.0:
-                return self._reject(
-                    "RESPONSE_GEOMETRY_DISAGREE",
-                    ideal_lead_ms=ideal,
-                    observed_response_ms=float(observed_response_ms),
-                    response_disagreement_ms=response_disagreement_ms,
-                )
 
         if not (self.min_lead_ms <= ideal <= self.max_lead_ms):
             return self._reject("IDEAL_LEAD_OUT_OF_RANGE", ideal_lead_ms=ideal)
@@ -192,17 +193,39 @@ class LeadLevelController:
         recent_med = None
         recent_mad = None
 
-        if not self.initialized and len(vals) >= self.cold_min_samples:
-            cold = vals[-self.cold_min_samples:]
-            cold_med = float(statistics.median(cold))
-            cold_mad = self._mad(cold, cold_med)
-            if cold_mad <= self.cold_max_mad_ms:
-                self.current_lead_ms = max(self.min_lead_ms, min(self.max_lead_ms, cold_med))
-                self.initialized = True
-                updated = abs(self.current_lead_ms - before) > 1e-9
-                if updated:
-                    self.accepted_at_last_update = self.accepted_total
-                update_reason = "COLD_MEDIAN"
+        if not self.initialized:
+            # Before a stable cold cluster exists, do not sit at the seed while
+            # several clean checks all land far on the late side.
+            if len(vals) >= self.cold_late_nudge_samples:
+                cold_errors = list(self.center_errors)[-self.cold_late_nudge_samples:]
+                late_votes = sum(
+                    1 for e in cold_errors if e >= self.cold_late_nudge_error_ms
+                )
+                if late_votes >= self.cold_late_nudge_samples:
+                    self.current_lead_ms = min(
+                        self.max_lead_ms,
+                        self.current_lead_ms + self.cold_late_nudge_step_ms,
+                    )
+                    updated = abs(self.current_lead_ms - before) > 1e-9
+                    if updated:
+                        self.accepted_at_last_update = self.accepted_total
+                    update_reason = "COLD_LATE_NUDGE"
+
+            if len(vals) >= self.cold_min_samples:
+                cold = vals[-self.cold_min_samples:]
+                cold_med = float(statistics.median(cold))
+                cold_mad = self._mad(cold, cold_med)
+                if cold_mad <= self.cold_max_mad_ms:
+                    # Cold median is authoritative; it may replace a provisional
+                    # nudge from the same outcome.
+                    self.current_lead_ms = max(
+                        self.min_lead_ms, min(self.max_lead_ms, cold_med)
+                    )
+                    self.initialized = True
+                    updated = abs(self.current_lead_ms - before) > 1e-9
+                    if updated:
+                        self.accepted_at_last_update = self.accepted_total
+                    update_reason = "COLD_MEDIAN"
         elif self.initialized:
             # Do not reuse the same observations for repeated moves.
             fresh_since_update = self.accepted_total - self.accepted_at_last_update
@@ -314,4 +337,5 @@ class LeadLevelController:
             "deadband_ms": self.deadband_ms,
             "fast_late_samples": self.fast_late_samples,
             "fast_late_error_ms": self.fast_late_error_ms,
+            "cold_late_nudge_samples": self.cold_late_nudge_samples,
         }
