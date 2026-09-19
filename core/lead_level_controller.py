@@ -156,7 +156,11 @@ class LeadLevelController:
             return self._reject("POOR_FIT_RESIDUAL")
         if self._finite(fit_spread_deg_s) and float(fit_spread_deg_s) > 60.0:
             return self._reject("UNSTABLE_SPEED_FIT")
-        if abs(float(center_error_ms)) > 90.0:
+        # Very late cold-start GOODs can exceed 90 ms and are exactly the
+        # evidence needed to escape an undersized seed.  Keep truly implausible
+        # phase errors out, while the ideal-lead range and robust medians handle
+        # the remaining outliers.
+        if abs(float(center_error_ms)) > 130.0:
             return self._reject("PHASE_OUTLIER")
         if white_source and not str(white_source).startswith("MEASURED"):
             return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
