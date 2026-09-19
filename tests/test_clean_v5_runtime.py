@@ -45,11 +45,12 @@ class CleanV5Tests(unittest.TestCase):
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         b = {"start": 105.0, "end": 145.0, "center": 125.0, "width": 40.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=60)
-        for t, a in [(1.05, 101.0), (1.07, 101.2), (1.09, 100.9)]:
+        for t, a in [(1.05, 101.0), (1.07, 101.2), (1.09, 100.9), (1.11, 101.1)]:
             o.observe_sample(t, a, 30)
         result = o.conclude_check()
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GREAT")
+        self.assertAlmostEqual(result["observed_response_ms"], 50.0, delta=0.01)
 
     def test_frenzy_transition_is_not_reported_as_unconfirmed(self):
         o = OutcomeObserver(60)
