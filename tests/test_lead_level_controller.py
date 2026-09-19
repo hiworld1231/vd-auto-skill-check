@@ -77,22 +77,57 @@ class TestLeadLevelControllerV5(unittest.TestCase):
         self.assertFalse(r["accepted"])
         self.assertEqual(r["reject_reason"], "RESPONSE_GEOMETRY_DISAGREE")
 
-    def test_warm_shift_uses_seven_samples_and_bounded_step(self):
+    def test_latest_live_run_fast_late_convergence(self):
+        # 2026-09-19 live run: after cold calibration to ~85 ms, every fresh
+        # landing remained late.  The old controller waited seven samples and
+        # only moved +8 ms, producing 18 GOOD / 1 GREAT.  Four coherent late
+        # samples should now move directly toward their robust ideal.
         c = LeadLevelController(60)
-        for ideal in [98, 100, 99, 101]:
-            self.clean(c, 60, ideal - 60)
-        self.assertTrue(c.initialized)
-        self.assertAlmostEqual(c.current_lead_ms, 99.5, delta=0.6)
+        cold = [
+            (60.0, 15.1),
+            (43.8, 59.8),
+            (60.0, 18.3),
+            (57.5, 34.1),
+        ]
+        for used, err in cold:
+            self.clean(c, used, err)
+        self.assertAlmostEqual(c.current_lead_ms, 84.95, delta=0.2)
 
-        # Coherent new level near 132 ms.  Controller needs seven recent samples
-        # and can move by at most 8 ms per update.
-        before = c.current_lead_ms
-        for ideal in [131, 132, 130, 133, 132, 131]:
-            self.clean(c, before, ideal - before)
-        self.assertAlmostEqual(c.current_lead_ms, before, delta=0.01)
-        r = self.clean(c, before, 132 - before)
+        late1 = [
+            (84.4, 10.7),
+            (81.8, 25.9),
+            (84.7, 14.2),
+            (71.8, 24.4),
+        ]
+        for used, err in late1[:-1]:
+            r = self.clean(c, used, err, outcome="GOOD")
+            self.assertFalse(r.get("updated", False))
+        r = self.clean(c, *late1[-1], outcome="GOOD")
         self.assertTrue(r["updated"])
-        self.assertLessEqual(abs(r["step_ms"]), 8.0 + 1e-9)
+        self.assertEqual(r["update_reason"], "FAST_LATE_CORRECTION")
+        self.assertAlmostEqual(c.current_lead_ms, 97.55, delta=0.3)
+
+    def test_fast_late_step_is_bounded(self):
+        c = LeadLevelController(60)
+        for ideal in [84, 86, 85, 85]:
+            self.clean(c, 60, ideal - 60)
+        before = c.current_lead_ms
+        for ideal in [130, 131, 132, 133]:
+            self.clean(c, before, ideal - before, outcome="GOOD")
+        self.assertLessEqual(c.current_lead_ms - before, 16.0 + 1e-9)
+
+    def test_early_correction_needs_seven_fresh_samples(self):
+        c = LeadLevelController(60)
+        for ideal in [100, 101, 99, 100]:
+            self.clean(c, 60, ideal - 60)
+        before = c.current_lead_ms
+        for ideal in [78, 79, 80, 79, 78, 80]:
+            r = self.clean(c, before, ideal - before)
+            self.assertFalse(r.get("updated", False))
+        r = self.clean(c, before, 79 - before)
+        self.assertTrue(r["updated"])
+        self.assertEqual(r["update_reason"], "CONFIRMED_EARLY_LEVEL_SHIFT")
+        self.assertGreaterEqual(r["step_ms"], -8.0 - 1e-9)
 
     def test_unstable_fit_cannot_train(self):
         c = LeadLevelController(60)
