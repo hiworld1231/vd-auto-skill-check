@@ -34,6 +34,10 @@ class LeadLevelController:
         recent_shift_samples: int = 7,
         recent_shift_max_mad_ms: float = 15.0,
         max_shift_step_ms: float = 8.0,
+        fast_late_samples: int = 4,
+        fast_late_error_ms: float = 8.0,
+        fast_late_max_mad_ms: float = 12.0,
+        max_late_step_ms: float = 16.0,
     ):
         self.seed_lead_ms = float(seed_lead_ms)
         self.current_lead_ms = float(seed_lead_ms)
@@ -46,7 +50,12 @@ class LeadLevelController:
         self.recent_shift_samples = max(3, int(recent_shift_samples))
         self.recent_shift_max_mad_ms = float(recent_shift_max_mad_ms)
         self.max_shift_step_ms = float(max_shift_step_ms)
+        self.fast_late_samples = max(3, int(fast_late_samples))
+        self.fast_late_error_ms = float(fast_late_error_ms)
+        self.fast_late_max_mad_ms = float(fast_late_max_mad_ms)
+        self.max_late_step_ms = float(max_late_step_ms)
         self.samples: Deque[float] = deque(maxlen=self.window_size)
+        self.center_errors: Deque[float] = deque(maxlen=self.window_size)
         self.accepted_total = 0
         self.rejected_total = 0
         self.updates_total = 0
@@ -172,6 +181,7 @@ class LeadLevelController:
             return self._reject("IDEAL_LEAD_OUT_OF_RANGE", ideal_lead_ms=ideal)
 
         self.samples.append(ideal)
+        self.center_errors.append(float(center_error_ms))
         self.accepted_total += 1
         vals = list(self.samples)
         med = float(statistics.median(vals))
@@ -194,16 +204,28 @@ class LeadLevelController:
                     self.accepted_at_last_update = self.accepted_total
                 update_reason = "COLD_MEDIAN"
         elif self.initialized:
-            # Require a fresh cluster after every update.  Reusing almost the same
-            # seven samples on each subsequent check creates staircase oscillation.
+            # Do not reuse the same observations for repeated moves.
             fresh_since_update = self.accepted_total - self.accepted_at_last_update
-            if len(vals) >= self.recent_shift_samples and fresh_since_update >= self.recent_shift_samples:
-                recent = vals[-self.recent_shift_samples:]
-                recent_med = float(statistics.median(recent))
-                recent_mad = self._mad(recent, recent_med)
-                delta = recent_med - self.current_lead_ms
-                if abs(delta) > self.deadband_ms and recent_mad <= self.recent_shift_max_mad_ms:
-                    step = max(-self.max_shift_step_ms, min(self.max_shift_step_ms, delta))
+
+            # Asymmetric correction: a run of late landings is relatively safe
+            # (it normally lands in the trailing GOOD sector), so converge faster.
+            # Early landings are dangerous and are corrected only by the slower
+            # seven-sample path below.
+            if fresh_since_update >= self.fast_late_samples:
+                late_ideals = vals[-self.fast_late_samples:]
+                late_errors = list(self.center_errors)[-self.fast_late_samples:]
+                late_med = float(statistics.median(late_ideals))
+                late_mad = self._mad(late_ideals, late_med)
+                late_votes = sum(
+                    1 for e in late_errors if e >= self.fast_late_error_ms
+                )
+                delta = late_med - self.current_lead_ms
+                if (
+                    late_votes >= self.fast_late_samples - 1
+                    and late_mad <= self.fast_late_max_mad_ms
+                    and delta > 2.0
+                ):
+                    step = min(self.max_late_step_ms, delta)
                     self.current_lead_ms = max(
                         self.min_lead_ms,
                         min(self.max_lead_ms, self.current_lead_ms + step),
@@ -211,7 +233,39 @@ class LeadLevelController:
                     updated = abs(self.current_lead_ms - before) > 1e-9
                     if updated:
                         self.accepted_at_last_update = self.accepted_total
-                    update_reason = "CONFIRMED_RECENT_LEVEL_SHIFT"
+                    update_reason = "FAST_LATE_CORRECTION"
+                    recent_med = late_med
+                    recent_mad = late_mad
+
+            # Slow symmetric/early change-point path.  It only runs if the fast
+            # late path did not already consume this fresh cluster.
+            if (
+                not updated
+                and fresh_since_update >= self.recent_shift_samples
+                and len(vals) >= self.recent_shift_samples
+            ):
+                recent = vals[-self.recent_shift_samples:]
+                recent_errors = list(self.center_errors)[-self.recent_shift_samples:]
+                recent_med = float(statistics.median(recent))
+                recent_mad = self._mad(recent, recent_med)
+                delta = recent_med - self.current_lead_ms
+                early_votes = sum(
+                    1 for e in recent_errors if e <= -self.fast_late_error_ms
+                )
+                if (
+                    delta < -self.deadband_ms
+                    and early_votes >= self.recent_shift_samples - 2
+                    and recent_mad <= self.recent_shift_max_mad_ms
+                ):
+                    step = max(-self.max_shift_step_ms, delta)
+                    self.current_lead_ms = max(
+                        self.min_lead_ms,
+                        min(self.max_lead_ms, self.current_lead_ms + step),
+                    )
+                    updated = abs(self.current_lead_ms - before) > 1e-9
+                    if updated:
+                        self.accepted_at_last_update = self.accepted_total
+                    update_reason = "CONFIRMED_EARLY_LEVEL_SHIFT"
 
         if updated:
             self.updates_total += 1
@@ -258,4 +312,6 @@ class LeadLevelController:
             "accepted_since_update": self.accepted_total - self.accepted_at_last_update,
             "initialized": self.initialized,
             "deadband_ms": self.deadband_ms,
+            "fast_late_samples": self.fast_late_samples,
+            "fast_late_error_ms": self.fast_late_error_ms,
         }
