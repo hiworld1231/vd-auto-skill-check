@@ -101,6 +101,26 @@ class VisionEngine:
         if self.backend is not None:
             self.backend.reset()
 
+    def reset_generation(self, preserve_center: bool = True):
+        """Reset a Frenzy/new-generation trajectory without pretending the whole ring vanished.
+
+        The new generation must reacquire its zone geometry, but the already validated
+        ring centre can be retained as a diagnostic hint.
+        """
+        center = self.locked_center if preserve_center else None
+        self.state = STATE_SPAWN_ACQUIRE
+        self.locked_white_zone = None
+        self.locked_black_zone = None
+        self.locked_center = center
+        self.consecutive_hybrid_losses = 0
+        self.is_pressed = False
+        if self.baseline_detector is not None:
+            self.baseline_detector.reset()
+        if self.hybrid_detector is not None:
+            self.hybrid_detector.reset()
+        if self.backend is not None:
+            self.backend.reset()
+
     def notify_pressed(self):
         """Signals that the current skill check has been fired."""
         self.is_pressed = True
@@ -152,6 +172,12 @@ class VisionEngine:
             if det_base is None or not det_base.get("ring_present"):
                 self.reset()
                 return None
+            if det_base.get("white_zone") is not None:
+                det_base["white_zone"] = dict(det_base["white_zone"])
+                det_base["white_zone"].setdefault("source", "MEASURED_POST_HIT")
+            if det_base.get("black_zone") is not None:
+                det_base["black_zone"] = dict(det_base["black_zone"])
+                det_base["black_zone"].setdefault("source", "MEASURED_POST_HIT")
             det_base["detector_name"] = "BASELINE_POST_HIT"
             return det_base
 
@@ -171,159 +197,4 @@ class VisionEngine:
                 return None
 
             # Center sanity check
-            cx, cy = det_base["cx"], det_base["cy"]
-            if not (140.0 <= cx <= 180.0 and 142.5 <= cy <= 182.5):
-                return None
-
-            # Confident zone acquisition check
-            w_d = det_base.get("white_zone")
-            b_d = det_base.get("black_zone")
-            w_valid = (w_d is not None and 5.0 <= w_d.get("width", 0.0) <= 15.0)
-            b_valid = (b_d is not None and 18.0 <= b_d.get("width", 0.0) <= 65.0)
-
-            if w_valid or b_valid:
-                if not w_valid and b_valid:
-                    # Reconstruct Great zone directly from Good zone geometry
-                    w_s = (b_d["start"] - 9.5) % 360.0
-                    w_d = {
-                        "start": float(w_s),
-                        "end": float(b_d["start"]),
-                        "width": 9.5,
-                        "center": float((w_s + 4.75) % 360.0),
-                    }
-
-                # Confident lock: white zone, black zone, center
-                self.locked_white_zone = w_d
-                self.locked_black_zone = b_d
-                self.locked_center = (cx, cy)
-                self.state = STATE_ACTIVE_TRACKING
-                self.consecutive_hybrid_losses = 0
-
-                # Initialize Hybrid detector state with baseline locked parameters
-                self.hybrid_detector.reset()
-                self.hybrid_detector.cx = cx
-                self.hybrid_detector.cy = cy
-                self.hybrid_detector.last_angle = det_base["needle_angle"]
-                self.hybrid_detector.last_t = time.monotonic()
-                self.hybrid_detector.consecutive_losses = 0
-                self.hybrid_detector.locked_white_zone = self.locked_white_zone
-                self.hybrid_detector.locked_black_zone = self.locked_black_zone
-
-            det_base["detector_name"] = "BASELINE_ZONE_HYBRID_NEEDLE"
-            if self.locked_white_zone is not None:
-                det_base["white_zone"] = self.locked_white_zone
-                det_base["black_zone"] = self.locked_black_zone
-            return det_base
-
-        # -------------------------------------------------------------
-        # 3. ACTIVE_TRACKING state (Critical Path: HYBRID needle tracking)
-        # -------------------------------------------------------------
-        det_hyb = self.hybrid_detector.detect(
-            frame_bgr=frame_bgr,
-            frame_gray=frame_gray,
-            expected_angle=expected_angle,
-            search_window=search_window,
-            dt_frame=dt_frame,
-            expected_speed=expected_speed,
-            locked_zones=(self.locked_white_zone, self.locked_black_zone),
-        )
-
-        if det_hyb is None or not det_hyb.get("ring_present"):
-            self.reset()
-            return None
-
-        is_needle_valid = det_hyb.get("needle_valid", False) and (det_hyb.get("needle_strength", 0.0) >= 15.0)
-
-        if is_needle_valid:
-            self.consecutive_hybrid_losses = 0
-            det_hyb["white_zone"] = self.locked_white_zone
-            det_hyb["black_zone"] = self.locked_black_zone
-            det_hyb["cx"] = self.locked_center[0]
-            det_hyb["cy"] = self.locked_center[1]
-            det_hyb["center"] = self.locked_center
-            det_hyb["detector_name"] = "BASELINE_ZONE_HYBRID_NEEDLE"
-            return det_hyb
-
-        # Needle confidence lost
-        self.consecutive_hybrid_losses += 1
-
-        # Fallback handling:
-        # Hybrid already attempted local window search + full 360 scan internally.
-        # If recovery does not occur for >= 2 consecutive frames:
-        if self.consecutive_hybrid_losses >= 2:
-            det_base = self.baseline_detector.detect(
-                frame_bgr=frame_bgr,
-                frame_gray=frame_gray,
-                expected_angle=expected_angle,
-                search_window=search_window,
-                dt_frame=dt_frame,
-                expected_speed=expected_speed,
-            )
-            if det_base is not None and det_base.get("ring_present"):
-                if det_base.get("needle_valid", False):
-                    print(
-                        f"[VISION] HYBRID_NEEDLE_FALLBACK_BASELINE: recovered needle={det_base['needle_angle']:.1f}°, "
-                        f"strength={det_base['needle_strength']:.1f} (losses={self.consecutive_hybrid_losses})"
-                    )
-                    self.hybrid_detector.last_angle = det_base["needle_angle"]
-                    self.hybrid_detector.last_t = time.monotonic()
-                    self.hybrid_detector.consecutive_losses = 0
-                    self.consecutive_hybrid_losses = 0
-
-                    det_base["white_zone"] = self.locked_white_zone
-                    det_base["black_zone"] = self.locked_black_zone
-                    det_base["detector_name"] = "HYBRID_NEEDLE_FALLBACK_BASELINE"
-                    return det_base
-                else:
-                    det_base["white_zone"] = self.locked_white_zone
-                    det_base["black_zone"] = self.locked_black_zone
-                    det_base["needle_valid"] = False
-                    det_base["status"] = "LOW_CONFIDENCE"
-                    det_base["detector_name"] = "HYBRID_NEEDLE_FALLBACK_BASELINE"
-                    return det_base
-            else:
-                self.reset()
-                return None
-
-        # Frame 1 loss: return hybrid marked invalid (never emit random or guess angle)
-        det_hyb["white_zone"] = self.locked_white_zone
-        det_hyb["black_zone"] = self.locked_black_zone
-        det_hyb["cx"] = self.locked_center[0]
-        det_hyb["cy"] = self.locked_center[1]
-        det_hyb["center"] = self.locked_center
-        det_hyb["needle_valid"] = False
-        det_hyb["status"] = "LOW_CONFIDENCE"
-        det_hyb["detector_name"] = "BASELINE_ZONE_HYBRID_NEEDLE"
-        return det_hyb
-
-    def extract_zones(
-        self, det: Optional[Dict[str, Any]], locked_zones: Optional[Tuple[Any, Any]] = None
-    ) -> Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]:
-        """
-        Extracts high-precision Great (white) and Good (black) zones.
-        Preserves locked coordinates within a single check generation.
-        """
-        if locked_zones and locked_zones[0] is not None:
-            return locked_zones
-
-        if self.is_orchestrated:
-            if self.is_pressed and det is not None:
-                w_d = det.get("white_zone")
-                b_d = det.get("black_zone")
-                if w_d is not None or b_d is not None:
-                    return w_d, b_d
-
-            if self.locked_white_zone is not None:
-                return self.locked_white_zone, self.locked_black_zone
-
-            if det is not None:
-                w_d = det.get("white_zone")
-                b_d = det.get("black_zone")
-                if w_d is not None or b_d is not None:
-                    return w_d, b_d
-
-            return None, None
-
-        if self.backend is not None:
-            return self.backend.extract_zones(det, locked_zones)
-        return None, None
+            cx, cy = det_base["
