@@ -269,6 +269,7 @@ def run_genrush_clean(
                 frenzy_transition=frenzy_transition,
                 short_vs_long_delta_deg_s=fit.get("short_vs_long_delta"),
                 target_passed=bool(ctx.get("target_passed", False)),
+                observed_response_ms=info.get("observed_response_ms"),
             )
             info["lead_level_update"] = lr
             info["lead_level_telemetry"] = lead.telemetry()
@@ -334,6 +335,17 @@ def run_genrush_clean(
                 scheduler.cancel_pending()
                 vision.notify_pressed()
                 c = ev.context
+                # Physical predicted time from the actual key dispatch to the
+                # target crossing.  This is valid for both scheduled and
+                # overdue IMMEDIATE_SAFE fires.  The old code incorrectly used
+                # time_to_target from the planning frame.
+                if ev.desired is not None:
+                    c["effective_dispatch_lead_ms"] = max(
+                        0.0,
+                        check_lead + (float(ev.desired) - float(ev.dispatch_start)) * 1000.0,
+                    )
+                else:
+                    c["effective_dispatch_lead_ms"] = check_lead
                 observer.on_trigger(
                     ev.dispatch_start,
                     float(c.get("target_angle") or 0.0),
@@ -358,7 +370,7 @@ def run_genrush_clean(
                 tui.log(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
                     f"lead={check_lead:.1f}ms "
-                    f"eff={float(c.get('effective_dispatch_lead_ms') or check_lead):.1f}ms"
+                    f"eff={float(c.get('effective_dispatch_lead_ms') if c.get('effective_dispatch_lead_ms') is not None else check_lead):.1f}ms"
                     + (
                         f" [{c.get('actuation_speed_reason')} raw={float(c.get('raw_fit_speed_at_fire') or 0):.1f}]"
                         if c.get("actuation_speed_reason") == "HIGH_SPEED_CONSERVATIVE_LOCAL"
@@ -546,10 +558,10 @@ def run_genrush_clean(
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
-                        # Latest measured time from this frame to the GREAT centre.
-                        # Unlike the configured compensation, this is a valid
-                        # controller observation even for IMMEDIATE_SAFE.
-                        "effective_dispatch_lead_ms": max(
+                        # Planning-frame value only.  The actual effective
+                        # dispatch lead is computed from FireEvent.desired and
+                        # the real dispatch timestamp when Space is sent.
+                        "planned_time_to_target_ms": max(
                             0.0, float(pred.get("time_to_hit_ms", check_lead))
                         ),
                         "target_passed": bool(pred.get("target_passed", False)),
