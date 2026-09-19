@@ -273,10 +273,24 @@ def run_genrush_clean(
             )
             info["lead_level_update"] = lr
             info["lead_level_telemetry"] = lead.telemetry()
-            if lr.get("updated"):
+            if lr.get("accepted"):
+                ideal = lr.get("ideal_lead_ms")
+                if lr.get("updated"):
+                    tui.log(
+                        f"🧭 lead {lr['lead_before_ms']:.1f}→{lr['current_lead_ms']:.1f}ms "
+                        f"({lr.get('update_reason')})"
+                    )
+                else:
+                    tui.log(
+                        f"🧪 LEARN ideal={float(ideal):.1f}ms "
+                        f"n={int(lr.get('sample_count') or 0)}"
+                    )
+            elif not frenzy_transition and int(chain) == 1:
+                extra = ""
+                if lr.get("ideal_lead_ms") is not None:
+                    extra = f" ideal={float(lr['ideal_lead_ms']):.1f}ms"
                 tui.log(
-                    f"🧭 lead {lr['lead_before_ms']:.1f}→{lr['current_lead_ms']:.1f}ms "
-                    f"({lr.get('update_reason')})"
+                    f"🧪 LEARN reject={lr.get('reject_reason') or 'UNKNOWN'}{extra}"
                 )
         recorder.end_check(now, info)
         tui.record_hit(
