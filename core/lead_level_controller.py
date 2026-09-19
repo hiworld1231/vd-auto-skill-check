@@ -195,8 +195,13 @@ class LeadLevelController:
 
         if not self.initialized:
             # Before a stable cold cluster exists, do not sit at the seed while
-            # several clean checks all land far on the late side.
-            if len(vals) >= self.cold_late_nudge_samples:
+            # several clean checks all land far on the late side.  A nudge
+            # consumes its samples, so the same late cluster cannot staircase.
+            cold_fresh = self.accepted_total - self.accepted_at_last_update
+            if (
+                len(vals) >= self.cold_late_nudge_samples
+                and cold_fresh >= self.cold_late_nudge_samples
+            ):
                 cold_errors = list(self.center_errors)[-self.cold_late_nudge_samples:]
                 late_votes = sum(
                     1 for e in cold_errors if e >= self.cold_late_nudge_error_ms
