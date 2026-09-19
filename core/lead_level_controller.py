@@ -10,7 +10,11 @@ class LeadLevelController:
     """Robust session-level delivery lead policy for clean GEN_RUSH.
 
     Observation (controller invariant):
-        ideal_lead_ms = actual_used_delay_ms + center_error_ms
+        ideal_lead_ms = effective_dispatch_lead_ms + center_error_ms
+
+    For SCHEDULED and IMMEDIATE_SAFE fires alike, the value passed as
+    actual_used_delay_ms must be the predictor's latest time-to-target at the
+    physical dispatch frame. It is not the configured compensation value.
 
     The controller does not chase individual landings.  It cold-starts from a
     small consistent cluster and later follows only a confirmed recent level
@@ -24,7 +28,7 @@ class LeadLevelController:
         min_lead_ms: float = 35.0,
         max_lead_ms: float = 160.0,
         window_size: int = 9,
-        cold_min_samples: int = 3,
+        cold_min_samples: int = 4,
         deadband_ms: float = 15.0,
         cold_max_mad_ms: float = 12.0,
         recent_shift_samples: int = 4,
@@ -99,7 +103,13 @@ class LeadLevelController:
         white_source: Optional[str] = None,
         black_source: Optional[str] = None,
         frenzy_transition: bool = False,
+        short_vs_long_delta_deg_s: Optional[float] = None,
+        target_passed: bool = False,
     ) -> Dict[str, Any]:
+        # A Frenzy generation does not have the normal post-hit plateau. Exclude
+        # it before all landing gates so telemetry says why it was rejected.
+        if bool(target_passed):
+            return self._reject("TARGET_ALREADY_PASSED")
         if not self._finite(center_error_ms):
             return self._reject("NO_CENTER_ERROR")
         if not self._finite(actual_used_delay_ms):
@@ -108,7 +118,7 @@ class LeadLevelController:
             return self._reject("NO_CONFIRMED_PLATEAU")
         if outcome not in {"GREAT", "GOOD", "MISS"}:
             return self._reject(f"OUTCOME_{outcome or 'UNKNOWN'}")
-        if trigger_mode != "SCHEDULED":
+        if trigger_mode not in {"SCHEDULED", "IMMEDIATE"}:
             return self._reject(f"TRIGGER_{trigger_mode or 'UNKNOWN'}")
         if not self._finite(scheduler_jitter_ms) or abs(float(scheduler_jitter_ms)) > 4.5:
             return self._reject("SCHEDULER_JITTER")
@@ -131,11 +141,14 @@ class LeadLevelController:
         if white_source and not str(white_source).startswith("MEASURED"):
             return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
 
-        if self._finite(speed_at_lock) and self._finite(speed_at_fire):
-            lock = abs(float(speed_at_lock))
-            drift = abs(float(speed_at_fire) - float(speed_at_lock))
-            if drift > max(25.0, 0.08 * lock):
-                return self._reject("SPEED_DRIFT", speed_drift_deg_s=drift)
+        # speed_at_lock is an early convergence snapshot and can legitimately
+        # differ from the final fit.  Use the recency-vs-long-fit diagnostic
+        # instead; it measures disagreement at the time of fire.
+        if self._finite(short_vs_long_delta_deg_s) and abs(float(short_vs_long_delta_deg_s)) > 60.0:
+            return self._reject(
+                "RECENT_SPEED_DISAGREEMENT",
+                short_vs_long_delta_deg_s=float(short_vs_long_delta_deg_s),
+            )
 
         ideal = float(actual_used_delay_ms) + float(center_error_ms)
         if not (self.min_lead_ms <= ideal <= self.max_lead_ms):
