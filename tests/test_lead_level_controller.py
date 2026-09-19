@@ -54,9 +54,13 @@ class TestLeadLevelControllerV5(unittest.TestCase):
             (59.4, 29.4),
             (58.9, 33.7),
         ]
-        for used, err in samples[:-1]:
+        for i, (used, err) in enumerate(samples[:-1]):
             r = self.clean(c, used, err)
-            self.assertFalse(r.get("updated", False))
+            if i < 2:
+                self.assertFalse(r.get("updated", False))
+            else:
+                self.assertTrue(r["updated"])
+                self.assertEqual(r["update_reason"], "COLD_LATE_NUDGE")
         r = self.clean(c, *samples[-1])
         self.assertTrue(r["updated"])
         self.assertEqual(r["update_reason"], "COLD_MEDIAN")
@@ -71,11 +75,32 @@ class TestLeadLevelControllerV5(unittest.TestCase):
         self.assertAlmostEqual(r["ideal_lead_ms"], 105.0)
         self.assertAlmostEqual(r["response_disagreement_ms"], 25.0)
 
-    def test_large_response_geometry_disagreement_is_rejected(self):
+    def test_large_response_geometry_disagreement_is_diagnostic_only(self):
         c = LeadLevelController(60)
         r = self.clean(c, 60, 45, observed=155)
-        self.assertFalse(r["accepted"])
-        self.assertEqual(r["reject_reason"], "RESPONSE_GEOMETRY_DISAGREE")
+        self.assertTrue(r["accepted"])
+        self.assertAlmostEqual(r["ideal_lead_ms"], 105.0)
+        self.assertAlmostEqual(r["response_disagreement_ms"], 50.0)
+
+    def test_current_live_run_cold_starvation_breaks_by_sixth_clean_sample(self):
+        # 2026-09-19 live run that previously stayed at 60 ms for 10 checks.
+        c = LeadLevelController(60)
+        samples = [
+            (54.4, 49.8),
+            (60.0, 98.3),
+            (32.3, 72.5),
+            (48.4, 105.1),
+            (46.3, 52.2),
+            (58.4, 43.8),
+        ]
+        results = []
+        for used, err in samples:
+            results.append(self.clean(c, used, err, outcome="GOOD"))
+        self.assertTrue(any(r.get("update_reason") == "COLD_LATE_NUDGE" for r in results[:3]))
+        self.assertTrue(c.initialized)
+        self.assertEqual(results[-1]["update_reason"], "COLD_MEDIAN")
+        self.assertGreater(c.current_lead_ms, 100.0)
+        self.assertLess(c.current_lead_ms, 107.0)
 
     def test_latest_live_run_fast_late_convergence(self):
         # 2026-09-19 live run: after cold calibration to ~85 ms, every fresh
