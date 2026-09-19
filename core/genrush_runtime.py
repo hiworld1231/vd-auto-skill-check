@@ -359,6 +359,11 @@ def run_genrush_clean(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
                     f"lead={check_lead:.1f}ms "
                     f"eff={float(c.get('effective_dispatch_lead_ms') or check_lead):.1f}ms"
+                    + (
+                        f" [{c.get('actuation_speed_reason')} raw={float(c.get('raw_fit_speed_at_fire') or 0):.1f}]"
+                        if c.get("actuation_speed_reason") == "HIGH_SPEED_CONSERVATIVE_LOCAL"
+                        else ""
+                    )
                 )
 
             if not in_check:
@@ -535,7 +540,9 @@ def run_genrush_clean(
                         "target_angle": pred.get("target_angle"),
                         "estimated_angle": angle,
                         "speed_at_lock": speed_at_lock,
-                        "speed_at_fire": float(predictor.speed_deg_s),
+                        "speed_at_fire": float(pred.get("speed_deg_s") or predictor.speed_deg_s),
+                        "raw_fit_speed_at_fire": float(predictor.speed_deg_s),
+                        "actuation_speed_reason": pred.get("actuation_speed_reason"),
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
