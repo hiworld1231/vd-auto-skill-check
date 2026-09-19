@@ -108,6 +108,8 @@ class LeadLevelController:
     ) -> Dict[str, Any]:
         # A Frenzy generation does not have the normal post-hit plateau. Exclude
         # it before all landing gates so telemetry says why it was rejected.
+        if bool(frenzy_transition) or int(chain_count) > 1:
+            return self._reject("FRENZY_UNVALIDATED")
         if bool(target_passed):
             return self._reject("TARGET_ALREADY_PASSED")
         if not self._finite(center_error_ms):
@@ -136,8 +138,6 @@ class LeadLevelController:
             return self._reject("UNSTABLE_SPEED_FIT")
         if abs(float(center_error_ms)) > 90.0:
             return self._reject("PHASE_OUTLIER")
-        if bool(frenzy_transition) or int(chain_count) > 1:
-            return self._reject("FRENZY_UNVALIDATED")
         if white_source and not str(white_source).startswith("MEASURED"):
             return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
 
