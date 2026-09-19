@@ -9,10 +9,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VENV_DIR = ROOT.parent / ".venv"
+VENV_DIR = ROOT / ".venv"
 VENV_PY = VENV_DIR / "bin" / "python"
-if VENV_PY.exists() and sys.prefix != str(VENV_DIR.resolve()):
+
+# Prefer the repo-local virtualenv created by ./setup.sh.
+if VENV_PY.exists() and Path(sys.executable).resolve() != VENV_PY.resolve():
     os.execv(str(VENV_PY), [str(VENV_PY)] + sys.argv)
+
 PYTHON_BIN = str(VENV_PY) if VENV_PY.exists() else sys.executable
 
 
@@ -28,11 +31,20 @@ def main() -> int:
     ap.add_argument("--no-require-lmb", action="store_true")
     args, unknown = ap.parse_known_args()
 
+    if not VENV_PY.exists():
+        print("[WARN] Repo-local .venv not found.")
+        print("       Run: ./setup.sh")
+        print("       (or: python -m venv .venv && .venv/bin/python -m pip install -r requirements.txt)")
+        print()
+
     if args.gen_rush:
         cmd = ["--gen-rush"]
-        if args.hud: cmd.append("--hud")
-        if args.dry_run: cmd.append("--dry-run")
-        if args.no_require_lmb: cmd.append("--no-require-lmb")
+        if args.hud:
+            cmd.append("--hud")
+        if args.dry_run:
+            cmd.append("--dry-run")
+        if args.no_require_lmb:
+            cmd.append("--no-require-lmb")
         return _bot(*(cmd + unknown))
 
     print("==================================================")
@@ -50,9 +62,12 @@ def main() -> int:
             break
         print("Введи число от 1 до 5.")
 
-    if choice == "1": return _bot("--gen-rush")
-    if choice == "2": return _bot("--gen-rush", "--hud")
-    if choice == "3": return _bot("--gen-rush", "--dry-run")
+    if choice == "1":
+        return _bot("--gen-rush")
+    if choice == "2":
+        return _bot("--gen-rush", "--hud")
+    if choice == "3":
+        return _bot("--gen-rush", "--dry-run")
     if choice == "4":
         return subprocess.run([PYTHON_BIN, str(ROOT / "tools" / "preflight.py")], cwd=ROOT).returncode
     return subprocess.run([PYTHON_BIN, "-m", "pytest", "-q"], cwd=ROOT).returncode
