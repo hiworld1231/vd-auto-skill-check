@@ -2,7 +2,7 @@
 import unittest
 
 from core.continuous_predictor import ContinuousAngularPredictor
-from core.predictor import STATE_LOCKED
+from core.continuous_predictor import STATE_LOCKED
 
 
 class TestContinuousGenRush(unittest.TestCase):

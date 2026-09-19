@@ -14,16 +14,15 @@ TEMPLATE_PATH = ROOT / "space_template.png"
 
 
 def load_space_template() -> np.ndarray:
-    if not TEMPLATE_PATH.exists():
-        scratch_template = Path(
-            "/home/oae/.gemini/antigravity/brain/7ae406cc-d8eb-49cc-8959-fe1a4cf97b09/scratch/space_template.png"
+    if not TEMPLATE_PATH.is_file():
+        raise FileNotFoundError(
+            f"Required detector template is missing: {TEMPLATE_PATH}. "
+            "Restore space_template.png next to skillcheck_bot.py."
         )
-        if scratch_template.exists():
-            import shutil
-            shutil.copy(str(scratch_template), str(TEMPLATE_PATH))
-    if not TEMPLATE_PATH.exists():
-        raise FileNotFoundError(f"Space template not found at {TEMPLATE_PATH}")
-    return cv2.imread(str(TEMPLATE_PATH), cv2.IMREAD_GRAYSCALE)
+    image = cv2.imread(str(TEMPLATE_PATH), cv2.IMREAD_GRAYSCALE)
+    if image is None or image.size == 0:
+        raise RuntimeError(f"Detector template is unreadable/corrupt: {TEMPLATE_PATH}")
+    return image
 
 
 SPACE_TEMPLATE = load_space_template()

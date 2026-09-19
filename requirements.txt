@@ -1,0 +1,8 @@
+numpy>=1.26
+opencv-python-headless>=4.8
+rich>=13.7
+mss>=9.0
+evdev>=1.7
+pytest>=8.0
+# Optional X11 fallback only; production Wayland path is evdev/UInput.
+# pynput>=1.7
