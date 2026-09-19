@@ -67,7 +67,19 @@ class OutcomeObserver:
         if no_fire_reason:
             return {"outcome": "NO_FIRE", "no_fire_reason": no_fire_reason, "plateau_found": False,
                     "hit_angle": None, "target_angle": self.target_angle}
-        hit = self._find_plateau(bool(frenzy_transition))
+        if frenzy_transition:
+            # In Violence District Frenzy the needle can continue moving directly
+            # into the next generation after Space; there is no normal freeze
+            # plateau to classify.  Report the lifecycle transition honestly
+            # instead of manufacturing UNCONFIRMED/MISS geometry.
+            return {
+                "outcome": "FRENZY_TRANSITION",
+                "plateau_found": False,
+                "hit_angle": None,
+                "target_angle": self.target_angle,
+                "frenzy_transition": True,
+            }
+        hit = self._find_plateau(False)
         if hit is None:
             return {"outcome": "UNCONFIRMED", "plateau_found": False, "hit_angle": None,
                     "target_angle": self.target_angle}
