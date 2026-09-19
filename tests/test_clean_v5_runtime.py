@@ -51,6 +51,17 @@ class CleanV5Tests(unittest.TestCase):
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GREAT")
 
+    def test_frenzy_transition_is_not_reported_as_unconfirmed(self):
+        o = OutcomeObserver(60)
+        w = {"start": 20.0, "end": 30.0, "center": 25.0, "width": 10.0, "source": "MEASURED"}
+        b = {"start": 30.0, "end": 70.0, "center": 50.0, "width": 40.0, "source": "MEASURED"}
+        o.on_trigger(1.0, 25.0, 300.0, w, b, used_latency_ms=60)
+        for t, a in [(1.02, 18.0), (1.04, 24.0), (1.06, 30.0), (1.08, 36.0)]:
+            o.observe_sample(t, a, 30)
+        result = o.conclude_check(frenzy_transition=True)
+        self.assertEqual(result["outcome"], "FRENZY_TRANSITION")
+        self.assertFalse(result["plateau_found"])
+
     def test_recorder_drains(self):
         import numpy as np
         with tempfile.TemporaryDirectory() as td:
