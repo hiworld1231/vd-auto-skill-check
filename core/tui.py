@@ -47,7 +47,8 @@ class SkillCheckTUI:
         total = sum(self.counts.values())
         self.log(
             f"SESSION: total={total} GREAT={self.counts['GREAT']} GOOD={self.counts['GOOD']} "
-            f"MISS={self.counts['MISS']} UNCONF={self.counts['UNCONFIRMED']} NO_FIRE={self.counts['NO_FIRE']}"
+            f"MISS={self.counts['MISS']} FRENZY={self.counts['FRENZY_TRANSITION']} "
+            f"UNCONF={self.counts['UNCONFIRMED']} NO_FIRE={self.counts['NO_FIRE']}"
         )
 
     close = finish
