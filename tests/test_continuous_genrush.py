@@ -130,6 +130,21 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertGreater(pred["time_to_hit_ms"], 84.0)
         self.assertLess(pred["time_to_hit_ms"], 90.0)
 
+    def test_replay6_three_point_1k_track_is_provisionally_slowed(self):
+        p = ContinuousAngularPredictor(80.255536, session_base_speed=278.0)
+        w = {"start": 78.0, "end": 88.0, "center": 83.0, "width": 10.0}
+        b = {"start": 89.0, "end": 131.0, "center": 110.0, "width": 42.0}
+        for t, a in [(0.0000, 324.4), (0.0120, 337.2), (0.0242, 350.17)]:
+            p.update(t, a, 80.0, w, b)
+        self.assertTrue(p.has_usable_speed())
+        self.assertGreater(p.speed_deg_s, 1000.0)
+        used = p.get_actuation_speed()
+        self.assertAlmostEqual(used, p.speed_deg_s * 0.85, delta=1.0)
+        self.assertEqual(
+            p.get_shadow_telemetry()["actuation_speed_reason"],
+            "HIGH_SPEED_PROVISIONAL_85PCT",
+        )
+
     def test_short_check_never_substitutes_base_prior(self):
         p = ContinuousAngularPredictor(100.0, session_base_speed=278.0)
         w = {"start": 300.0, "end": 310.0, "center": 305.0, "width": 10.0}
