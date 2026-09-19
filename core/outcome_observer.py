@@ -127,6 +127,14 @@ class OutcomeObserver:
             hit, float(white["start"]), float(white["end"]), 0.0, 0.0
         ):
             outcome = "GREAT"
+        elif white and black and is_angle_in_arc(
+            hit, float(white["end"]), float(black["end"]), 0.0, 0.0
+        ):
+            # CV masks leave a 1-7 degree segmentation gap between the visible
+            # white GREAT arc and the following black GOOD arc.  Physically this
+            # is one continuous success sector, so do not manufacture MISSes in
+            # the mask gap.
+            outcome = "GOOD"
         elif black and is_angle_in_arc(
             hit, float(black["start"]), float(black["end"]), 0.0, 0.0
         ):
