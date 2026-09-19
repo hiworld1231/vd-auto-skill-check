@@ -89,6 +89,9 @@ class ContinuousAngularPredictor:
         self._fit_sample_count = 0
         self._last_fit_speed_spread = 0.0
         self._short_speed_shadow: Optional[float] = None
+        self._segment_speeds: Deque[float] = collections.deque(maxlen=7)
+        self._actuation_speed: Optional[float] = None
+        self._actuation_speed_reason = "ROBUST_LONG_FIT"
 
     @staticmethod
     def _signed_step(current: float, previous: float) -> float:
@@ -198,6 +201,15 @@ class ContinuousAngularPredictor:
         if step > max_forward_step:
             return False
 
+        # Keep a second, deliberately local estimator made only from adjacent
+        # accepted unique-frame segments.  It is not used on the normal path.
+        # At very high speed, occasional detector jumps/skipped source frames can
+        # make the all-pairs fit temporarily optimistic even though the fit's own
+        # spread telemetry says it is unstable.
+        segment_speed = step / dt
+        if 20.0 <= segment_speed <= 1500.0:
+            self._segment_speeds.append(float(segment_speed))
+
         prev_unwrapped = self._unwrapped[-1][1]
         unwrapped_angle = prev_unwrapped + step
         self.history.append((t, angle))
@@ -255,7 +267,50 @@ class ContinuousAngularPredictor:
         self.locked_speed = self.speed_deg_s
         return True
 
+    def get_actuation_speed(self) -> float:
+        """Speed used for target timing.
+
+        The robust all-pairs fit remains authoritative while stable.  When a
+        very fast track is explicitly unstable, bias toward the slower local
+        segment median.  Violence District's success arc trails the GREAT zone,
+        so under uncertainty a small late bias is safer than an early landing.
+        The correction is bounded to 20% and never affects normal stable checks.
+        """
+        raw = float(self.speed_deg_s)
+        local = (
+            float(statistics.median(list(self._segment_speeds)[-5:]))
+            if len(self._segment_speeds) >= 3
+            else None
+        )
+        short_delta = (
+            None if self._short_speed_shadow is None
+            else float(self._short_speed_shadow) - raw
+        )
+        unstable = (
+            self._last_fit_speed_spread > max(60.0, 0.08 * abs(raw))
+            or (short_delta is not None and abs(short_delta) > 60.0)
+        )
+        chosen = raw
+        reason = "ROBUST_LONG_FIT"
+        if raw >= 750.0 and unstable and local is not None and math.isfinite(local):
+            # Never speed the prediction up on an uncertain track.  The failure
+            # mode we can make safe is an optimistic speed estimate (early MISS);
+            # the trailing GOOD arc gives substantially more late margin.
+            chosen = max(0.80 * raw, min(raw, local))
+            if chosen < raw - 1e-6:
+                reason = "HIGH_SPEED_CONSERVATIVE_LOCAL"
+
+        self._actuation_speed = float(chosen)
+        self._actuation_speed_reason = reason
+        return float(chosen)
+
     def get_shadow_telemetry(self) -> Dict[str, Any]:
+        actuation_speed = self.get_actuation_speed()
+        segment_median = (
+            float(statistics.median(list(self._segment_speeds)[-5:]))
+            if len(self._segment_speeds) >= 3
+            else None
+        )
         return {
             "speed_mode": SPEED_MODE_GEN_RUSH,
             "configured_speed_mode": SPEED_MODE_GEN_RUSH,
@@ -263,7 +318,10 @@ class ContinuousAngularPredictor:
             "session_base_speed": self.session_base_speed,
             "live_speed": self.shadow_live_speed,
             "live_vs_prior_delta": self.shadow_live_speed - self.session_base_speed,
-            "prediction_speed_used": self.speed_deg_s,
+            "prediction_speed_used": actuation_speed,
+            "raw_fit_speed": self.speed_deg_s,
+            "segment_speed_median": segment_median,
+            "actuation_speed_reason": self._actuation_speed_reason,
             "live_fit_spread": self._last_fit_speed_spread,
             "fit_residual_mad_deg": self._fit_residual_mad_deg,
             "fit_span_ms": self._fit_span_s * 1000.0,
@@ -295,7 +353,7 @@ class ContinuousAngularPredictor:
         else:
             return None
 
-        speed = float(self.speed_deg_s)
+        speed = float(self.get_actuation_speed())
         if not math.isfinite(speed) or speed < 20.0:
             return None
 
@@ -369,6 +427,8 @@ class ContinuousAngularPredictor:
             "target": target,
             "target_angle": target_angle,
             "speed_deg_s": speed,
+            "raw_fit_speed_deg_s": float(self.speed_deg_s),
+            "actuation_speed_reason": self._actuation_speed_reason,
             "angular_distance_deg": angular_dist,
             "time_to_hit_ms": time_to_hit_s * 1000.0,
             "press_timestamp": press_timestamp,
