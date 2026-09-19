@@ -20,7 +20,26 @@ PYTHON_BIN = str(VENV_PY) if VENV_PY.exists() else sys.executable
 
 
 def _bot(*args: str) -> int:
-    return subprocess.run([PYTHON_BIN, str(ROOT / "skillcheck_bot.py"), *args], cwd=ROOT).returncode
+    proc = subprocess.Popen(
+        [PYTHON_BIN, str(ROOT / "skillcheck_bot.py"), *args],
+        cwd=ROOT,
+    )
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        # The child is in the same foreground process group, so it receives
+        # Ctrl+C too. Give it a moment to flush session/recorder shutdown and
+        # avoid printing a second traceback from this launcher.
+        try:
+            return proc.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                return proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                return 130
 
 
 def main() -> int:
