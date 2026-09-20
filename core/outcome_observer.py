@@ -84,6 +84,10 @@ class OutcomeObserver:
             return hit, response_ms
         return None
 
+    def has_plateau(self) -> bool:
+        """Return whether a trustworthy post-fire freeze is already visible."""
+        return self._find_plateau() is not None
+
     def conclude_check(
         self,
         frenzy_transition: bool = False,
