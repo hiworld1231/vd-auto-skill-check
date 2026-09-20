@@ -89,6 +89,22 @@ class CleanV5Tests(unittest.TestCase):
             self.assertEqual(len(list(Path(td).glob("check_*.json"))), 1)
 
 
+    def test_recorder_persists_session_metadata(self):
+        import json
+        with tempfile.TemporaryDirectory() as td:
+            r = FlightRecorder(
+                Path(td),
+                save_diagnostic_strip=False,
+                session_meta={"session_id": "abc", "build_git_sha": "deadbeef"},
+            )
+            t = time.monotonic()
+            r.start_check(t, latency_ms=60)
+            r.end_check(t + .1, {"outcome": "GREAT"})
+            r.close()
+            payload = json.loads(next(Path(td).glob("check_*.json")).read_text())
+            self.assertEqual(payload["session"]["session_id"], "abc")
+            self.assertEqual(payload["session"]["build_git_sha"], "deadbeef")
+
     def test_recorder_keeps_great_json_without_record_all(self):
         import numpy as np
         with tempfile.TemporaryDirectory() as td:
