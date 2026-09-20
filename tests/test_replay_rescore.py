@@ -46,6 +46,11 @@ class ReplayRescoreTests(unittest.TestCase):
                 "scheduler_jitter_ms": 0.1,
                 "effective_dispatch_lead_ms": 90.0,
                 "center_error_ms": 5.0,
+                "landing_uncertainty_width_deg": 3.0,
+                "delivery_uncertainty_ms": 2.5,
+                "fire_policy_reason": "GREAT_INTERVAL_SAFE",
+                "fire_policy_best_effort": False,
+                "white_source_at_fire": "MEASURED",
                 "fit_telemetry": {
                     "fit_sample_count": 8,
                     "fit_residual_mad_deg": 0.5,
@@ -60,6 +65,70 @@ class ReplayRescoreTests(unittest.TestCase):
             result = analyze([p])
         self.assertEqual(result["trusted_ideal_lead_samples"], 1)
         self.assertAlmostEqual(result["trusted_ideal_lead_median_ms"], 95.0)
+        val = result["validation"]
+        self.assertEqual(val["confirmed_fired_checks"], 1)
+        self.assertAlmostEqual(val["great_rate_confirmed"], 1.0)
+        self.assertAlmostEqual(val["center_error_ms"]["median"], 5.0)
+        self.assertAlmostEqual(
+            val["physical_keydown_residual_ms"]["median"], 0.1
+        )
+        self.assertAlmostEqual(
+            val["landing_uncertainty_width_deg"]["median"], 3.0
+        )
+        self.assertAlmostEqual(
+            val["delivery_uncertainty_ms"]["median"], 2.5
+        )
+        self.assertEqual(
+            val["fire_policy_reasons"], {"GREAT_INTERVAL_SAFE": 1}
+        )
+        self.assertEqual(val["geometry_sources"], {"MEASURED": 1})
+
+
+    def test_validation_counts_best_effort_and_no_fire_reasons(self):
+        docs = [
+            {
+                "check_id": "best_effort",
+                "chain_count": 1,
+                "frames": [],
+                "outcome_info": {
+                    "outcome": "GOOD",
+                    "center_error_ms": 8.0,
+                    "scheduler_jitter_ms": -0.4,
+                    "landing_uncertainty_width_deg": 7.0,
+                    "delivery_uncertainty_ms": 3.5,
+                    "fire_policy_reason": "RECONSTRUCTED_GREAT_STABLE_FIT",
+                    "fire_policy_best_effort": True,
+                    "white_source_at_fire": "RECONSTRUCTED_FROM_BLACK",
+                },
+            },
+            {
+                "check_id": "no_fire",
+                "chain_count": 1,
+                "frames": [],
+                "outcome_info": {
+                    "outcome": "NO_FIRE",
+                    "no_fire_reason": "GREAT_GEOMETRY_UNTRUSTED",
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            paths = []
+            for i, doc in enumerate(docs):
+                p = Path(td) / f"check_{i}.json"
+                p.write_text(json.dumps(doc), encoding="utf-8")
+                paths.append(p)
+            result = analyze(paths)
+
+        val = result["validation"]
+        self.assertEqual(val["confirmed_fired_checks"], 1)
+        self.assertEqual(val["best_effort_fires"], 1)
+        self.assertEqual(val["best_effort_outcomes"], {"GOOD": 1})
+        self.assertEqual(
+            val["geometry_sources"], {"RECONSTRUCTED_FROM_BLACK": 1}
+        )
+        self.assertEqual(
+            val["no_fire_reasons"], {"GREAT_GEOMETRY_UNTRUSTED": 1}
+        )
 
 
 if __name__ == "__main__":
