@@ -88,26 +88,47 @@ class HybridDetector(BaseDetector):
         self.frame_count_in_check = 0
 
     def _check_presence(self, frame_bgr: np.ndarray, frame_gray: Optional[np.ndarray]) -> Tuple[bool, float, float, float]:
+        """Fast NCC presence check centered on the *measured* ring geometry.
+
+        Baseline can move cx/cy a few pixels away from the nominal calibration.
+        The old implementation rebuilt the ray tables but kept checking a fixed
+        template box around the nominal center, causing false ring-loss resets.
         """
-        Fast 1-position NCC ring presence check with tight-crop fallback.
-        """
+        th, tw = SPACE_TEMPLATE.shape
+        x0 = int(round(self.cx - tw / 2.0))
+        y0 = int(round(self.cy - th / 2.0))
+        x1, y1 = x0 + tw, y0 + th
+        h, w = frame_bgr.shape[:2]
+        if x0 < 0 or y0 < 0 or x1 > w or y1 > h:
+            return False, 0.0, self.cx, self.cy
+
         if frame_gray is None:
-            patch = frame_bgr[self.geo.tpl_y0:self.geo.tpl_y1, self.geo.tpl_x0:self.geo.tpl_x1, 1].astype(np.float32)
+            patch = frame_bgr[y0:y1, x0:x1, 1].astype(np.float32)
         else:
-            patch = frame_gray[self.geo.tpl_y0:self.geo.tpl_y1, self.geo.tpl_x0:self.geo.tpl_x1].astype(np.float32)
+            patch = frame_gray[y0:y1, x0:x1].astype(np.float32)
 
         patch_norm = patch - np.mean(patch)
         p_std = float(np.linalg.norm(patch_norm))
-        score = float(np.sum(patch_norm * self.tpl_norm) / (p_std * self.tpl_std)) if p_std > 1e-5 else 0.0
-
+        score = (
+            float(np.sum(patch_norm * self.tpl_norm) / (p_std * self.tpl_std))
+            if p_std > 1e-5
+            else 0.0
+        )
         if score >= 0.80:
             return True, score, self.cx, self.cy
 
-        if score >= 0.65:
-            if frame_gray is None:
-                crop = frame_bgr[141:184, 121:199, 1]
-            else:
-                crop = frame_gray[141:184, 121:199]
+        # Small local search around the measured center handles sub-pixel/template
+        # centering differences without falling back to a full-frame scan.
+        margin = 6
+        sx0 = max(0, x0 - margin)
+        sy0 = max(0, y0 - margin)
+        sx1 = min(w, x1 + margin)
+        sy1 = min(h, y1 + margin)
+        if frame_gray is None:
+            crop = frame_bgr[sy0:sy1, sx0:sx1, 1]
+        else:
+            crop = frame_gray[sy0:sy1, sx0:sx1]
+        if crop.shape[0] >= th and crop.shape[1] >= tw:
             res = cv2.matchTemplate(crop, SPACE_TEMPLATE, cv2.TM_CCOEFF_NORMED)
             _, max_v, _, _ = cv2.minMaxLoc(res)
             if max_v >= 0.80:
@@ -158,14 +179,23 @@ class HybridDetector(BaseDetector):
         dt_frame: float = 1.0 / 120.0,
         expected_speed: float = 278.0,
         locked_zones: Optional[Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]] = None,
+        skip_presence_check: bool = False,
     ) -> Optional[Dict[str, Any]]:
         t0 = time.perf_counter()
 
-        # 1. Ring presence check
-        present, conf, cx, cy = self._check_presence(frame_bgr, frame_gray)
-        if not present:
-            self.reset()
-            return None
+        # 1. Ring presence check.  Post-fire tracking may deliberately bypass
+        # the SPACE-prompt presence test for a short continuity window because
+        # the prompt itself can disappear before the needle freeze is observable.
+        if skip_presence_check:
+            present, conf, cx, cy = True, 1.0, self.cx, self.cy
+        else:
+            present, conf, cx, cy = self._check_presence(frame_bgr, frame_gray)
+            if not present:
+                # Do not destroy last_angle/last_t on one transport/render miss.
+                # VisionEngine decides when a sustained dual-detector absence is
+                # enough evidence to reset the whole check.
+                self.consecutive_losses += 1
+                return None
 
         self.frame_count_in_check += 1
         now = time.monotonic()
