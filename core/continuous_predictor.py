@@ -23,7 +23,10 @@ SPEED_MODE_GEN_RUSH = "GEN_RUSH_CONTINUOUS"
 STATE_NO_MOTION = "NO_MOTION"
 STATE_PROVISIONAL = "PROVISIONAL"
 STATE_LOCKED = "LOCKED"
-STATE_COMMITTED = "COMMITTED"
+STATE_COMMITTED = "COMMITTED"  # compatibility label; not a fit-quality state
+FIRE_TRACKING = "TRACKING"
+FIRE_ARMED = "ARMED"
+FIRE_FIRED = "FIRED"
 
 
 class ContinuousAngularPredictor:
@@ -92,6 +95,7 @@ class ContinuousAngularPredictor:
         self._segment_speeds: Deque[float] = collections.deque(maxlen=7)
         self._actuation_speed: Optional[float] = None
         self._actuation_speed_reason = "ROBUST_LONG_FIT"
+        self.fire_state = FIRE_TRACKING
 
     @staticmethod
     def _signed_step(current: float, previous: float) -> float:
@@ -241,8 +245,9 @@ class ContinuousAngularPredictor:
         )
 
     def has_stable_speed(self) -> bool:
-        if self.state in (STATE_LOCKED, STATE_COMMITTED):
-            return True
+        # Fit quality must be evaluated from the current samples on every frame.
+        # Being ARMED/COMMITTED is a scheduler state, not proof that a newer fit
+        # is still trustworthy.
         if not self.has_usable_speed():
             return False
         # Moonlight's real-match data shows short tracks are the dominant miss
@@ -266,6 +271,12 @@ class ContinuousAngularPredictor:
         self.state = STATE_LOCKED
         self.locked_speed = self.speed_deg_s
         return True
+
+    def mark_committed(self) -> None:
+        self.fire_state = FIRE_ARMED
+
+    def mark_fired(self) -> None:
+        self.fire_state = FIRE_FIRED
 
     def get_actuation_speed(self) -> float:
         """Speed used for target timing.
@@ -329,6 +340,8 @@ class ContinuousAngularPredictor:
             "raw_fit_speed": self.speed_deg_s,
             "segment_speed_median": segment_median,
             "actuation_speed_reason": self._actuation_speed_reason,
+            "fit_quality_state": self.state,
+            "fire_state": self.fire_state,
             "live_fit_spread": self._last_fit_speed_spread,
             "fit_residual_mad_deg": self._fit_residual_mad_deg,
             "fit_span_ms": self._fit_span_s * 1000.0,
@@ -442,7 +455,9 @@ class ContinuousAngularPredictor:
             "time_until_press_ms": (press_timestamp - current_t) * 1000.0,
             "should_press_now": should_press_now,
             "state": self.state,
-            "is_locked": self.state in (STATE_LOCKED, STATE_COMMITTED),
+            "fit_quality_state": self.state,
+            "fire_state": self.fire_state,
+            "is_locked": self.state == STATE_LOCKED,
             "continuous_tracking": True,
             "reactive_safe_fallback": reactive_safe,
             "target_passed": passed_target,
