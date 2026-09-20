@@ -292,48 +292,38 @@ class ContinuousAngularPredictor:
     def mark_committed(self) -> None:
         self.fire_state = FIRE_ARMED
 
+    def mark_tracking(self) -> None:
+        self.fire_state = FIRE_TRACKING
+
     def mark_fired(self) -> None:
         self.fire_state = FIRE_FIRED
 
     def get_actuation_speed(self) -> float:
-        """Speed used for target timing.
+        """Return the robust central speed estimate used for GREAT-center timing.
 
-        The robust all-pairs fit remains authoritative while stable.  When a
-        very fast track is explicitly unstable, bias toward the slower local
-        segment median.  Violence District's success arc trails the GREAT zone,
-        so under uncertainty a small late bias is safer than an early landing.
-        The correction is bounded to 20% and never affects normal stable checks.
+        High-speed magic multipliers are intentionally absent.  The previous
+        0.85/0.80 rules introduced a systematic late bias, which is useful for
+        merely avoiding MISS but fights the actual objective: landing near the
+        middle of the white GREAT zone.  Uncertainty is handled explicitly by
+        the landing envelope in predict(), not by changing the measured speed.
         """
         raw = float(self.speed_deg_s)
-        local = (
-            float(statistics.median(list(self._segment_speeds)[-5:]))
-            if len(self._segment_speeds) >= 3
-            else None
-        )
-        short_delta = (
-            None if self._short_speed_shadow is None
-            else float(self._short_speed_shadow) - raw
-        )
-        short_track = self._fit_sample_count < 5 or self._fit_span_s < 0.045
-        unstable = (
-            short_track
-            or self._last_fit_speed_spread > max(60.0, 0.08 * abs(raw))
-            or (short_delta is not None and abs(short_delta) > 60.0)
-        )
-        chosen = raw
-        reason = "ROBUST_LONG_FIT"
-        if raw >= 750.0 and unstable:
-            # Never speed the prediction up on an uncertain track.  If a local
-            # adjacent-segment median exists, prefer it.  Otherwise a very short
-            # 3-4 point fit gets a bounded 15% slowdown.  That buys another
-            # capture frame or two before the deadline and avoids committing on
-            # the first optimistic >1k deg/s estimate.
-            if local is not None and math.isfinite(local):
-                chosen = max(0.80 * raw, min(raw, local))
-                reason = "HIGH_SPEED_CONSERVATIVE_LOCAL"
-            elif short_track:
-                chosen = 0.85 * raw
-                reason = "HIGH_SPEED_PROVISIONAL_85PCT"
+        low = self._speed_uncertainty_low
+        high = self._speed_uncertainty_high
+        if (
+            low is not None
+            and high is not None
+            and math.isfinite(float(low))
+            and math.isfinite(float(high))
+        ):
+            chosen = 0.5 * (float(low) + float(high))
+            # Normally the envelope is symmetric around the Theil-Sen median,
+            # so this equals raw.  Clipping at physical bounds remains unbiased
+            # with respect to the surviving interval.
+            reason = "UNCERTAINTY_MIDPOINT"
+        else:
+            chosen = raw
+            reason = "ROBUST_MEDIAN"
 
         self._actuation_speed = float(chosen)
         self._actuation_speed_reason = reason
@@ -475,8 +465,47 @@ class ContinuousAngularPredictor:
             if not passed_target else 0.0
         )
         white_window_ms = None
+        great_interval_safe = False
+        great_interval_intersects = False
+        landing_low_u = expected_landing_u
+        landing_high_u = expected_landing_u
+        great_start_u = None
+        great_end_u = None
+
         if white_zone and white_zone.get("width") is not None:
-            white_window_ms = float(white_zone["width"]) / max(speed, 20.0) * 1000.0
+            white_width = float(white_zone["width"])
+            white_window_ms = white_width / max(speed, 20.0) * 1000.0
+
+            # Use the measured center/width pair as one continuous unwrapped
+            # interval.  It is more robust around 359°->0° than comparing the
+            # raw circular endpoints independently.
+            great_start_u = target_u - 0.5 * white_width
+            great_end_u = target_u + 0.5 * white_width
+
+            # If the key is scheduled, landing occurs time_to_hit_s from this
+            # frame.  If the deadline is already due, the earliest possible
+            # landing is one delivery-lead later.
+            landing_horizon_s = (
+                self.latency_s
+                if passed_target or press_timestamp <= current_t
+                else max(self.latency_s, time_to_hit_s)
+            )
+            landing_low_u = current_u + speed_low * landing_horizon_s
+            landing_high_u = current_u + speed_high * landing_horizon_s
+            if landing_low_u > landing_high_u:
+                landing_low_u, landing_high_u = landing_high_u, landing_low_u
+
+            # Reserve a sub-degree segmentation margin so a mathematically
+            # boundary-touching prediction is not called "safe".
+            margin = min(1.0, max(0.35, 0.08 * white_width))
+            great_interval_safe = (
+                landing_low_u >= great_start_u + margin
+                and landing_high_u <= great_end_u - margin
+            )
+            great_interval_intersects = (
+                landing_high_u >= great_start_u
+                and landing_low_u <= great_end_u
+            )
 
         return {
             "target": target,
@@ -490,6 +519,12 @@ class ContinuousAngularPredictor:
             "crossing_latest_ms": crossing_latest_ms,
             "crossing_uncertainty_ms": max(0.0, crossing_latest_ms - crossing_earliest_ms),
             "white_window_ms": white_window_ms,
+            "landing_uncertainty_low_angle": landing_low_u % 360.0,
+            "landing_uncertainty_high_angle": landing_high_u % 360.0,
+            "landing_uncertainty_width_deg": max(0.0, landing_high_u - landing_low_u),
+            "great_interval_safe": bool(great_interval_safe),
+            "great_interval_intersects": bool(great_interval_intersects),
+            "speed_uncertainty_reliable": self._fit_sample_count >= 5,
             "press_timestamp": press_timestamp,
             "time_until_press_ms": (press_timestamp - current_t) * 1000.0,
             "should_press_now": should_press_now,
