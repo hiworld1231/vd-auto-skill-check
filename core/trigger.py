@@ -126,6 +126,7 @@ class PreciseTriggerScheduler:
         self._deadline: Optional[float] = None
         self._reason = "SCHEDULED"
         self._desired: Optional[float] = None
+        self._dispatch_token = None
         self._generation = 0
         self._armed = True
         self._running = True
@@ -140,9 +141,16 @@ class PreciseTriggerScheduler:
         with self._cv:
             self._generation += 1
             self._deadline = None
+            self._dispatch_token = None
             self._cv.notify_all()
 
-    def schedule(self, when: float, reason: str = "SCHEDULED", desired_press_time: Optional[float] = None) -> None:
+    def schedule(
+        self,
+        when: float,
+        reason: str = "SCHEDULED",
+        desired_press_time: Optional[float] = None,
+        dispatch_token=None,
+    ) -> None:
         with self._cv:
             if not self._armed:
                 return
@@ -150,9 +158,15 @@ class PreciseTriggerScheduler:
             self._deadline = float(when)
             self._reason = reason
             self._desired = float(desired_press_time if desired_press_time is not None else when)
+            self._dispatch_token = dispatch_token
             self._cv.notify_all()
 
-    def trigger_now(self, reason: str = "IMMEDIATE", desired_press_time: Optional[float] = None) -> None:
+    def trigger_now(
+        self,
+        reason: str = "IMMEDIATE",
+        desired_press_time: Optional[float] = None,
+        dispatch_token=None,
+    ) -> None:
         with self._cv:
             if not self._armed:
                 return
@@ -165,6 +179,7 @@ class PreciseTriggerScheduler:
             desired_press_time=desired_press_time,
             scheduler_dispatch_target=now,
             callback_entry_time=now,
+            scheduler_token=dispatch_token,
         )
 
     def _worker(self) -> None:
@@ -177,6 +192,7 @@ class PreciseTriggerScheduler:
                 deadline = self._deadline
                 reason = self._reason
                 desired = self._desired
+                dispatch_token = self._dispatch_token
                 gen = self._generation
             while True:
                 with self._cv:
@@ -197,6 +213,7 @@ class PreciseTriggerScheduler:
                         desired_press_time=desired,
                         scheduler_dispatch_target=deadline,
                         callback_entry_time=entry,
+                        scheduler_token=dispatch_token,
                     )
                     break
                 if remain > self.spin_window_s:
@@ -208,5 +225,6 @@ class PreciseTriggerScheduler:
         with self._cv:
             self._running = False
             self._deadline = None
+            self._dispatch_token = None
             self._cv.notify_all()
         self._thread.join(timeout=1.0)
