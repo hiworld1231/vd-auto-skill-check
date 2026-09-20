@@ -16,6 +16,7 @@ from core.detectors.base import (
     TEMPLATE_W,
     parabolic_peak,
     extract_zones_from_masks,
+    refine_zone_from_score,
 )
 
 
@@ -114,6 +115,23 @@ class BaselineDetector(BaseDetector):
 
         is_needle_valid = needle_strength >= 15.0 and not outside_expected_window
         w_d, b_d = extract_zones_from_masks(white_mask, black_mask)
+
+        white_primary = np.minimum.reduce(
+            [
+                r66_val - th_white,
+                r66_r - 150.0,
+                r66_g - 150.0,
+                r66_b - 150.0,
+            ]
+        )
+        white_score = np.maximum(white_primary, r66_val - 185.0)
+        black_score = th_black - r66_val
+        w_d = refine_zone_from_score(
+            w_d, white_score, min_width=5.0, max_width=16.0
+        )
+        b_d = refine_zone_from_score(
+            b_d, black_score, min_width=18.0, max_width=65.0
+        )
 
         t1 = time.perf_counter()
         det_time_ms = (t1 - t0) * 1000.0
