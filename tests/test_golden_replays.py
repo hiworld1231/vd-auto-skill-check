@@ -50,6 +50,8 @@ class GoldenReplayTests(unittest.TestCase):
                         ring_present=step["ring_present"],
                         plateau_found=step["plateau_found"],
                         zone_moved=step.get("zone_moved", False),
+                        zone_center=step.get("zone_center"),
+                        reappearance_proof=step.get("reappearance_proof", False),
                         rollback=step.get("rollback", False),
                         fresh_motion=step.get("fresh_motion", False),
                     )
