@@ -170,6 +170,72 @@ class HybridDetector(BaseDetector):
         )
         return w_d, b_d, white_mask, black_mask, r66_val
 
+    def scan_generation_candidate(
+        self,
+        frame_bgr: np.ndarray,
+    ) -> Optional[Dict[str, Any]]:
+        """Scan the known ring center for a fresh Frenzy generation.
+
+        This path deliberately does not use the SPACE prompt template and does
+        not mutate continuity tracking state.  Post-fire HYBRID can therefore
+        keep following the previous generation for landing evidence while this
+        independent full-ring scan looks for relocated GREAT/GOOD geometry and
+        the next generation's red needle at the already calibrated center.
+        """
+        if frame_bgr is None:
+            return None
+        frame_flat = frame_bgr.reshape(-1, 3)
+        w_fresh, b_fresh, _wm, _bm, _r66 = self._extract_fresh_zones(frame_flat)
+
+        w_valid = bool(
+            w_fresh is not None
+            and 5.0 <= float(w_fresh.get("width", 0.0)) <= 16.0
+        )
+        b_valid = bool(
+            b_fresh is not None
+            and 18.0 <= float(b_fresh.get("width", 0.0)) <= 65.0
+        )
+        if not (w_valid or b_valid):
+            return None
+
+        if w_valid:
+            w_fresh = dict(w_fresh)
+            w_fresh.setdefault("source", "MEASURED_FIXED_CENTER")
+        else:
+            w_fresh = None
+        if b_valid:
+            b_fresh = dict(b_fresh)
+            b_fresh.setdefault("source", "MEASURED_FIXED_CENTER")
+        else:
+            b_fresh = None
+
+        samples = frame_flat[self.needle_indices_1d].astype(np.float32)
+        redness = np.maximum(
+            0.0,
+            samples[:, :, 2] - np.maximum(samples[:, :, 1], samples[:, :, 0]),
+        )
+        red_prof = np.mean(redness, axis=1)
+        peak_idx = int(np.argmax(red_prof))
+        needle_strength = float(red_prof[peak_idx])
+        needle_angle = float(parabolic_peak(red_prof, peak_idx) % 360.0)
+        needle_valid = needle_strength >= 15.0
+
+        return {
+            "confidence": 1.0,
+            "cx": float(self.cx),
+            "cy": float(self.cy),
+            "center": (float(self.cx), float(self.cy)),
+            "needle_angle": needle_angle,
+            "needle_strength": needle_strength,
+            "needle_confidence": needle_strength,
+            "needle_valid": needle_valid,
+            "white_zone": w_fresh,
+            "black_zone": b_fresh,
+            "ring_present": True,
+            "detector_name": "HYBRID_FIXED_CENTER_GENERATION_SCAN",
+            "status": "OK" if needle_valid else "ZONE_ONLY",
+        }
+
     def detect(
         self,
         frame_bgr: np.ndarray,
