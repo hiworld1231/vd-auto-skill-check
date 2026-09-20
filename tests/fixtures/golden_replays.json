@@ -107,6 +107,20 @@
           "t": 1.09,
           "ring_present": true,
           "plateau_found": false,
+          "zone_moved": true,
+          "zone_center": 242,
+          "reappearance_proof": true,
+          "fresh_motion": false,
+          "expected": "WAIT"
+        },
+        {
+          "t": 1.11,
+          "ring_present": true,
+          "plateau_found": false,
+          "zone_moved": true,
+          "zone_center": 243,
+          "reappearance_proof": true,
+          "fresh_motion": true,
           "expected": "FRENZY_CONFIRMED"
         }
       ]
