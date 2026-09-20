@@ -292,5 +292,5 @@ class HybridDetector(BaseDetector):
             "ring_present": True,
             "detector_name": self.name,
             "detector_time_ms": det_time_ms,
-            "status": status if is_needle_valid else "LOW_CONFIDENCE",
+            "status": status,
         }
