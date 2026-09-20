@@ -65,6 +65,11 @@ class VisionEngine:
         self.locked_center: Optional[Tuple[float, float]] = None
         self.consecutive_hybrid_losses: int = 0
         self.is_pressed: bool = False
+        # A black-only frame can reconstruct a plausible GREAT arc, but locking
+        # it immediately throws away the chance to measure the real white arc
+        # on the next source frame.  Wait briefly before falling back.
+        self.black_only_acquire_count: int = 0
+        self.black_only_fallback_frames: int = 3
 
         self._configure_backends()
 
@@ -93,6 +98,7 @@ class VisionEngine:
         self.locked_black_zone = None
         self.locked_center = None
         self.consecutive_hybrid_losses = 0
+        self.black_only_acquire_count = 0
         self.is_pressed = False
         if self.baseline_detector is not None:
             self.baseline_detector.reset()
@@ -113,6 +119,7 @@ class VisionEngine:
         self.locked_black_zone = None
         self.locked_center = center
         self.consecutive_hybrid_losses = 0
+        self.black_only_acquire_count = 0
         self.is_pressed = False
         if self.baseline_detector is not None:
             self.baseline_detector.reset()
@@ -228,7 +235,9 @@ class VisionEngine:
             if not (140.0 <= cx <= 180.0 and 142.5 <= cy <= 182.5):
                 return None
 
-            # Confident zone acquisition check
+            # Confident zone acquisition check.  "Valid width" is not the
+            # same as "measured": extract_zones_from_masks can intentionally
+            # reconstruct a 9.5° white arc from a measured black arc.
             w_d = det_base.get("white_zone")
             b_d = det_base.get("black_zone")
             w_valid = (w_d is not None and 5.0 <= w_d.get("width", 0.0) <= 15.0)
@@ -241,25 +250,46 @@ class VisionEngine:
                 b_d = dict(b_d)
                 b_d.setdefault("source", "MEASURED")
 
-            if w_valid or b_valid:
-                if not w_valid and b_valid:
-                    # Conservative reconstruction used only to keep the check playable.
-                    # Downstream learning can reject it through the provenance field.
-                    w_s = (b_d["start"] - 9.5) % 360.0
-                    w_d = {
-                        "start": float(w_s),
-                        "end": float(b_d["start"]),
-                        "width": 9.5,
-                        "center": float((w_s + 4.75) % 360.0),
-                        "source": "RECONSTRUCTED_FROM_BLACK",
-                    }
+            w_measured = bool(
+                w_valid and str(w_d.get("source", "")).startswith("MEASURED")
+            )
 
-                # Confident lock: white zone, black zone, center
+            should_lock = False
+            if w_measured:
+                self.black_only_acquire_count = 0
+                should_lock = True
+            elif b_valid:
+                self.black_only_acquire_count += 1
+                if self.black_only_acquire_count >= self.black_only_fallback_frames:
+                    # A real white measurement never arrived.  Retain the old
+                    # playable reconstruction, but only after giving several
+                    # unique frames a chance to expose the actual GREAT arc.
+                    if not w_valid:
+                        w_s = (b_d["start"] - 9.5) % 360.0
+                        w_d = {
+                            "start": float(w_s),
+                            "end": float(b_d["start"]),
+                            "width": 9.5,
+                            "center": float((w_s + 4.75) % 360.0),
+                            "source": "RECONSTRUCTED_FROM_BLACK",
+                        }
+                    should_lock = True
+                else:
+                    # Do not leak the detector's reconstructed white zone to the
+                    # runtime while acquisition is still waiting; otherwise the
+                    # runtime would start the check before VisionEngine locks it.
+                    det_base["white_zone"] = None
+                    det_base["black_zone"] = b_d
+            else:
+                self.black_only_acquire_count = 0
+
+            if should_lock:
                 self.locked_white_zone = w_d
                 self.locked_black_zone = b_d
                 self.locked_center = (cx, cy)
                 self.state = STATE_ACTIVE_TRACKING
                 self.consecutive_hybrid_losses = 0
+                self.black_only_acquire_count = 0
 
                 # Initialize Hybrid detector state with baseline locked parameters
                 self.hybrid_detector.reset()
