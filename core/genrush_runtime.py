@@ -290,6 +290,7 @@ def run_genrush_clean(
         predictor.set_delivery_lead(
             check_lead,
             lead.get_uncertainty_ms() if lead.initialized else 0.0,
+            dispatch_timing.uncertainty_ms(),
         )
         locked_w = None
         locked_b = None
@@ -303,6 +304,11 @@ def run_genrush_clean(
             chain_count=chain,
             latency_ms=check_lead,
             lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
+            dispatch_uncertainty_ms=dispatch_timing.uncertainty_ms(),
+            delivery_uncertainty_ms=(
+                (lead.get_uncertainty_ms() if lead.initialized else 0.0)
+                + dispatch_timing.uncertainty_ms()
+            ),
             target_mode="GREAT",
             target_ratio=0.5,
         )
@@ -363,6 +369,8 @@ def run_genrush_clean(
                     "landing_uncertainty_width_deg": ctx.get("landing_uncertainty_width_deg"),
                     "crossing_uncertainty_ms": ctx.get("crossing_uncertainty_ms"),
                     "lead_uncertainty_ms": ctx.get("lead_uncertainty_ms"),
+                    "dispatch_uncertainty_ms": ctx.get("dispatch_uncertainty_ms"),
+                    "delivery_uncertainty_ms": ctx.get("delivery_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
                     "dispatch_lag_ms": raw_dispatch_lag_ms,
                     "dispatch_lag_compensation_ms": ctx.get("dispatch_lag_compensation_ms"),
@@ -549,6 +557,8 @@ def run_genrush_clean(
                     landing_uncertainty_width_deg=c.get("landing_uncertainty_width_deg"),
                     crossing_uncertainty_ms=c.get("crossing_uncertainty_ms"),
                     lead_uncertainty_ms=c.get("lead_uncertainty_ms"),
+                    dispatch_uncertainty_ms=c.get("dispatch_uncertainty_ms"),
+                    delivery_uncertainty_ms=c.get("delivery_uncertainty_ms"),
                     dispatch_lag_compensation_ms=c.get("dispatch_lag_compensation_ms"),
                     dispatch_lag_uncertainty_ms=c.get("dispatch_lag_uncertainty_ms"),
                     dispatch_lag_observed_ms=c.get("dispatch_lag_observed_ms"),
@@ -599,6 +609,11 @@ def run_genrush_clean(
                     chain_count=chain,
                     latency_ms=check_lead,
                     lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
+                    dispatch_uncertainty_ms=dispatch_timing.uncertainty_ms(),
+                    delivery_uncertainty_ms=(
+                        (lead.get_uncertainty_ms() if lead.initialized else 0.0)
+                        + dispatch_timing.uncertainty_ms()
+                    ),
                     locked_w=w,
                     locked_b=b,
                 )
@@ -776,6 +791,8 @@ def run_genrush_clean(
                         "landing_uncertainty_width_deg": pred.get("landing_uncertainty_width_deg"),
                         "crossing_uncertainty_ms": pred.get("crossing_uncertainty_ms"),
                         "lead_uncertainty_ms": pred.get("lead_uncertainty_ms"),
+                        "dispatch_uncertainty_ms": pred.get("dispatch_uncertainty_ms"),
+                        "delivery_uncertainty_ms": pred.get("delivery_uncertainty_ms"),
                         "dispatch_lag_compensation_ms": dispatch_timing.compensation_ms(),
                         "dispatch_lag_uncertainty_ms": dispatch_timing.uncertainty_ms(),
                         "dispatch_timing": dispatch_timing.telemetry(),
