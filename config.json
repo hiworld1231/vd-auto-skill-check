@@ -18,5 +18,7 @@
   "lead_calibration_max_age_days": 7,
   "frenzy_lead_ms": 80,
   "frenzy_lead_uncertainty_ms": 0,
-  "prefire_ring_end_absence_ms": 100
+  "prefire_ring_end_absence_ms": 100,
+  "frenzy_relocation_min_deg": 90,
+  "frenzy_white_black_gap_max_deg": 10
 }
