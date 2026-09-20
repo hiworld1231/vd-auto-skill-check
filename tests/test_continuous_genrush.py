@@ -145,6 +145,41 @@ class TestContinuousGenRush(unittest.TestCase):
             "HIGH_SPEED_PROVISIONAL_85PCT",
         )
 
+    def test_uncertainty_shadow_is_tight_on_clean_linear_track(self):
+        p, lock = self._run_speed(550.0)
+        self.assertIsNotNone(lock)
+        telem = p.get_shadow_telemetry()
+        self.assertTrue(telem["speed_uncertainty_reliable"])
+        self.assertLess(telem["speed_uncertainty_low"], 550.0)
+        self.assertGreater(telem["speed_uncertainty_high"], 550.0)
+        self.assertLess(telem["speed_uncertainty_high"] - telem["speed_uncertainty_low"], 50.0)
+
+        t = 0.151
+        a = (270.0 + 550.0 * t) % 360.0
+        pred = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertGreaterEqual(pred["crossing_uncertainty_ms"], 0.0)
+        self.assertGreater(pred["white_window_ms"], 0.0)
+
+    def test_uncertainty_shadow_expands_for_disagreeing_track(self):
+        p = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
+        w = {"start": 90.0, "end": 100.0, "center": 95.0, "width": 10.0}
+        for t, a in [
+            (0.000, 270.0),
+            (0.016, 278.0),
+            (0.033, 291.0),
+            (0.049, 299.0),
+            (0.066, 315.0),
+            (0.083, 324.0),
+        ]:
+            p.update(t, a, 80.0, w, None)
+        telem = p.get_shadow_telemetry()
+        self.assertIsNotNone(telem["slope_mad_deg_s"])
+        self.assertGreater(
+            telem["speed_uncertainty_high"] - telem["speed_uncertainty_low"],
+            0.06 * telem["raw_fit_speed"],
+        )
+
     def test_committed_does_not_bypass_new_fit_instability(self):
         p, lock = self._run_speed(450.0)
         self.assertIsNotNone(lock)
