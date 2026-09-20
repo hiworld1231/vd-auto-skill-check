@@ -185,6 +185,15 @@ def _frenzy_relocation_evidence(
     return out
 
 
+def _trusted_postfire_landing_sample(det: Optional[Dict[str, Any]]) -> bool:
+    """Only feed landing observer while ring geometry itself is still trusted."""
+    return bool(
+        isinstance(det, dict)
+        and det.get("ring_present")
+        and _valid_needle(det)
+    )
+
+
 def _generation_lead(
     chain_count: int,
     *,
@@ -725,6 +734,7 @@ def run_genrush_clean(
             reason=(
                 info.get("no_fire_reason")
                 or info.get("post_fire_reason")
+                or info.get("unconfirmed_reason")
             ),
         )
         in_check = False
@@ -926,10 +936,12 @@ def run_genrush_clean(
 
                 rollback = False
                 zone_move = False
-                # Landing motion can remain trackable after the SPACE prompt
-                # disappears.  Do not couple outcome observation to BASELINE's
-                # lifecycle presence bit.
-                if _valid_needle(det):
+                # Fixed-center generation scanning now makes ring_present
+                # independent from the SPACE prompt.  Therefore a valid red
+                # peak with ring_present=False is no longer trustworthy landing
+                # evidence; feeding it can create a stable plateau on unrelated
+                # post-hit pixels and manufacture ±100° phase MISSes.
+                if _trusted_postfire_landing_sample(det):
                     observer.observe_sample(
                         frame_ts,
                         float(det["needle_angle"]),
@@ -986,6 +998,7 @@ def run_genrush_clean(
                     plateau_found=observer.has_plateau(),
                     zone_moved=zone_move,
                     zone_center=relocation.get("zone_center"),
+                    reappearance_proof=zone_move,
                     rollback=rollback,
                     fresh_motion=generation_motion,
                 )
