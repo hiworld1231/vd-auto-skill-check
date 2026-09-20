@@ -208,7 +208,12 @@ def run_genrush_clean(
 
     calibration_store = None
     calibration_load = None
-    if bool(config.get("persist_lead_calibration", True)) and not dry_run:
+    if not bool(config.get("persist_lead_calibration", False)):
+        tui.log(
+            f"🧭 session-local lead seed={lead.current_lead_ms:.1f}ms "
+            f"(persistent restore disabled)"
+        )
+    if bool(config.get("persist_lead_calibration", False)) and not dry_run:
         capture_backend = "GSR_VFR" if grabber.use_gsr else "MSS"
         fingerprint = make_calibration_fingerprint(
             fps=fps,
