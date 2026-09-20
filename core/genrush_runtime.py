@@ -297,6 +297,12 @@ def run_genrush_clean(
                     "speed_at_lock": ctx.get("speed_at_lock"),
                     "speed_at_fire": ctx.get("speed_at_fire"),
                     "fit_telemetry": ctx.get("fit", {}),
+                    "fire_policy_reason": ctx.get("fire_policy_reason"),
+                    "fire_policy_best_effort": bool(ctx.get("fire_policy_best_effort", False)),
+                    "great_interval_safe": bool(ctx.get("great_interval_safe", False)),
+                    "great_interval_intersects": bool(ctx.get("great_interval_intersects", False)),
+                    "landing_uncertainty_width_deg": ctx.get("landing_uncertainty_width_deg"),
+                    "crossing_uncertainty_ms": ctx.get("crossing_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
                     "detector_fallback": ctx.get("detector_fallback", False),
                     "compensation_regime": "CONTINUOUS_MEASURED_SPEED",
@@ -438,16 +444,18 @@ def run_genrush_clean(
                     frame_age_ms=c.get("frame_age_ms"),
                     decode_delivery_age_ms=c.get("frame_age_ms"),
                     fit_telemetry=c.get("fit"),
+                    fire_policy_reason=c.get("fire_policy_reason"),
+                    fire_policy_best_effort=c.get("fire_policy_best_effort"),
+                    great_interval_safe=c.get("great_interval_safe"),
+                    great_interval_intersects=c.get("great_interval_intersects"),
+                    landing_uncertainty_width_deg=c.get("landing_uncertainty_width_deg"),
+                    crossing_uncertainty_ms=c.get("crossing_uncertainty_ms"),
                 )
                 tui.log(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
                     f"lead={check_lead:.1f}ms "
-                    f"eff={float(c.get('effective_dispatch_lead_ms') if c.get('effective_dispatch_lead_ms') is not None else check_lead):.1f}ms"
-                    + (
-                        f" [{c.get('actuation_speed_reason')} raw={float(c.get('raw_fit_speed_at_fire') or 0):.1f}]"
-                        if c.get("actuation_speed_reason") == "HIGH_SPEED_CONSERVATIVE_LOCAL"
-                        else ""
-                    )
+                    f"eff={float(c.get('effective_dispatch_lead_ms') if c.get('effective_dispatch_lead_ms') is not None else check_lead):.1f}ms "
+                    f"[{c.get('fire_policy_reason') or c.get('actuation_speed_reason') or 'GREAT'}]"
                 )
 
             if not in_check:
