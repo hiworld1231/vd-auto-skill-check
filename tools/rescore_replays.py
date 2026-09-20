@@ -19,6 +19,24 @@ def _median(values: Iterable[float]) -> Optional[float]:
     return float(statistics.median(vals)) if vals else None
 
 
+def _percentile(values: Iterable[float], q: float) -> Optional[float]:
+    vals = sorted(
+        float(v) for v in values
+        if v is not None and math.isfinite(float(v))
+    )
+    if not vals:
+        return None
+    if len(vals) == 1:
+        return vals[0]
+    pos = max(0.0, min(1.0, float(q))) * (len(vals) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return vals[lo]
+    frac = pos - lo
+    return vals[lo] * (1.0 - frac) + vals[hi] * frac
+
+
 def _mad(values: Iterable[float], center: Optional[float] = None) -> Optional[float]:
     vals = [float(v) for v in values if v is not None and math.isfinite(float(v))]
     if not vals:
@@ -168,6 +186,101 @@ def analyze(paths: Iterable[Path]) -> Dict[str, Any]:
 
     ideals = [x for x in (_trusted_ideal(d) for d in docs) if x is not None]
     ideal_med = _median(ideals)
+
+    confirmed = [
+        d for d in docs
+        if (d.get("outcome_info") or {}).get("outcome")
+        in {"GREAT", "GOOD", "MISS"}
+    ]
+    center_errors_ms = [
+        float((d.get("outcome_info") or {})["center_error_ms"])
+        for d in confirmed
+        if (d.get("outcome_info") or {}).get("center_error_ms") is not None
+    ]
+    abs_center_errors_ms = [abs(x) for x in center_errors_ms]
+    scheduler_residuals_ms = [
+        float((d.get("outcome_info") or {})["scheduler_jitter_ms"])
+        for d in confirmed
+        if (d.get("outcome_info") or {}).get("scheduler_jitter_ms") is not None
+    ]
+    abs_scheduler_residuals_ms = [abs(x) for x in scheduler_residuals_ms]
+    landing_uncertainty_deg = [
+        float((d.get("outcome_info") or {})["landing_uncertainty_width_deg"])
+        for d in confirmed
+        if (d.get("outcome_info") or {}).get("landing_uncertainty_width_deg")
+        is not None
+    ]
+    delivery_uncertainty_ms = [
+        float((d.get("outcome_info") or {})["delivery_uncertainty_ms"])
+        for d in confirmed
+        if (d.get("outcome_info") or {}).get("delivery_uncertainty_ms")
+        is not None
+    ]
+    policy_reasons = Counter(
+        str((d.get("outcome_info") or {}).get("fire_policy_reason") or "UNKNOWN")
+        for d in confirmed
+    )
+    geometry_sources = Counter(
+        str(
+            (d.get("outcome_info") or {}).get("white_source_at_fire")
+            or (d.get("outcome_info") or {}).get("white_source")
+            or "UNKNOWN"
+        )
+        for d in confirmed
+    )
+    no_fire_reasons = Counter(
+        str((d.get("outcome_info") or {}).get("no_fire_reason") or "UNKNOWN")
+        for d in docs
+        if (d.get("outcome_info") or {}).get("outcome") == "NO_FIRE"
+    )
+    best_effort = [
+        d for d in confirmed
+        if bool((d.get("outcome_info") or {}).get("fire_policy_best_effort"))
+    ]
+    confirmed_count = len(confirmed)
+    great_count = sum(
+        1 for d in confirmed
+        if (d.get("outcome_info") or {}).get("outcome") == "GREAT"
+    )
+    validation = {
+        "confirmed_fired_checks": confirmed_count,
+        "great_rate_confirmed": (
+            great_count / confirmed_count if confirmed_count else None
+        ),
+        "center_error_ms": {
+            "count": len(center_errors_ms),
+            "median": _median(center_errors_ms),
+            "mad": _mad(center_errors_ms),
+            "p90_abs": _percentile(abs_center_errors_ms, 0.90),
+            "max_abs": max(abs_center_errors_ms) if abs_center_errors_ms else None,
+        },
+        "physical_keydown_residual_ms": {
+            "count": len(scheduler_residuals_ms),
+            "median": _median(scheduler_residuals_ms),
+            "mad": _mad(scheduler_residuals_ms),
+            "p95_abs": _percentile(abs_scheduler_residuals_ms, 0.95),
+        },
+        "landing_uncertainty_width_deg": {
+            "count": len(landing_uncertainty_deg),
+            "median": _median(landing_uncertainty_deg),
+            "p90": _percentile(landing_uncertainty_deg, 0.90),
+        },
+        "delivery_uncertainty_ms": {
+            "count": len(delivery_uncertainty_ms),
+            "median": _median(delivery_uncertainty_ms),
+            "p90": _percentile(delivery_uncertainty_ms, 0.90),
+        },
+        "fire_policy_reasons": dict(policy_reasons),
+        "geometry_sources": dict(geometry_sources),
+        "best_effort_fires": len(best_effort),
+        "best_effort_outcomes": dict(
+            Counter(
+                str((d.get("outcome_info") or {}).get("outcome", "UNKNOWN"))
+                for d in best_effort
+            )
+        ),
+        "no_fire_reasons": dict(no_fire_reasons),
+    }
     return {
         "files": len(docs),
         "bad_json": bad_json,
@@ -181,6 +294,7 @@ def analyze(paths: Iterable[Path]) -> Dict[str, Any]:
         "trusted_ideal_lead_median_ms": ideal_med,
         "trusted_ideal_lead_mad_ms": _mad(ideals, ideal_med),
         "speed_bins": speed_stats,
+        "validation": validation,
     }
 
 
@@ -210,6 +324,34 @@ def main() -> int:
         f"median={result['trusted_ideal_lead_median_ms']}ms "
         f"MAD={result['trusted_ideal_lead_mad_ms']}ms"
     )
+    val = result["validation"]
+    center = val["center_error_ms"]
+    jitter = val["physical_keydown_residual_ms"]
+    landing_unc = val["landing_uncertainty_width_deg"]
+    delivery_unc = val["delivery_uncertainty_ms"]
+    print(
+        "Live validation: "
+        f"confirmed={val['confirmed_fired_checks']} "
+        f"GREAT-rate={val['great_rate_confirmed']} "
+        f"center_median={center['median']}ms "
+        f"center_p90_abs={center['p90_abs']}ms"
+    )
+    print(
+        "Physical timing: "
+        f"keydown_residual_median={jitter['median']}ms "
+        f"p95_abs={jitter['p95_abs']}ms "
+        f"landing_unc_median={landing_unc['median']}deg "
+        f"delivery_unc_median={delivery_unc['median']}ms"
+    )
+    print("Fire policy:", val["fire_policy_reasons"])
+    print("GREAT geometry:", val["geometry_sources"])
+    print(
+        f"Best-effort fires: {val['best_effort_fires']} "
+        f"{val['best_effort_outcomes']}"
+    )
+    if val["no_fire_reasons"]:
+        print("NO_FIRE reasons:", val["no_fire_reasons"])
+
     for name in ("<=320", "320-450", "450-650", "650-800", "800+", "unknown"):
         if name not in result["speed_bins"]:
             continue
