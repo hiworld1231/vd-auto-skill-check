@@ -145,6 +145,19 @@ class TestContinuousGenRush(unittest.TestCase):
             "HIGH_SPEED_PROVISIONAL_85PCT",
         )
 
+    def test_committed_does_not_bypass_new_fit_instability(self):
+        p, lock = self._run_speed(450.0)
+        self.assertIsNotNone(lock)
+        self.assertTrue(p.has_stable_speed())
+        p.mark_committed()
+        self.assertEqual(p.fire_state, "ARMED")
+
+        # Simulate newer fits disagreeing after a deadline was already armed.
+        # Old CLEAN V5 returned True solely because state==COMMITTED.
+        p.speed_fits.clear()
+        p.speed_fits.extend([(1.0, 430.0), (1.1, 520.0), (1.2, 610.0)])
+        self.assertFalse(p.has_stable_speed())
+
     def test_short_check_never_substitutes_base_prior(self):
         p = ContinuousAngularPredictor(100.0, session_base_speed=278.0)
         w = {"start": 300.0, "end": 310.0, "center": 305.0, "width": 10.0}
