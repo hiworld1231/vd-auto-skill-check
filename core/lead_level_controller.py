@@ -261,10 +261,13 @@ class LeadLevelController:
                 recent_med = float(statistics.median(recent))
                 recent_mad = self._mad(recent, recent_med)
                 delta = recent_med - self.current_lead_ms
-                if (
-                    recent_mad <= self.recent_shift_max_mad_ms
-                    and abs(delta) >= self.deadband_ms
-                ):
+                coherent = recent_mad <= self.recent_shift_max_mad_ms
+                if coherent and self.restored_from_disk:
+                    # Four fresh trusted samples validate the persisted prior.
+                    # From here uncertainty is derived only from live samples.
+                    self.restored_from_disk = False
+                    self._restored_uncertainty_ms = None
+                if coherent and abs(delta) >= self.deadband_ms:
                     step = max(
                         -self.max_shift_step_ms,
                         min(self.max_shift_step_ms, delta),
@@ -328,6 +331,7 @@ class LeadLevelController:
                 self.accepted_total - self.accepted_at_last_update
             ),
             "initialized": self.initialized,
+            "restored_from_disk": self.restored_from_disk,
             "deadband_ms": self.deadband_ms,
             "recent_shift_samples": self.recent_shift_samples,
             "recent_shift_max_mad_ms": self.recent_shift_max_mad_ms,
