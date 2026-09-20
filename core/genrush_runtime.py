@@ -85,6 +85,19 @@ def _is_measured_zone(z: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _generation_lead(
+    chain_count: int,
+    *,
+    normal_lead_ms: float,
+    normal_uncertainty_ms: float,
+    frenzy_lead_ms: float,
+    frenzy_uncertainty_ms: float,
+) -> tuple[float, float]:
+    if int(chain_count) > 1:
+        return float(frenzy_lead_ms), max(0.0, float(frenzy_uncertainty_ms))
+    return float(normal_lead_ms), max(0.0, float(normal_uncertainty_ms))
+
+
 def _sane_zone(z: Optional[Dict[str, Any]], lo: float, hi: float) -> Optional[Dict[str, Any]]:
     if not isinstance(z, dict):
         return None
@@ -326,14 +339,17 @@ def run_genrush_clean(
         pressed = False
         chain = new_chain
         check_start = now
-        if new_chain > 1:
-            check_lead = frenzy_lead
-            generation_lead_uncertainty = frenzy_lead_uncertainty
-        else:
-            check_lead = lead.get_lead_ms(chain_count=1, chain_offset_ms=0.0)
-            generation_lead_uncertainty = (
+        check_lead, generation_lead_uncertainty = _generation_lead(
+            new_chain,
+            normal_lead_ms=lead.get_lead_ms(
+                chain_count=1, chain_offset_ms=0.0
+            ),
+            normal_uncertainty_ms=(
                 lead.get_uncertainty_ms() if lead.initialized else 0.0
-            )
+            ),
+            frenzy_lead_ms=frenzy_lead,
+            frenzy_uncertainty_ms=frenzy_lead_uncertainty,
+        )
         predictor.set_delivery_lead(
             check_lead,
             generation_lead_uncertainty,
