@@ -374,6 +374,66 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertIsNone(third)
         self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
 
+    def test_frenzy_generation_handoff_skips_spawn_reacquire(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+        white = {
+            "start": 20.0, "end": 30.0, "center": 25.0,
+            "width": 10.0, "source": "MEASURED_POST_HIT",
+        }
+        black = {
+            "start": 30.0, "end": 70.0, "center": 50.0,
+            "width": 40.0, "source": "MEASURED_POST_HIT",
+        }
+        confirming = {
+            "ring_present": True,
+            "needle_valid": True,
+            "needle_angle": 312.0,
+            "needle_strength": 82.0,
+            "cx": 161.0,
+            "cy": 163.0,
+            "center": (161.0, 163.0),
+            "white_zone": white,
+            "black_zone": black,
+        }
+
+        adopted = self.vision.bootstrap_generation(confirming, white, black)
+        self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
+        self.assertEqual(adopted["detector_name"], "FRENZY_GENERATION_HANDOFF")
+        self.assertAlmostEqual(self.vision.locked_white_zone["center"], 25.0)
+        self.assertAlmostEqual(self.vision.hybrid_detector.last_angle, 312.0)
+        self.assertEqual(self.vision.locked_center, (161.0, 163.0))
+
+        # The very next frame must be ACTIVE HYBRID tracking, not a BASELINE
+        # SPAWN_ACQUIRE pass looking for the prompt again.
+        with patch.object(
+            self.vision.baseline_detector, "detect"
+        ) as mock_base, patch.object(
+            self.vision.hybrid_detector,
+            "detect",
+            return_value={
+                "ring_present": True,
+                "needle_valid": True,
+                "needle_angle": 320.0,
+                "needle_strength": 75.0,
+                "white_zone": white,
+                "black_zone": black,
+                "status": "OK",
+            },
+        ):
+            nxt = self.vision.detect_frame(
+                gray,
+                frame,
+                expected_angle=320.0,
+                expected_speed=500.0,
+            )
+
+        mock_base.assert_not_called()
+        self.assertIsNotNone(nxt)
+        self.assertTrue(nxt["needle_valid"])
+        self.assertAlmostEqual(nxt["needle_angle"], 320.0)
+        self.assertEqual(nxt["white_zone"]["center"], 25.0)
+
     def test_postfire_tracks_needle_when_prompt_presence_is_lost(self):
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         gray = np.zeros((240, 320), dtype=np.uint8)
