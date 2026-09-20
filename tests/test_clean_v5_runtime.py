@@ -164,6 +164,40 @@ class CleanV5Tests(unittest.TestCase):
         self.assertAlmostEqual(ev["relocation_delta_deg"], 158.0)
         self.assertAlmostEqual(ev["white_black_gap_deg"], 2.0)
 
+    def test_archived_minimum_true_frenzy_relocation_still_qualifies(self):
+        # Archived real chain6->7 transition:
+        old_w = {
+            "start": 221.0, "end": 231.0, "center": 226.48939900947659,
+            "width": 10.0, "source": "MEASURED",
+        }
+        new_w = {
+            "start": 98.4534192667837,
+            "end": 109.29413683471543,
+            "center": 103.87377805074956,
+            "width": 10.840717567931733,
+            "source": "MEASURED_FIXED_CENTER",
+        }
+        new_b = {
+            "start": 109.97915310662923,
+            "end": 152.11025444230802,
+            "center": 131.04470377446862,
+            "width": 42.13110133567879,
+            "source": "MEASURED_FIXED_CENTER",
+        }
+        ev = _frenzy_relocation_evidence(
+            new_w, new_b, old_w,
+            generation_needle_valid=True,
+            min_move_deg=90.0,
+            max_white_black_gap_deg=10.0,
+        )
+        self.assertTrue(ev["qualifies"])
+        self.assertAlmostEqual(
+            ev["relocation_delta_deg"], 122.61562095872702, places=3
+        )
+        self.assertAlmostEqual(
+            ev["white_black_gap_deg"], 0.6850162719138, places=3
+        )
+
     def test_frenzy_generation_uses_separate_lead(self):
         lead_ms, unc_ms = _generation_lead(
             2,
