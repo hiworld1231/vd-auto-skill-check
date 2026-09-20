@@ -180,6 +180,27 @@ class TestContinuousGenRush(unittest.TestCase):
             tight["landing_uncertainty_width_deg"],
         )
 
+    def test_dispatch_uncertainty_expands_total_delivery_envelope(self):
+        p, lock = self._run_speed(550.0)
+        self.assertIsNotNone(lock)
+        t = 0.151
+        a = (270.0 + 550.0 * t) % 360.0
+
+        p.set_delivery_lead(122.1, 2.0, 0.0)
+        lead_only = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(lead_only)
+
+        p.set_delivery_lead(122.1, 2.0, 1.5)
+        combined = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(combined)
+        self.assertAlmostEqual(combined["lead_uncertainty_ms"], 2.0)
+        self.assertAlmostEqual(combined["dispatch_uncertainty_ms"], 1.5)
+        self.assertAlmostEqual(combined["delivery_uncertainty_ms"], 3.5)
+        self.assertGreater(
+            combined["landing_uncertainty_width_deg"],
+            lead_only["landing_uncertainty_width_deg"],
+        )
+
     def test_uncertainty_shadow_expands_for_disagreeing_track(self):
         p = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
         w = {"start": 90.0, "end": 100.0, "center": 95.0, "width": 10.0}
