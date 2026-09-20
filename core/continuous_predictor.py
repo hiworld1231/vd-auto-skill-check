@@ -102,6 +102,9 @@ class ContinuousAngularPredictor:
         self.motion_onset = bool(is_chain and keep_speed)
         self.state = STATE_PROVISIONAL if self.motion_onset else STATE_NO_MOTION
         self.speed_deg_s = float(default_speed if default_speed is not None else (prior_speed if keep_speed else self.session_base_speed))
+        self.generation_prior_speed: Optional[float] = (
+            float(self.speed_deg_s) if is_chain and keep_speed else None
+        )
         self.shadow_live_speed = self.speed_deg_s
         self.locked_speed: Optional[float] = None
         self.has_adapted = False
@@ -288,14 +291,29 @@ class ContinuousAngularPredictor:
         return True
 
     def has_usable_speed(self) -> bool:
-        """Early-but-measured speed for short checks; never falls back to base prior."""
-        return bool(
+        """Early measured speed, with a Frenzy transition sanity gate."""
+        if not (
             self.has_adapted
             and self._fit_sample_count >= 3
             and self._fit_span_s >= 0.020
             and 20.0 <= self.speed_deg_s <= 1500.0
             and (self._fit_residual_mad_deg is None or self._fit_residual_mad_deg <= 4.0)
-        )
+        ):
+            return False
+
+        if (
+            self.is_chain
+            and self.generation_prior_speed is not None
+            and self._fit_sample_count < 6
+        ):
+            prior = max(20.0, float(self.generation_prior_speed))
+            # Frenzy can accelerate substantially between generations, but a
+            # 3-5 frame estimate jumping several times the prior generation is
+            # a known capture/render-cadence artifact, not real motion.
+            if not (0.60 * prior <= self.speed_deg_s <= 1.80 * prior):
+                return False
+
+        return True
 
     def _mark_fit_uncertain(self) -> bool:
         if self.motion_onset:
@@ -346,7 +364,14 @@ class ContinuousAngularPredictor:
         available.  Every later frame may reschedule the same pending keydown.
         """
         if not self.has_adapted:
-            if self._segment_speeds:
+            if self.is_chain and self.generation_prior_speed is not None:
+                # Do not use the first adjacent Frenzy segment.  At 120 FPS
+                # capture / ~60 Hz source updates that segment frequently looks
+                # 2x too fast.  Hold the previous generation speed until a
+                # robust 3-point fit exists.
+                chosen = float(self.generation_prior_speed)
+                reason = "FRENZY_PRIOR_HOLD"
+            elif self._segment_speeds:
                 chosen = float(statistics.median(list(self._segment_speeds)[-2:]))
                 reason = "SEGMENT_PROVISIONAL"
             else:
@@ -357,6 +382,24 @@ class ContinuousAngularPredictor:
             return chosen
 
         raw = float(self.speed_deg_s)
+
+        if (
+            self.is_chain
+            and self.generation_prior_speed is not None
+            and self._fit_sample_count < 6
+        ):
+            prior = max(20.0, float(self.generation_prior_speed))
+            # Short Frenzy fits are noisy but the immediately previous
+            # generation is a strong physical prior.  Shrink only the first
+            # few fits toward it, then hand control fully to measured speed.
+            clamped = max(0.65 * prior, min(1.65 * prior, raw))
+            alpha_by_n = {3: 0.35, 4: 0.55, 5: 0.75}
+            alpha = alpha_by_n.get(int(self._fit_sample_count), 1.0)
+            chosen = prior + alpha * (clamped - prior)
+            self._actuation_speed = float(chosen)
+            self._actuation_speed_reason = "FRENZY_PRIOR_BLEND"
+            return float(chosen)
+
         low = self._speed_uncertainty_low
         high = self._speed_uncertainty_high
         if (
@@ -387,6 +430,7 @@ class ContinuousAngularPredictor:
             "configured_speed_mode": SPEED_MODE_GEN_RUSH,
             "continuous_tracking": True,
             "session_base_speed": self.session_base_speed,
+            "generation_prior_speed": self.generation_prior_speed,
             "live_speed": self.shadow_live_speed,
             "live_vs_prior_delta": self.shadow_live_speed - self.session_base_speed,
             "prediction_speed_used": actuation_speed,
@@ -503,19 +547,29 @@ class ContinuousAngularPredictor:
             else:
                 should_press_now = False
 
-        if self.has_adapted:
+        if self.is_chain and self._actuation_speed_reason == "FRENZY_PRIOR_HOLD":
+            speed_low = max(20.0, speed * 0.70)
+            speed_high = min(1500.0, speed * 1.45)
+            speed_source = "FRENZY_PRIOR"
+        elif self.is_chain and self._actuation_speed_reason == "FRENZY_PRIOR_BLEND":
+            raw = float(self.speed_deg_s)
+            raw_low = float(self._speed_uncertainty_low or raw)
+            raw_high = float(self._speed_uncertainty_high or raw)
+            shift = speed - raw
+            speed_low = max(20.0, raw_low + shift)
+            speed_high = min(1500.0, raw_high + shift)
+            speed_source = "FRENZY_BLEND"
+        elif self.has_adapted:
             speed_low = float(self._speed_uncertainty_low or speed)
             speed_high = float(self._speed_uncertainty_high or speed)
             speed_source = "MEASURED"
         elif self._segment_speeds:
             # One adjacent-frame segment is enough to move a tentative
-            # deadline, but not enough to claim a narrow confidence interval.
+            # deadline on normal checks, but not in Frenzy.
             speed_low = max(20.0, speed * 0.85)
             speed_high = min(1500.0, speed * 1.15)
             speed_source = "SEGMENT_PROVISIONAL"
         else:
-            # Chain-1 normal speed prior.  This is deliberately broad and is
-            # used to pre-arm only; later unique frames replace it.
             speed_low = max(20.0, speed * 0.88)
             speed_high = min(1500.0, speed * 1.12)
             speed_source = "SESSION_PRIOR"
@@ -583,6 +637,9 @@ class ContinuousAngularPredictor:
             "raw_fit_speed_deg_s": float(self.speed_deg_s),
             "actuation_speed_reason": self._actuation_speed_reason,
             "speed_source": speed_source,
+            "is_chain": bool(self.is_chain),
+            "fit_sample_count": int(self._fit_sample_count),
+            "generation_prior_speed": self.generation_prior_speed,
             "angular_distance_deg": angular_dist,
             "time_to_hit_ms": time_to_hit_s * 1000.0,
             "crossing_earliest_ms": crossing_earliest_ms,
