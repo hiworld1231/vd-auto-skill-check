@@ -252,7 +252,10 @@ def run_genrush_clean(
         chain = new_chain
         check_start = now
         check_lead = lead.get_lead_ms(chain_count=1, chain_offset_ms=0.0)
-        predictor.latency_s = check_lead / 1000.0
+        predictor.set_delivery_lead(
+            check_lead,
+            lead.get_uncertainty_ms() if lead.initialized else 0.0,
+        )
         locked_w = None
         locked_b = None
         speed_at_lock = None
@@ -261,7 +264,12 @@ def run_genrush_clean(
         last_fire = None
         last_post_angle = None
         recorder.start_check(
-            now, chain_count=chain, latency_ms=check_lead, target_mode="GREAT", target_ratio=0.5
+            now,
+            chain_count=chain,
+            latency_ms=check_lead,
+            lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
+            target_mode="GREAT",
+            target_ratio=0.5,
         )
         tui.set_status(f"CHECK #{chain}")
         tui.log(f"▶ check chain={chain} lead={check_lead:.1f}ms")
@@ -303,6 +311,7 @@ def run_genrush_clean(
                     "great_interval_intersects": bool(ctx.get("great_interval_intersects", False)),
                     "landing_uncertainty_width_deg": ctx.get("landing_uncertainty_width_deg"),
                     "crossing_uncertainty_ms": ctx.get("crossing_uncertainty_ms"),
+                    "lead_uncertainty_ms": ctx.get("lead_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
                     "detector_fallback": ctx.get("detector_fallback", False),
                     "compensation_regime": "CONTINUOUS_MEASURED_SPEED",
@@ -450,6 +459,7 @@ def run_genrush_clean(
                     great_interval_intersects=c.get("great_interval_intersects"),
                     landing_uncertainty_width_deg=c.get("landing_uncertainty_width_deg"),
                     crossing_uncertainty_ms=c.get("crossing_uncertainty_ms"),
+                    lead_uncertainty_ms=c.get("lead_uncertainty_ms"),
                 )
                 tui.log(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
@@ -481,7 +491,10 @@ def run_genrush_clean(
                 pressed = False
                 check_lead = lead.get_lead_ms()
                 predictor.reset(False, session_base_speed=base_speed)
-                predictor.latency_s = check_lead / 1000.0
+                predictor.set_delivery_lead(
+            check_lead,
+            lead.get_uncertainty_ms() if lead.initialized else 0.0,
+        )
                 observer.reset()
                 scheduler.rearm()
                 locked_w, locked_b = w, b
@@ -492,6 +505,7 @@ def run_genrush_clean(
                     now,
                     chain_count=chain,
                     latency_ms=check_lead,
+                    lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
                     locked_w=w,
                     locked_b=b,
                 )
@@ -668,6 +682,7 @@ def run_genrush_clean(
                         "great_interval_intersects": bool(pred.get("great_interval_intersects", False)),
                         "landing_uncertainty_width_deg": pred.get("landing_uncertainty_width_deg"),
                         "crossing_uncertainty_ms": pred.get("crossing_uncertainty_ms"),
+                        "lead_uncertainty_ms": pred.get("lead_uncertainty_ms"),
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
