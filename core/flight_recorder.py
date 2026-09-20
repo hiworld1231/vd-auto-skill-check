@@ -38,6 +38,7 @@ class FlightRecorder:
                     target_mode: str = "GREAT", target_ratio: float = 0.5,
                     locked_w=None, locked_b=None, **_: Any) -> None:
         self._counter += 1
+        self._snap_pre.clear()
         self._episode = {
             "check_id": f"check_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._counter:04d}",
             "timestamp_iso": dt.datetime.now().isoformat(),
