@@ -389,6 +389,11 @@ def run_genrush_clean(
         now: float, *, frenzy_transition: bool = False, reason: Optional[str] = None
     ) -> Dict[str, Any]:
         nonlocal in_check
+        # Invalidate any pending callback before outcome/recorder work.  This
+        # closes the race where a deadline left the scheduler worker just before
+        # cancel_pending() and would otherwise press Space after check end.
+        advance_fire_epoch()
+        scheduler.cancel_pending()
         info = observer.conclude_check(
             frenzy_transition=frenzy_transition, no_fire_reason=reason
         )
