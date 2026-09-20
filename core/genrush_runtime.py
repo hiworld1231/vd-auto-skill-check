@@ -17,6 +17,7 @@ from core.capture import CaptureError, ScreenGrabber
 from core.continuous_predictor import ContinuousAngularPredictor
 from core.fire_policy import decide_great_fire
 from core.flight_recorder import FlightRecorder
+from core.lead_calibration import LeadCalibrationStore, make_calibration_fingerprint
 from core.lead_level_controller import LeadLevelController
 from core.mouse_tracker import MouseTracker
 from core.outcome_observer import OutcomeObserver
@@ -158,6 +159,38 @@ def run_genrush_clean(
     )
     if not dry_run and keyboard.backend == "UNAVAILABLE":
         raise RuntimeError("No usable keyboard backend; refusing silent dry-run")
+
+    calibration_store = None
+    calibration_load = None
+    if bool(config.get("persist_lead_calibration", True)) and not dry_run:
+        capture_backend = "GSR_VFR" if grabber.use_gsr else "MSS"
+        fingerprint = make_calibration_fingerprint(
+            fps=fps,
+            region=region,
+            detector=detector_name,
+            capture_backend=capture_backend,
+            input_backend=keyboard.backend,
+        )
+        calibration_store = LeadCalibrationStore(
+            root / ".vd_lead_calibration.json",
+            fingerprint,
+            max_age_s=float(config.get("lead_calibration_max_age_days", 7.0))
+            * 86400.0,
+        )
+        calibration_load = calibration_store.load()
+        recorder.session_meta["lead_calibration_load"] = calibration_load.telemetry()
+        if calibration_load.accepted:
+            lead.restore_calibration(
+                float(calibration_load.lead_ms),
+                float(calibration_load.uncertainty_ms),
+            )
+            tui.log(
+                f"🧭 restored lead={lead.current_lead_ms:.1f}ms "
+                f"±{lead.get_uncertainty_ms():.1f}ms "
+                f"age={float(calibration_load.age_s or 0.0) / 3600.0:.1f}h"
+            )
+        elif calibration_load.reason != "NOT_FOUND":
+            tui.log(f"🧭 calibration ignored: {calibration_load.reason}")
 
     if require_lmb:
         deadline = time.monotonic() + 0.7
@@ -354,6 +387,21 @@ def run_genrush_clean(
             )
             info["lead_level_update"] = lr
             info["lead_level_telemetry"] = lead.telemetry()
+            if (
+                calibration_store is not None
+                and lr.get("accepted")
+                and lead.initialized
+            ):
+                try:
+                    calibration_store.save(
+                        lead_ms=lead.current_lead_ms,
+                        uncertainty_ms=lead.get_uncertainty_ms(),
+                        trusted_sample_count=lead.accepted_total,
+                    )
+                    info["lead_calibration_saved"] = True
+                except Exception as exc:
+                    info["lead_calibration_saved"] = False
+                    info["lead_calibration_save_error"] = str(exc)
             if lr.get("accepted"):
                 ideal = lr.get("ideal_lead_ms")
                 if lr.get("updated"):
