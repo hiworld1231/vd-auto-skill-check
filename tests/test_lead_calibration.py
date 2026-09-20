@@ -72,6 +72,39 @@ class PersistentLeadCalibrationTests(unittest.TestCase):
             self.assertFalse(result.accepted)
             self.assertEqual(result.reason, "EXPIRED")
 
+    def test_old_cross_session_model_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "calibration.json"
+            payload = {
+                "schema_version": 1,
+                "calibration_model": "v6-keydown-syn-great-center-predictive-unc-v2",
+                "saved_at_epoch": 1000.0,
+                "fingerprint": self.fingerprint(),
+                "lead_ms": 126.0,
+                "uncertainty_ms": 8.0,
+                "trusted_sample_count": 12,
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            result = LeadCalibrationStore(
+                path, self.fingerprint(), max_age_s=100.0
+            ).load(now_epoch=1001.0)
+            self.assertFalse(result.accepted)
+            self.assertEqual(result.reason, "MODEL_MISMATCH")
+
+    def test_calibration_store_range_matches_controller_180ms_ceiling(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "calibration.json"
+            store = LeadCalibrationStore(path, self.fingerprint())
+            store.save(
+                lead_ms=173.2,
+                uncertainty_ms=4.0,
+                trusted_sample_count=8,
+                now_epoch=1000.0,
+            )
+            result = store.load(now_epoch=1001.0)
+            self.assertTrue(result.accepted)
+            self.assertAlmostEqual(result.lead_ms, 173.2)
+
     def test_corrupt_or_out_of_range_data_never_restores(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "calibration.json"

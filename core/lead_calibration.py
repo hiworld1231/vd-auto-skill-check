@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 
 CALIBRATION_SCHEMA_VERSION = 1
-CALIBRATION_MODEL = "v6-keydown-syn-great-center-predictive-unc-v2"
+CALIBRATION_MODEL = "v6-session-local-great-center-v3"
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class LeadCalibrationStore:
         *,
         max_age_s: float = 7.0 * 24.0 * 3600.0,
         min_lead_ms: float = 35.0,
-        max_lead_ms: float = 160.0,
+        max_lead_ms: float = 180.0,
     ) -> None:
         self.path = Path(path)
         self.fingerprint = self._canonical_fingerprint(fingerprint)

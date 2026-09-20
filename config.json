@@ -1,6 +1,6 @@
 {
   "fps": 120,
-  "genrush_seed_lead_ms": 60,
+  "genrush_seed_lead_ms": 80,
   "session_base_speed": 278,
   "space_hold_ms": 35,
   "detector": "hybrid",
@@ -14,7 +14,7 @@
     "height": 240
   },
   "allow_mss_fallback": false,
-  "persist_lead_calibration": true,
+  "persist_lead_calibration": false,
   "lead_calibration_max_age_days": 7,
   "frenzy_lead_ms": 80,
   "frenzy_lead_uncertainty_ms": 0,
