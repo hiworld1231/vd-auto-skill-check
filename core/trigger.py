@@ -10,9 +10,20 @@ from typing import Callable, Optional
 class InputDispatchResult:
     success: bool
     backend: str
+    # started_at: immediately before backend keydown write/press.
+    # finished_at: immediately after UInput.syn()/pynput press returns, i.e.
+    # the best userspace timestamp for a delivered keydown.
     started_at: float
     finished_at: float
     error: Optional[str] = None
+
+    @property
+    def keydown_begin_at(self) -> float:
+        return self.started_at
+
+    @property
+    def keydown_syn_at(self) -> float:
+        return self.finished_at
 
 
 class HardwareTrigger:
@@ -26,6 +37,7 @@ class HardwareTrigger:
         self._keyboard = None
         self._release_threads = set()
         self._release_lock = threading.Lock()
+        self._last_release_at: Optional[float] = None
         self.backend = "DRY_RUN" if self.dry_run else "UNAVAILABLE"
         if self.dry_run:
             return
@@ -56,9 +68,13 @@ class HardwareTrigger:
                 self._ui.syn()
             elif self.backend == "PYNPUT" and self._keyboard is not None:
                 self._keyboard.release(self._key)
+            self._last_release_at = time.monotonic()
         finally:
             with self._release_lock:
                 self._release_threads.discard(threading.current_thread())
+
+    def last_release_at(self) -> Optional[float]:
+        return self._last_release_at
 
     def trigger(self) -> InputDispatchResult:
         start = time.monotonic()
