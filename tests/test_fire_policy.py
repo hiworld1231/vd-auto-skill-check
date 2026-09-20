@@ -21,7 +21,7 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertEqual(d.reason, "GREAT_INTERVAL_SAFE")
         self.assertFalse(d.best_effort)
 
-    def test_old_armed_deadline_must_be_rejected_when_interval_becomes_unsafe(self):
+    def test_center_deadline_stays_armed_when_interval_is_uncertain(self):
         d = decide_great_fire(
             {
                 "time_until_press_ms": 18.0,
@@ -30,12 +30,15 @@ class GreatFirePolicyTests(unittest.TestCase):
                 "landing_uncertainty_width_deg": 18.0,
                 "great_width_deg": 10.0,
                 "white_source": "MEASURED",
+                "speed_source": "MEASURED",
+                "target_passed": False,
             },
             fit_stable=False,
             speed_usable=True,
         )
-        self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "GREAT_INTERVAL_UNSAFE")
+        self.assertTrue(d.allow)
+        self.assertTrue(d.best_effort)
+        self.assertEqual(d.reason, "GREAT_CENTER_BEST_EFFORT")
 
     def test_short_track_can_fire_when_full_interval_still_fits_great(self):
         d = decide_great_fire(
@@ -103,7 +106,7 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertTrue(d.best_effort)
         self.assertEqual(d.reason, "RECONSTRUCTED_GREAT_SAFE_ENVELOPE")
 
-    def test_reconstructed_great_never_uses_last_chance_intersection(self):
+    def test_reconstructed_great_keeps_center_best_effort_before_deadline(self):
         d = decide_great_fire(
             {
                 "time_until_press_ms": 2.0,
@@ -112,12 +115,53 @@ class GreatFirePolicyTests(unittest.TestCase):
                 "landing_uncertainty_width_deg": 9.0,
                 "great_width_deg": 9.5,
                 "white_source": "RECONSTRUCTED_FROM_BLACK",
+                "speed_source": "MEASURED",
+                "target_passed": False,
             },
             fit_stable=True,
             speed_usable=True,
         )
-        self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "GREAT_INTERVAL_UNSAFE")
+        self.assertTrue(d.allow)
+        self.assertEqual(d.reason, "GREAT_CENTER_BEST_EFFORT")
+
+    def test_first_frame_session_prior_prearms_future_deadline(self):
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": 120.0,
+                "great_interval_safe": False,
+                "great_interval_intersects": True,
+                "landing_uncertainty_width_deg": 12.0,
+                "great_width_deg": 10.0,
+                "white_source": "MEASURED",
+                "speed_source": "SESSION_PRIOR",
+                "target_passed": False,
+                "should_press_now": False,
+            },
+            fit_stable=False,
+            speed_usable=False,
+        )
+        self.assertTrue(d.allow)
+        self.assertTrue(d.best_effort)
+        self.assertEqual(d.reason, "SESSION_PRIOR_PREARM")
+
+    def test_second_frame_segment_speed_prearms_without_full_fit(self):
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": 60.0,
+                "great_interval_safe": False,
+                "great_interval_intersects": True,
+                "landing_uncertainty_width_deg": 14.0,
+                "great_width_deg": 10.0,
+                "white_source": "MEASURED",
+                "speed_source": "SEGMENT_PROVISIONAL",
+                "target_passed": False,
+                "should_press_now": False,
+            },
+            fit_stable=False,
+            speed_usable=False,
+        )
+        self.assertTrue(d.allow)
+        self.assertEqual(d.reason, "SEGMENT_PROVISIONAL_PREARM")
 
     def test_unknown_geometry_fails_closed(self):
         d = decide_great_fire(
@@ -134,7 +178,7 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertFalse(d.allow)
         self.assertEqual(d.reason, "GREAT_GEOMETRY_UNTRUSTED")
 
-    def test_far_short_fit_waits_for_more_evidence(self):
+    def test_safe_short_fit_does_not_wait_for_five_samples(self):
         d = decide_great_fire(
             {
                 "time_until_press_ms": 80.0,
@@ -143,12 +187,13 @@ class GreatFirePolicyTests(unittest.TestCase):
                 "landing_uncertainty_width_deg": 4.0,
                 "great_width_deg": 10.0,
                 "white_source": "MEASURED",
+                "speed_source": "MEASURED",
             },
             fit_stable=False,
             speed_usable=True,
         )
-        self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "FIT_NOT_READY")
+        self.assertTrue(d.allow)
+        self.assertEqual(d.reason, "GREAT_INTERVAL_SAFE")
 
 
 if __name__ == "__main__":
