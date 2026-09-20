@@ -23,7 +23,7 @@ class LeadLevelController:
         seed_lead_ms: float,
         *,
         min_lead_ms: float = 35.0,
-        max_lead_ms: float = 160.0,
+        max_lead_ms: float = 180.0,
         window_size: int = 15,
         cold_min_samples: int = 4,
         cold_max_mad_ms: float = 15.0,
@@ -197,11 +197,17 @@ class LeadLevelController:
             return self._reject("NO_CENTER_ERROR")
         if not self._finite(actual_used_delay_ms):
             return self._reject("NO_USED_DELAY")
-        if (
-            not self._finite(scheduler_jitter_ms)
-            or abs(float(scheduler_jitter_ms)) > 4.5
-        ):
-            return self._reject("SCHEDULER_JITTER")
+        # Only scheduled dispatches have meaningful scheduler jitter.
+        # For IMMEDIATE fallback the desired center deadline may already be in
+        # the past; dispatch_done-desired is planning lateness, not scheduler
+        # execution error. Rejecting it here prevented exactly the late GOOD
+        # landings that should teach the controller to raise normal lead.
+        if trigger_mode == "SCHEDULED":
+            if (
+                not self._finite(scheduler_jitter_ms)
+                or abs(float(scheduler_jitter_ms)) > 4.5
+            ):
+                return self._reject("SCHEDULER_JITTER")
         if fit_sample_count is None or int(fit_sample_count) < 5:
             return self._reject("SHORT_TRACK")
         if (

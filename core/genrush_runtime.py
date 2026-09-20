@@ -497,8 +497,24 @@ def run_genrush_clean(
             # deadline->SYN lag, is the scheduler error relevant to landing.
             sched_jitter = (
                 (last_fire.dispatch_done - last_fire.desired) * 1000.0
-                if last_fire.desired is not None
+                if (
+                    last_fire.mode == "SCHEDULED"
+                    and last_fire.desired is not None
+                )
                 else raw_dispatch_lag_ms
+                if last_fire.mode == "SCHEDULED"
+                else None
+            )
+            immediate_lateness_ms = (
+                max(
+                    0.0,
+                    (last_fire.dispatch_done - last_fire.desired) * 1000.0,
+                )
+                if (
+                    last_fire.mode == "IMMEDIATE"
+                    and last_fire.desired is not None
+                )
+                else None
             )
             input_dispatch_ms = (
                 last_fire.dispatch_done - last_fire.dispatch_start
@@ -529,6 +545,7 @@ def run_genrush_clean(
                     "dispatch_uncertainty_ms": ctx.get("dispatch_uncertainty_ms"),
                     "delivery_uncertainty_ms": ctx.get("delivery_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
+                    "immediate_lateness_ms": immediate_lateness_ms,
                     "dispatch_lag_ms": raw_dispatch_lag_ms,
                     "dispatch_lag_compensation_ms": ctx.get("dispatch_lag_compensation_ms"),
                     "dispatch_lag_uncertainty_ms": ctx.get("dispatch_lag_uncertainty_ms"),
@@ -874,7 +891,15 @@ def run_genrush_clean(
                     if ring_present:
                         bootstrap_w = _sane_zone(nw, 5.0, 16.0)
                         bootstrap_b = _sane_zone(nb, 18.0, 65.0)
-                        if bootstrap_w is not None:
+                        # The post-fire HYBRID needle belongs to the previous
+                        # generation. Handoff is safe only if BASELINE measured
+                        # a needle on the relocated ring itself.
+                        if (
+                            bootstrap_w is not None
+                            and isinstance(det, dict)
+                            and bool(det.get("generation_needle_valid"))
+                            and det.get("generation_needle_angle") is not None
+                        ):
                             bootstrap_det = dict(det)
                     finish(now, frenzy_transition=True)
                     start_generation(
