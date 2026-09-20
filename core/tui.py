@@ -31,16 +31,19 @@ class SkillCheckTUI:
         pass
 
     def record_hit(self, outcome: str, fact_angle=None, target_angle=None, error_deg=None,
-                   error_ms=None, chain: int = 1, latency_ms: float = 0.0, **_: object) -> None:
+                   error_ms=None, chain: int = 1, latency_ms: float = 0.0,
+                   reason=None, **_: object) -> None:
         self.counts[str(outcome)] += 1
         def f(v, spec=".1f"):
             try:
                 return format(float(v), spec)
             except Exception:
                 return "N/A"
+        extra = f" reason={reason}" if reason else ""
         self.log(
             f"{outcome}: fact={f(fact_angle)}° target={f(target_angle)}° "
-            f"err={f(error_deg, '+.1f')}°/{f(error_ms, '+.1f')}ms chain={chain} lead={f(latency_ms)}ms"
+            f"err={f(error_deg, '+.1f')}°/{f(error_ms, '+.1f')}ms chain={chain} "
+            f"lead={f(latency_ms)}ms{extra}"
         )
 
     def finish(self) -> None:
