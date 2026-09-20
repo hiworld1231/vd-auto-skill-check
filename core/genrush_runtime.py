@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 import cv2
 
 from core.capture import CaptureError, ScreenGrabber
-from core.continuous_predictor import ContinuousAngularPredictor, STATE_COMMITTED
+from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
 from core.mouse_tracker import MouseTracker
@@ -392,6 +392,7 @@ def run_genrush_clean(
                 if pressed:
                     continue
                 pressed = True
+                predictor.mark_fired()
                 last_fire = ev
                 planned_press = None
                 scheduler.cancel_pending()
@@ -639,7 +640,7 @@ def run_genrush_clean(
 
             if pred.get("should_press_now"):
                 scheduler.trigger_now("IMMEDIATE_SAFE", desired_press_time=press_t)
-                predictor.state = STATE_COMMITTED
+                predictor.mark_committed()
             elif press_t > now:
                 if planned_press is None or abs(press_t - planned_press) >= 0.0005:
                     planned_press = press_t
@@ -648,7 +649,7 @@ def run_genrush_clean(
                         reason="SCHEDULED_CONTINUOUS",
                         desired_press_time=press_t,
                     )
-                    predictor.state = STATE_COMMITTED
+                    predictor.mark_committed()
 
             if now - check_start > 3.5:
                 finish(now, reason=no_fire_reason or "CHECK_TIMEOUT")
