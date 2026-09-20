@@ -7,7 +7,7 @@ from pathlib import Path
 from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
-from core.genrush_runtime import _generation_lead
+from core.genrush_runtime import _generation_lead, _presence_absence_update
 from core.outcome_observer import OutcomeObserver
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.detectors.base import extract_zones_from_masks
@@ -36,6 +36,29 @@ class CleanV5Tests(unittest.TestCase):
             self.assertEqual(calls, ["IMMEDIATE"])
         finally:
             s.close()
+
+    def test_prefire_absence_requires_continuous_gap(self):
+        since, elapsed = _presence_absence_update(None, now=10.000, present=False)
+        self.assertAlmostEqual(since, 10.000)
+        self.assertAlmostEqual(elapsed, 0.0)
+
+        since, elapsed = _presence_absence_update(since, now=10.060, present=False)
+        self.assertAlmostEqual(elapsed, 0.060, delta=1e-6)
+
+        since, elapsed = _presence_absence_update(since, now=10.070, present=True)
+        self.assertIsNone(since)
+        self.assertEqual(elapsed, 0.0)
+
+        # A later single dropped frame starts a new absence window; it does
+        # not inherit the age of the skillcheck or the previous loss.
+        since, elapsed = _presence_absence_update(since, now=10.500, present=False)
+        self.assertAlmostEqual(since, 10.500)
+        self.assertAlmostEqual(elapsed, 0.0)
+
+    def test_prefire_continuous_absence_reaches_timeout(self):
+        since, _ = _presence_absence_update(None, now=20.000, present=False)
+        since, elapsed = _presence_absence_update(since, now=20.101, present=False)
+        self.assertGreaterEqual(elapsed, 0.100)
 
     def test_frenzy_generation_uses_separate_lead(self):
         lead_ms, unc_ms = _generation_lead(
