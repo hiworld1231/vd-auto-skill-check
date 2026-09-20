@@ -161,6 +161,10 @@ class VisionEngine:
         # 1. Post-Fire / Pressed state (monitoring for frenzy or ring end)
         # -------------------------------------------------------------
         if self.is_pressed:
+            # Lifecycle/zone evidence still comes from BASELINE, but landing
+            # motion must stay on the continuity-aware HYBRID tracker.  A
+            # full 360° post-hit scan can lock onto red hit-animation pixels
+            # and manufacture impossible angle jumps.
             det_base = self.baseline_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
@@ -170,16 +174,39 @@ class VisionEngine:
                 expected_speed=expected_speed,
             )
             if det_base is None or not det_base.get("ring_present"):
-                self.reset()
                 return None
-            if det_base.get("white_zone") is not None:
-                det_base["white_zone"] = dict(det_base["white_zone"])
-                det_base["white_zone"].setdefault("source", "MEASURED_POST_HIT")
-            if det_base.get("black_zone") is not None:
-                det_base["black_zone"] = dict(det_base["black_zone"])
-                det_base["black_zone"].setdefault("source", "MEASURED_POST_HIT")
-            det_base["detector_name"] = "BASELINE_POST_HIT"
-            return det_base
+
+            det_hyb = self.hybrid_detector.detect(
+                frame_bgr=frame_bgr,
+                frame_gray=frame_gray,
+                expected_angle=expected_angle,
+                search_window=search_window,
+                dt_frame=dt_frame,
+                expected_speed=expected_speed,
+                locked_zones=(self.locked_white_zone, self.locked_black_zone),
+            )
+
+            out = dict(det_base)
+            if det_hyb is not None and det_hyb.get("needle_valid") and float(det_hyb.get("needle_strength", 0.0) or 0.0) >= 15.0:
+                out["needle_angle"] = det_hyb["needle_angle"]
+                out["needle_strength"] = det_hyb.get("needle_strength")
+                out["needle_confidence"] = det_hyb.get("needle_confidence")
+                out["needle_valid"] = True
+                out["detector_name"] = "POST_HIT_HYBRID_NEEDLE_BASELINE_LIFECYCLE"
+            else:
+                # Never substitute a fresh full-scan red peak as the landing
+                # angle.  Lifecycle data is still useful even when motion is
+                # temporarily untrusted.
+                out["needle_valid"] = False
+                out["detector_name"] = "POST_HIT_LIFECYCLE_ONLY"
+
+            if out.get("white_zone") is not None:
+                out["white_zone"] = dict(out["white_zone"])
+                out["white_zone"].setdefault("source", "MEASURED_POST_HIT")
+            if out.get("black_zone") is not None:
+                out["black_zone"] = dict(out["black_zone"])
+                out["black_zone"].setdefault("source", "MEASURED_POST_HIT")
+            return out
 
         # -------------------------------------------------------------
         # 2. SPAWN_ACQUIRE state (BASE presence, center sanity, zone lock)
@@ -209,10 +236,10 @@ class VisionEngine:
 
             if w_valid:
                 w_d = dict(w_d)
-                w_d["source"] = "MEASURED"
+                w_d.setdefault("source", "MEASURED")
             if b_valid:
                 b_d = dict(b_d)
-                b_d["source"] = "MEASURED"
+                b_d.setdefault("source", "MEASURED")
 
             if w_valid or b_valid:
                 if not w_valid and b_valid:
@@ -236,8 +263,7 @@ class VisionEngine:
 
                 # Initialize Hybrid detector state with baseline locked parameters
                 self.hybrid_detector.reset()
-                self.hybrid_detector.cx = cx
-                self.hybrid_detector.cy = cy
+                self.hybrid_detector.set_geometry(cx, cy)
                 self.hybrid_detector.last_angle = det_base["needle_angle"]
                 self.hybrid_detector.last_t = time.monotonic()
                 self.hybrid_detector.consecutive_losses = 0
