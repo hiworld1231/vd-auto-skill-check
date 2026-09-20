@@ -25,6 +25,8 @@ if str(ROOT) not in sys.path:
 
 from core.vision import VisionEngine, STATE_SPAWN_ACQUIRE, STATE_ACTIVE_TRACKING
 from core.detectors import SPACE_TEMPLATE
+from core.detectors.baseline import BaselineDetector
+from core.detectors.hybrid import HybridDetector, _bounded_local_parabolic_delta
 
 
 def create_synthetic_check_frame(
@@ -169,6 +171,41 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
             mock_base.assert_called_once()
             # Losses reset upon successful recovery
             self.assertEqual(self.vision.consecutive_hybrid_losses, 0)
+
+    def test_baseline_expected_angle_rejects_unrelated_red_peak(self):
+        gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
+        det = BaselineDetector().detect(
+            frame_bgr=bgr,
+            frame_gray=gray,
+            expected_angle=45.0,
+            search_window=35.0,
+        )
+        self.assertIsNotNone(det)
+        self.assertFalse(det["needle_valid"])
+        self.assertEqual(det["status"], "OUTSIDE_EXPECTED_WINDOW")
+
+    def test_hybrid_reacquire_does_not_jump_to_distant_red_peak(self):
+        gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
+        h = HybridDetector()
+        h.last_angle = 45.0
+        h.last_t = time.monotonic() - 0.016
+        det = h.detect(
+            frame_bgr=bgr,
+            frame_gray=gray,
+            expected_angle=None,
+            search_window=35.0,
+            dt_frame=0.016,
+            expected_speed=300.0,
+        )
+        self.assertIsNotNone(det)
+        self.assertFalse(det["needle_valid"])
+        self.assertEqual(det["status"], "REACQUIRE_OUTSIDE_CONTINUITY")
+
+    def test_local_parabolic_interpolation_never_wraps_window_edges(self):
+        left_edge = np.array([100.0, 20.0, 5.0], dtype=np.float32)
+        right_edge = np.array([5.0, 20.0, 100.0], dtype=np.float32)
+        self.assertEqual(_bounded_local_parabolic_delta(left_edge, 0), 0.0)
+        self.assertEqual(_bounded_local_parabolic_delta(right_edge, 2), 0.0)
 
     def test_zone_lifecycle_and_reset_for_new_check_generation(self):
         """Step 4: reset() clears locked zones so next check generation re-acquires freshly."""
