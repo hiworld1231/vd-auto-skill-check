@@ -36,6 +36,7 @@ def decide_great_fire(
     speed_source = str(pred.get("speed_source") or "MEASURED")
     provisional_speed = speed_source in {
         "SESSION_PRIOR",
+        "SESSION_PRIOR_GUARD",
         "SEGMENT_PROVISIONAL",
         "FRENZY_PRIOR",
     }
