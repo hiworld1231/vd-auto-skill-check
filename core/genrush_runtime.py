@@ -324,20 +324,8 @@ def run_genrush_clean(
         pressed = False
         chain = 0
         check_start = 0.0
-        if handoff_det is not None:
-            locked_w = dict(bootstrap_w)
-            locked_b = dict(bootstrap_b) if bootstrap_b is not None else None
-            if _valid_needle(handoff_det):
-                predictor.update(
-                    float(bootstrap_t if bootstrap_t is not None else now),
-                    float(handoff_det["needle_angle"]),
-                    float(handoff_det.get("needle_strength", 30.0)),
-                    locked_w,
-                    locked_b,
-                )
-        else:
-            locked_w = None
-            locked_b = None
+        locked_w = None
+        locked_b = None
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
@@ -414,8 +402,20 @@ def run_genrush_clean(
             generation_lead_uncertainty,
             dispatch_timing.uncertainty_ms(),
         )
-        locked_w = None
-        locked_b = None
+        if handoff_det is not None:
+            locked_w = dict(bootstrap_w)
+            locked_b = dict(bootstrap_b) if bootstrap_b is not None else None
+            if _valid_needle(handoff_det):
+                predictor.update(
+                    float(bootstrap_t if bootstrap_t is not None else now),
+                    float(handoff_det["needle_angle"]),
+                    float(handoff_det.get("needle_strength", 30.0)),
+                    locked_w,
+                    locked_b,
+                )
+        else:
+            locked_w = None
+            locked_b = None
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
