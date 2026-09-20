@@ -7,5 +7,10 @@ class TestCaptureSource(unittest.TestCase):
         self.assertIn('if str(self.framerate_mode).lower() == "cfr"',src)
         self.assertIn('ff_cmd += ["-r", str(self.fps)]',src)
         self.assertIn('"-fm", self.framerate_mode',src)
+        self.assertIn('"-c", "h264"', src)
+        self.assertIn('"-k", "h264"', src)
+        self.assertIn('"-probesize", "32"', src)
+        self.assertIn('"-analyzeduration", "0"', src)
+        self.assertIn('allow_mss_fallback: bool = False', src)
 
 if __name__=='__main__': unittest.main()
