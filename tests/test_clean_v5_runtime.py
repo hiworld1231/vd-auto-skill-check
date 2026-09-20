@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 from core.continuous_predictor import ContinuousAngularPredictor
@@ -41,6 +42,37 @@ class CleanV5Tests(unittest.TestCase):
             self.assertTrue(h.trigger().success)
         finally:
             h.close()
+
+    def test_evdev_keydown_returns_before_hold_and_timestamps_syn(self):
+        class FakeUI:
+            def __init__(self):
+                self.events = []
+            def write(self, etype, code, value):
+                self.events.append(("write", etype, code, value))
+            def syn(self):
+                self.events.append(("syn",))
+            def close(self):
+                self.events.append(("close",))
+
+        h = HardwareTrigger(dry_run=True, hold_seconds=0.080)
+        h.dry_run = False
+        h.backend = "EVDEV_UINPUT"
+        fake = FakeUI()
+        h._ui = fake
+        h._ecodes = SimpleNamespace(EV_KEY=1, KEY_SPACE=57)
+        try:
+            t0 = time.monotonic()
+            result = h.trigger()
+            elapsed = time.monotonic() - t0
+            self.assertTrue(result.success)
+            self.assertLess(elapsed, 0.050)
+            self.assertEqual(result.keydown_syn_at, result.finished_at)
+            self.assertEqual(fake.events[0], ("write", 1, 57, 1))
+            self.assertEqual(fake.events[1], ("syn",))
+        finally:
+            h.close()
+        self.assertIn(("write", 1, 57, 0), fake.events)
+        self.assertIsNotNone(h.last_release_at())
 
     def test_outcome_plateau(self):
         o = OutcomeObserver(60)
