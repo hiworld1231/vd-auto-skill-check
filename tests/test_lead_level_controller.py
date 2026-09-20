@@ -3,7 +3,7 @@ import unittest
 from core.lead_level_controller import LeadLevelController
 
 
-class TestLeadLevelControllerV5(unittest.TestCase):
+class TestRobustLeadLevelController(unittest.TestCase):
     def clean(
         self,
         c,
@@ -37,7 +37,7 @@ class TestLeadLevelControllerV5(unittest.TestCase):
             black_source="MEASURED",
         )
 
-    def test_corrected_geometric_invariant_is_primary(self):
+    def test_geometric_dispatch_invariant_is_primary(self):
         c = LeadLevelController(60)
         vals = [
             self.clean(c, u, e, observed=135)["ideal_lead_ms"]
@@ -45,8 +45,7 @@ class TestLeadLevelControllerV5(unittest.TestCase):
         ]
         self.assertEqual(vals, [105.0, 105.0, 105.0])
 
-    def test_replay8_cold_start_is_about_99ms_not_113ms(self):
-        # First four live checks from replays(8), using real dispatch eff + landing residual.
+    def test_replay8_cold_cluster_sets_robust_median(self):
         c = LeadLevelController(60)
         samples = [
             (60.0, 45.8),
@@ -54,105 +53,76 @@ class TestLeadLevelControllerV5(unittest.TestCase):
             (59.4, 29.4),
             (58.9, 33.7),
         ]
-        for i, (used, err) in enumerate(samples[:-1]):
+        for used, err in samples[:-1]:
             r = self.clean(c, used, err)
-            if i < 2:
-                self.assertFalse(r.get("updated", False))
-            else:
-                self.assertTrue(r["updated"])
-                self.assertEqual(r["update_reason"], "COLD_LATE_NUDGE")
+            self.assertFalse(r.get("updated", False))
         r = self.clean(c, *samples[-1])
         self.assertTrue(r["updated"])
-        self.assertEqual(r["update_reason"], "COLD_MEDIAN")
+        self.assertEqual(r["update_reason"], "COLD_ROBUST_MEDIAN")
         self.assertAlmostEqual(c.current_lead_ms, 99.2, delta=0.2)
 
-    def test_freeze_delay_is_diagnostic_not_controller_target(self):
-        c = LeadLevelController(60)
-        # Geometric target says 105 ms; response observer is noisy but still plausible.
-        r = self.clean(c, 60, 45, observed=130)
-        self.assertTrue(r["accepted"])
-        self.assertEqual(r["observation_source"], "GEOMETRIC_DISPATCH_INVARIANT")
-        self.assertAlmostEqual(r["ideal_lead_ms"], 105.0)
-        self.assertAlmostEqual(r["response_disagreement_ms"], 25.0)
-
-    def test_large_response_geometry_disagreement_is_diagnostic_only(self):
+    def test_freeze_delay_is_diagnostic_only(self):
         c = LeadLevelController(60)
         r = self.clean(c, 60, 45, observed=155)
         self.assertTrue(r["accepted"])
+        self.assertEqual(r["observation_source"], "GEOMETRIC_DISPATCH_INVARIANT")
         self.assertAlmostEqual(r["ideal_lead_ms"], 105.0)
         self.assertAlmostEqual(r["response_disagreement_ms"], 50.0)
 
-    def test_current_live_run_cold_starvation_breaks_by_sixth_clean_sample(self):
-        # 2026-09-19 live run that previously stayed at 60 ms for 10 checks.
+    def test_noisy_cold_start_recovers_when_recent_cluster_becomes_coherent(self):
         c = LeadLevelController(60)
         samples = [
-            (54.4, 49.8),
-            (60.0, 98.3),
-            (32.3, 72.5),
-            (48.4, 105.1),
-            (46.3, 52.2),
-            (58.4, 43.8),
+            (54.4, 49.8),   # ideal 104.2
+            (60.0, 98.3),   # 158.3
+            (32.3, 72.5),   # 104.8
+            (48.4, 105.1),  # 153.5 -> first four too noisy
+            (46.3, 52.2),   # 98.5
+            (58.4, 43.8),   # 102.2 -> last four coherent enough
         ]
-        results = []
-        for used, err in samples:
-            results.append(self.clean(c, used, err, outcome="GOOD"))
-        self.assertTrue(any(r.get("update_reason") == "COLD_LATE_NUDGE" for r in results[:3]))
+        results = [self.clean(c, u, e, outcome="GOOD") for u, e in samples]
+        self.assertFalse(results[3].get("updated", False))
         self.assertTrue(c.initialized)
-        self.assertEqual(results[-1]["update_reason"], "COLD_MEDIAN")
-        self.assertGreater(c.current_lead_ms, 100.0)
-        self.assertLess(c.current_lead_ms, 107.0)
+        self.assertEqual(results[-1]["update_reason"], "COLD_ROBUST_MEDIAN")
+        self.assertAlmostEqual(c.current_lead_ms, 103.5, delta=0.3)
 
-    def test_latest_live_run_fast_late_convergence(self):
-        # 2026-09-19 live run: after cold calibration to ~85 ms, every fresh
-        # landing remained late.  The old controller waited seven samples and
-        # only moved +8 ms, producing 18 GOOD / 1 GREAT.  Four coherent late
-        # samples should now move directly toward their robust ideal.
+    def test_positive_level_shift_is_symmetric_and_bounded(self):
         c = LeadLevelController(60)
-        cold = [
-            (60.0, 15.1),
-            (43.8, 59.8),
-            (60.0, 18.3),
-            (57.5, 34.1),
-        ]
-        for used, err in cold:
-            self.clean(c, used, err)
+        for ideal in [75.1, 103.6, 78.3, 91.6]:
+            self.clean(c, 60, ideal - 60)
         self.assertAlmostEqual(c.current_lead_ms, 84.95, delta=0.2)
 
-        late1 = [
-            (84.4, 10.7),
-            (81.8, 25.9),
-            (84.7, 14.2),
-            (71.8, 24.4),
-        ]
-        for used, err in late1[:-1]:
-            r = self.clean(c, used, err, outcome="GOOD")
+        late = [95.1, 107.7, 98.9, 96.2]
+        for ideal in late[:-1]:
+            r = self.clean(c, c.current_lead_ms, ideal - c.current_lead_ms)
             self.assertFalse(r.get("updated", False))
-        r = self.clean(c, *late1[-1], outcome="GOOD")
+        r = self.clean(c, c.current_lead_ms, late[-1] - c.current_lead_ms)
         self.assertTrue(r["updated"])
-        self.assertEqual(r["update_reason"], "FAST_LATE_CORRECTION")
-        self.assertAlmostEqual(c.current_lead_ms, 97.55, delta=0.3)
+        self.assertEqual(r["update_reason"], "ROBUST_LEVEL_SHIFT")
+        self.assertGreater(r["step_ms"], 0.0)
+        self.assertLessEqual(r["step_ms"], 12.0 + 1e-9)
 
-    def test_fast_late_step_is_bounded(self):
+    def test_negative_level_shift_uses_same_rule(self):
         c = LeadLevelController(60)
-        for ideal in [84, 86, 85, 85]:
+        for ideal in [99, 100, 101, 100]:
             self.clean(c, 60, ideal - 60)
+        self.assertAlmostEqual(c.current_lead_ms, 100.0, delta=0.1)
         before = c.current_lead_ms
-        for ideal in [130, 131, 132, 133]:
-            self.clean(c, before, ideal - before, outcome="GOOD")
-        self.assertLessEqual(c.current_lead_ms - before, 16.0 + 1e-9)
 
-    def test_early_correction_needs_seven_fresh_samples(self):
-        c = LeadLevelController(60)
-        for ideal in [100, 101, 99, 100]:
-            self.clean(c, 60, ideal - 60)
-        before = c.current_lead_ms
-        for ideal in [78, 79, 80, 79, 78, 80]:
+        for ideal in [79, 80, 78, 79]:
             r = self.clean(c, before, ideal - before)
-            self.assertFalse(r.get("updated", False))
-        r = self.clean(c, before, 79 - before)
         self.assertTrue(r["updated"])
-        self.assertEqual(r["update_reason"], "CONFIRMED_EARLY_LEVEL_SHIFT")
-        self.assertGreaterEqual(r["step_ms"], -8.0 - 1e-9)
+        self.assertEqual(r["update_reason"], "ROBUST_LEVEL_SHIFT")
+        self.assertLess(r["step_ms"], 0.0)
+        self.assertGreaterEqual(r["step_ms"], -12.0 - 1e-9)
+
+    def test_lead_uncertainty_has_floor_and_shrinks_on_tight_cluster(self):
+        c = LeadLevelController(60)
+        self.assertAlmostEqual(c.get_uncertainty_ms(), 12.0)
+        for ideal in [100, 100, 100, 100]:
+            self.clean(c, 60, ideal - 60)
+        self.assertTrue(c.initialized)
+        self.assertAlmostEqual(c.get_uncertainty_ms(), 2.0)
+        self.assertAlmostEqual(c.telemetry()["lead_uncertainty_ms"], 2.0)
 
     def test_unstable_fit_cannot_train(self):
         c = LeadLevelController(60)
@@ -181,7 +151,7 @@ class TestLeadLevelControllerV5(unittest.TestCase):
         self.assertFalse(r["accepted"])
         self.assertEqual(r["reject_reason"], "TARGET_ALREADY_PASSED")
 
-    def test_frenzy_never_trains(self):
+    def test_frenzy_never_trains_session_lead(self):
         c = LeadLevelController(60)
         r = c.record_outcome(
             center_error_ms=None,
