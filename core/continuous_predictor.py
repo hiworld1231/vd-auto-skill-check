@@ -189,8 +189,26 @@ class ContinuousAngularPredictor:
         black_zone: Optional[Dict[str, float]],
     ) -> bool:
         if white_zone and white_zone.get("start") is not None:
-            if self.locked_zones is None or self.locked_zones[0] is None:
-                self.locked_zones = (dict(white_zone), dict(black_zone) if black_zone else None)
+            current_w = self.locked_zones[0] if self.locked_zones else None
+            current_src = str((current_w or {}).get("source", ""))
+            new_src = str(white_zone.get("source", ""))
+            should_upgrade = (
+                self.locked_zones is None
+                or current_w is None
+                or (
+                    not current_src.startswith("MEASURED")
+                    and new_src.startswith("MEASURED")
+                )
+            )
+            if should_upgrade:
+                self.locked_zones = (
+                    dict(white_zone),
+                    dict(black_zone) if black_zone else (
+                        dict(self.locked_zones[1])
+                        if self.locked_zones and self.locked_zones[1]
+                        else None
+                    ),
+                )
         elif black_zone and self.locked_zones is None:
             self.locked_zones = (None, dict(black_zone))
 
