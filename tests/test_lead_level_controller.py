@@ -124,6 +124,20 @@ class TestRobustLeadLevelController(unittest.TestCase):
         self.assertAlmostEqual(c.get_uncertainty_ms(), 2.0)
         self.assertAlmostEqual(c.telemetry()["lead_uncertainty_ms"], 2.0)
 
+    def test_uncertainty_represents_next_check_scatter_not_mean_error(self):
+        c = LeadLevelController(60)
+        # Median=100, MAD=2 => predictive robust sigma ~= 2.965 ms.
+        # The previous standard-error implementation divided this by sqrt(4)
+        # and then hit the 2 ms floor, understating one-check variability.
+        for ideal in [96.0, 100.0, 100.0, 104.0]:
+            self.clean(c, 60.0, ideal - 60.0)
+        self.assertTrue(c.initialized)
+        self.assertAlmostEqual(c.get_uncertainty_ms(), 2.9652, delta=0.01)
+        self.assertEqual(
+            c.telemetry()["lead_uncertainty_kind"],
+            "PREDICTIVE_ROBUST_SIGMA",
+        )
+
     def test_unstable_fit_cannot_train(self):
         c = LeadLevelController(60)
         r = self.clean(c, 60, 45, spread=80.0)
