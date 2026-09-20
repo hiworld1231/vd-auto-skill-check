@@ -25,7 +25,7 @@ class PostFireLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(d.state, LANDED)
 
-    def test_absence_then_reappearance_confirms_frenzy(self):
+    def test_absence_then_reappearance_alone_does_not_confirm_frenzy(self):
         sm = PostFireLifecycle()
         sm.begin(1.0)
         self.assertEqual(
@@ -36,10 +36,48 @@ class PostFireLifecycleTests(unittest.TestCase):
             sm.update(1.085, ring_present=False, plateau_found=False).state,
             WAIT,
         )
-        d = sm.update(1.090, ring_present=True, plateau_found=False)
-        self.assertEqual(d.state, FRENZY)
-        self.assertEqual(d.reason, "ABSENCE_REAPPEAR")
-        self.assertGreaterEqual(d.absence_ms, 30.0)
+        d = sm.update(
+            1.090,
+            ring_present=True,
+            plateau_found=False,
+            zone_moved=False,
+            fresh_motion=False,
+        )
+        self.assertEqual(d.state, WAIT)
+
+    def test_absence_reappearance_needs_stable_relocation_and_new_motion(self):
+        sm = PostFireLifecycle(
+            relocation_not_before_s=0.500,
+            relocation_frames=3,
+        )
+        sm.begin(1.0)
+        sm.update(1.050, ring_present=False, plateau_found=False)
+        sm.update(1.085, ring_present=False, plateau_found=False)
+
+        first = sm.update(
+            1.090,
+            ring_present=True,
+            plateau_found=False,
+            zone_moved=True,
+            zone_center=242.0,
+            reappearance_proof=True,
+            fresh_motion=False,
+        )
+        self.assertEqual(first.state, WAIT)
+
+        second = sm.update(
+            1.110,
+            ring_present=True,
+            plateau_found=False,
+            zone_moved=True,
+            zone_center=243.0,
+            reappearance_proof=True,
+            fresh_motion=True,
+        )
+        self.assertEqual(second.state, FRENZY)
+        self.assertEqual(
+            second.reason, "ABSENCE_REAPPEAR_WITH_STABLE_RELOCATION"
+        )
 
     def test_sustained_absence_ends_check_instead_of_fake_frenzy(self):
         sm = PostFireLifecycle(ring_end_absence_s=0.180)
