@@ -12,6 +12,7 @@ from core.genrush_runtime import (
     _generation_lead,
     _generation_motion_update,
     _presence_absence_update,
+    _trusted_postfire_landing_sample,
 )
 from core.outcome_observer import OutcomeObserver
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
@@ -64,6 +65,28 @@ class CleanV5Tests(unittest.TestCase):
         since, _ = _presence_absence_update(None, now=20.000, present=False)
         since, elapsed = _presence_absence_update(since, now=20.101, present=False)
         self.assertGreaterEqual(elapsed, 0.100)
+
+    def test_postfire_red_peak_without_ring_is_not_landing_evidence(self):
+        self.assertFalse(
+            _trusted_postfire_landing_sample(
+                {
+                    "ring_present": False,
+                    "needle_valid": True,
+                    "needle_angle": 200.0,
+                    "needle_strength": 90.0,
+                }
+            )
+        )
+        self.assertTrue(
+            _trusted_postfire_landing_sample(
+                {
+                    "ring_present": True,
+                    "needle_valid": True,
+                    "needle_angle": 100.0,
+                    "needle_strength": 90.0,
+                }
+            )
+        )
 
     def test_next_generation_motion_is_independent_from_old_landing_needle(self):
         samples = []
@@ -360,6 +383,50 @@ class CleanV5Tests(unittest.TestCase):
         result = o.conclude_check()
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GOOD")
+
+    def test_extreme_phase_miss_is_reported_unconfirmed(self):
+        o = OutcomeObserver(120)
+        w = {
+            "start": 95.0, "end": 105.0, "center": 100.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0, "end": 145.0, "center": 125.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        o.on_trigger(1.0, 100.0, 280.0, w, b, used_latency_ms=120.0)
+        for t, a in [
+            (1.060, 220.0),
+            (1.076, 220.2),
+            (1.092, 219.9),
+        ]:
+            o.observe_sample(t, a, 40.0)
+        result = o.conclude_check()
+        self.assertEqual(result["outcome"], "UNCONFIRMED")
+        self.assertEqual(result["unconfirmed_reason"], "PHASE_OUTLIER")
+        self.assertTrue(result["phase_outlier"])
+        self.assertFalse(result["plateau_trusted"])
+
+    def test_plausible_near_sector_miss_remains_miss(self):
+        o = OutcomeObserver(120)
+        w = {
+            "start": 95.0, "end": 105.0, "center": 100.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0, "end": 145.0, "center": 125.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        o.on_trigger(1.0, 100.0, 280.0, w, b, used_latency_ms=120.0)
+        for t, a in [
+            (1.060, 82.0),
+            (1.076, 82.2),
+            (1.092, 81.9),
+        ]:
+            o.observe_sample(t, a, 40.0)
+        result = o.conclude_check()
+        self.assertEqual(result["outcome"], "MISS")
+        self.assertTrue(result["plateau_trusted"])
 
     def test_frenzy_transition_is_not_reported_as_unconfirmed(self):
         o = OutcomeObserver(60)

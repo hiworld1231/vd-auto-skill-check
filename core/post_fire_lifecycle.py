@@ -26,7 +26,8 @@ class PostFireLifecycle:
     """Evidence-based post-fire lifecycle for normal checks and Frenzy.
 
     Strong signal:
-      sustained ring absence followed by reappearance.
+      sustained ring absence followed by reappearance, *plus* proof that the
+      reappeared ring is a different generation.
 
     Fallback signal for transitions without a visible disappearance:
       no landing plateau + the same relocated zone on several unique frames +
@@ -59,6 +60,7 @@ class PostFireLifecycle:
         self.absent_since: Optional[float] = None
         self.relocated_streak = 0
         self.relocated_center: Optional[float] = None
+        self.reappearance_candidate = False
         self.rollback_seen = False
 
     def begin(self, fire_time: float) -> None:
@@ -73,6 +75,7 @@ class PostFireLifecycle:
         plateau_found: bool,
         zone_moved: bool = False,
         zone_center: Optional[float] = None,
+        reappearance_proof: bool = False,
         rollback: bool = False,
         fresh_motion: bool = False,
     ) -> LifecycleDecision:
@@ -98,21 +101,26 @@ class PostFireLifecycle:
                 absence_ms=absent_s * 1000.0,
             )
 
-        # Ring is visible now.  A real disappearance/reappearance is the
-        # strongest new-generation signal and does not depend on zone color.
+        # A disappearance/reappearance is only a temporal hint.  The live
+        # fixed-center scanner can drop one or two frames on an ordinary
+        # landing, so absence alone must never create a new Frenzy chain.
         if self.absent_since is not None:
             absent_s = max(0.0, now - self.absent_since)
             self.absent_since = None
             if not plateau_found and absent_s >= self.min_reappear_absence_s:
-                return LifecycleDecision(
-                    FRENZY,
-                    "ABSENCE_REAPPEAR",
-                    absence_ms=absent_s * 1000.0,
-                )
+                self.reappearance_candidate = True
+                if reappearance_proof and fresh_motion:
+                    return LifecycleDecision(
+                        FRENZY,
+                        "ABSENCE_REAPPEAR_WITH_RELOCATION_PROOF",
+                        absence_ms=absent_s * 1000.0,
+                        relocated_streak=max(1, self.relocated_streak),
+                    )
 
         if plateau_found:
             self.relocated_streak = 0
             self.relocated_center = None
+            self.reappearance_candidate = False
             self.rollback_seen = False
             return LifecycleDecision(LANDED, "FREEZE_PLATEAU")
 
@@ -138,6 +146,21 @@ class PostFireLifecycle:
         else:
             self.relocated_streak = 0
             self.relocated_center = None
+
+        # A real absence/reappearance lets us confirm earlier, but only after
+        # the same strict relocation geometry persists and the *new* generation
+        # itself is moving.  This keeps genuine fast Frenzy responsive without
+        # letting a transient detector dropout synthesize chain=2.
+        if (
+            self.reappearance_candidate
+            and self.relocated_streak >= 2
+            and fresh_motion
+        ):
+            return LifecycleDecision(
+                FRENZY,
+                "ABSENCE_REAPPEAR_WITH_STABLE_RELOCATION",
+                relocated_streak=self.relocated_streak,
+            )
 
         # Rollback/old-needle motion is telemetry only. Persistent-relocation
         # fallback requires motion from the freshly scanned generation itself.

@@ -13,9 +13,15 @@ def _signed_delta(a: float, b: float) -> float:
 class OutcomeObserver:
     """Post-fire landing observer independent from the old adaptive learner."""
 
-    def __init__(self, initial_latency_ms: float, session_base_speed: float = 278.0):
+    def __init__(
+        self,
+        initial_latency_ms: float,
+        session_base_speed: float = 278.0,
+        phase_outlier_ms: float = 130.0,
+    ):
         self.initial_latency_ms = float(initial_latency_ms)
         self.session_base_speed = float(session_base_speed)
+        self.phase_outlier_ms = max(50.0, float(phase_outlier_ms))
         self.reset()
 
     def reset(self) -> None:
@@ -179,9 +185,36 @@ class OutcomeObserver:
         err_deg = _signed_delta(hit, target)
         speed = max(20.0, float(self.speed_deg_s or self.session_base_speed))
         err_ms = err_deg / speed * 1000.0
+
+        # A stable red plateau can still be an unrelated post-hit artifact
+        # after continuity is lost.  For a MISS, a phase error this large is
+        # outside the same physical trust bound already used by lead learning;
+        # report it as unconfirmed instead of manufacturing a real game miss.
+        if outcome == "MISS" and abs(err_ms) > self.phase_outlier_ms:
+            return {
+                "outcome": "UNCONFIRMED",
+                "unconfirmed_reason": "PHASE_OUTLIER",
+                "phase_outlier": True,
+                "plateau_found": True,
+                "plateau_trusted": False,
+                "hit_angle": hit,
+                "target_angle": target,
+                "error_deg": err_deg,
+                "error_ms": err_ms,
+                "center_error_deg": err_deg,
+                "center_error_ms": err_ms,
+                "observed_response_ms": observed_response_ms,
+                "plateau_span_ms": plateau_span_ms,
+                "plateau_sample_count": plateau_sample_count,
+                "white_source": white.get("source") if white else None,
+                "black_source": black.get("source") if black else None,
+                "frenzy_transition": bool(frenzy_transition),
+            }
+
         return {
             "outcome": outcome,
             "plateau_found": True,
+            "plateau_trusted": True,
             "hit_angle": hit,
             "target_angle": target,
             "error_deg": err_deg,
