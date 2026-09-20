@@ -135,6 +135,70 @@ class VisionEngine:
         """Signals that the current skill check has been fired."""
         self.is_pressed = True
 
+    def bootstrap_generation(
+        self,
+        det: Dict[str, Any],
+        white_zone: Dict[str, float],
+        black_zone: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Adopt the already-observed next Frenzy generation without reacquiring.
+
+        The post-fire frame that confirms Frenzy already contains the relocated
+        ring geometry. Throwing that frame away and returning to SPAWN_ACQUIRE
+        can lose very fast generations before the SPACE template is visible
+        again. This method turns the confirming frame directly into ACTIVE
+        tracking state.
+        """
+        if not self.is_orchestrated:
+            raise RuntimeError("generation bootstrap requires orchestrated vision")
+        if not isinstance(det, dict):
+            raise ValueError("bootstrap detection is required")
+        if white_zone is None:
+            raise ValueError("bootstrap white zone is required")
+
+        center = det.get("center")
+        cx = det.get("cx")
+        cy = det.get("cy")
+        if center is not None and (cx is None or cy is None):
+            cx, cy = center
+        if cx is None or cy is None:
+            if self.locked_center is None:
+                raise ValueError("bootstrap center is required")
+            cx, cy = self.locked_center
+
+        cx = float(cx)
+        cy = float(cy)
+        self.state = STATE_ACTIVE_TRACKING
+        self.locked_white_zone = dict(white_zone)
+        self.locked_black_zone = dict(black_zone) if black_zone is not None else None
+        self.locked_center = (cx, cy)
+        self.consecutive_hybrid_losses = 0
+        self.consecutive_ring_losses = 0
+        self.black_only_acquire_count = 0
+        self.is_pressed = False
+
+        if self.baseline_detector is not None:
+            self.baseline_detector.reset()
+        if self.hybrid_detector is not None:
+            self.hybrid_detector.reset()
+            self.hybrid_detector.set_geometry(cx, cy)
+            self.hybrid_detector.locked_white_zone = self.locked_white_zone
+            self.hybrid_detector.locked_black_zone = self.locked_black_zone
+            if det.get("needle_angle") is not None and det.get("needle_valid", True):
+                self.hybrid_detector.last_angle = float(det["needle_angle"])
+                self.hybrid_detector.last_t = time.monotonic()
+                self.hybrid_detector.consecutive_losses = 0
+
+        out = dict(det)
+        out["ring_present"] = True
+        out["white_zone"] = self.locked_white_zone
+        out["black_zone"] = self.locked_black_zone
+        out["cx"] = cx
+        out["cy"] = cy
+        out["center"] = (cx, cy)
+        out["detector_name"] = "FRENZY_GENERATION_HANDOFF"
+        return out
+
     def detect_frame(
         self,
         frame_gray: Optional[np.ndarray],

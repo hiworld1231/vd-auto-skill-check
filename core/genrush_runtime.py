@@ -333,7 +333,16 @@ def run_genrush_clean(
         last_post_angle = None
         pre_fire_absent_since = None
 
-    def start_generation(now: float, new_chain: int, preserve_center: bool = False) -> None:
+    def start_generation(
+        now: float,
+        new_chain: int,
+        preserve_center: bool = False,
+        *,
+        bootstrap_det: Optional[Dict[str, Any]] = None,
+        bootstrap_w: Optional[Dict[str, Any]] = None,
+        bootstrap_b: Optional[Dict[str, Any]] = None,
+        bootstrap_t: Optional[float] = None,
+    ) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
         nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
         nonlocal pre_fire_absent_since
@@ -349,10 +358,22 @@ def run_genrush_clean(
             )
             or predictor.get_actuation_speed()
         )
-        if preserve_center:
-            vision.reset_generation(preserve_center=True)
+        if (
+            new_chain > 1
+            and bootstrap_det is not None
+            and bootstrap_w is not None
+        ):
+            handoff_det = vision.bootstrap_generation(
+                bootstrap_det,
+                bootstrap_w,
+                bootstrap_b,
+            )
         else:
-            vision.reset()
+            handoff_det = None
+            if preserve_center:
+                vision.reset_generation(preserve_center=True)
+            else:
+                vision.reset()
         predictor.reset(
             keep_speed=(new_chain > 1),
             default_speed=(prior_generation_speed if new_chain > 1 else None),
@@ -381,8 +402,20 @@ def run_genrush_clean(
             generation_lead_uncertainty,
             dispatch_timing.uncertainty_ms(),
         )
-        locked_w = None
-        locked_b = None
+        if handoff_det is not None:
+            locked_w = dict(bootstrap_w)
+            locked_b = dict(bootstrap_b) if bootstrap_b is not None else None
+            if _valid_needle(handoff_det):
+                predictor.update(
+                    float(bootstrap_t if bootstrap_t is not None else now),
+                    float(handoff_det["needle_angle"]),
+                    float(handoff_det.get("needle_strength", 30.0)),
+                    locked_w,
+                    locked_b,
+                )
+        else:
+            locked_w = None
+            locked_b = None
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
@@ -401,7 +434,25 @@ def run_genrush_clean(
             ),
             target_mode="GREAT",
             target_ratio=0.5,
+            locked_w=locked_w,
+            locked_b=locked_b,
         )
+        if handoff_det is not None:
+            recorder.on_frame(
+                float(bootstrap_t if bootstrap_t is not None else now),
+                frame,
+                handoff_det,
+                predictor.predict(
+                    float(bootstrap_t if bootstrap_t is not None else now),
+                    float(handoff_det.get("needle_angle") or 0.0),
+                    "GREAT",
+                ) if _valid_needle(handoff_det) else None,
+                {
+                    "frame_age_ms": frame_age_ms,
+                    "decode_delivery_age_ms": frame_age_ms,
+                    "frenzy_generation_handoff": True,
+                },
+            )
         tui.set_status(f"CHECK #{chain}")
         tui.log(
             f"▶ check chain={chain} lead={check_lead:.1f}ms"
@@ -410,6 +461,7 @@ def run_genrush_clean(
                 if chain > 1
                 else ""
             )
+            + (" [HANDOFF]" if handoff_det is not None else "")
         )
 
     def finish(
@@ -815,8 +867,25 @@ def run_genrush_clean(
 
                 if decision.state == FRENZY:
                     tui.log(f"🔥 FRENZY confirm={decision.reason}")
+                    next_chain = chain + 1
+                    bootstrap_det = None
+                    bootstrap_w = None
+                    bootstrap_b = None
+                    if ring_present:
+                        bootstrap_w = _sane_zone(nw, 5.0, 16.0)
+                        bootstrap_b = _sane_zone(nb, 18.0, 65.0)
+                        if bootstrap_w is not None:
+                            bootstrap_det = dict(det)
                     finish(now, frenzy_transition=True)
-                    start_generation(now, chain + 1, preserve_center=True)
+                    start_generation(
+                        now,
+                        next_chain,
+                        preserve_center=True,
+                        bootstrap_det=bootstrap_det,
+                        bootstrap_w=bootstrap_w,
+                        bootstrap_b=bootstrap_b,
+                        bootstrap_t=frame_ts,
+                    )
                     continue
                 if decision.state == RING_END:
                     finish(now)
