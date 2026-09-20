@@ -100,6 +100,72 @@ def extract_runs(mask: np.ndarray, min_len: int, max_len: int) -> List[Tuple[flo
     return runs
 
 
+def refine_zone_from_score(
+    zone: Optional[Dict[str, float]],
+    score: Optional[np.ndarray],
+    *,
+    min_width: float,
+    max_width: float,
+) -> Optional[Dict[str, float]]:
+    """Refine integer-degree mask boundaries using the continuous ring score.
+
+    The boolean mask selects the correct circular run robustly. The underlying
+    per-angle score then recovers sub-degree boundary locations by interpolating
+    the zero crossing on each edge. If either local crossing is malformed, the
+    original integer geometry is preserved.
+    """
+    if zone is None or score is None:
+        return zone
+    arr = np.asarray(score, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n < 3:
+        return zone
+
+    try:
+        start_i = int(round(float(zone["start"]))) % n
+        width_i = max(1, int(round(float(zone["width"]))))
+    except (KeyError, TypeError, ValueError):
+        return zone
+    end_i = (start_i + width_i - 1) % n
+    prev_i = (start_i - 1) % n
+    next_i = (end_i + 1) % n
+
+    s_prev = float(arr[prev_i])
+    s_in = float(arr[start_i])
+    e_in = float(arr[end_i])
+    e_next = float(arr[next_i])
+    if not all(np.isfinite(v) for v in (s_prev, s_in, e_in, e_next)):
+        return zone
+    if not (s_prev <= 0.0 < s_in and e_in > 0.0 >= e_next):
+        return zone
+
+    start_denom = s_in - s_prev
+    end_denom = e_in - e_next
+    if start_denom <= 1e-9 or end_denom <= 1e-9:
+        return zone
+
+    start_frac = max(0.0, min(1.0, -s_prev / start_denom))
+    end_frac = max(0.0, min(1.0, e_in / end_denom))
+    start = (float(prev_i) + start_frac) % float(n)
+    end = (float(end_i) + end_frac) % float(n)
+    width = (end - start) % float(n)
+    if not (float(min_width) <= width <= float(max_width)):
+        return zone
+
+    out = dict(zone)
+    out.update(
+        {
+            "start": float(start),
+            "end": float(end),
+            "width": float(width),
+            "center": float((start + 0.5 * width) % float(n)),
+            "geometry_refined": True,
+            "boundary_method": "LINEAR_PROFILE_ZERO_CROSSING",
+        }
+    )
+    return out
+
+
 def extract_zones_from_masks(
     white_mask: Optional[np.ndarray],
     black_mask: Optional[np.ndarray],
