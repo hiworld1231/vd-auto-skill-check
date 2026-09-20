@@ -15,6 +15,7 @@ import cv2
 
 from core.capture import CaptureError, ScreenGrabber
 from core.continuous_predictor import ContinuousAngularPredictor
+from core.dispatch_timing import DispatchTimingModel
 from core.fire_policy import decide_great_fire
 from core.flight_recorder import FlightRecorder
 from core.lead_calibration import LeadCalibrationStore, make_calibration_fingerprint
@@ -146,6 +147,7 @@ def run_genrush_clean(
     observer = OutcomeObserver(seed_lead, base_speed)
     post_fire = PostFireLifecycle()
     lead = LeadLevelController(seed_lead)
+    dispatch_timing = DispatchTimingModel()
     mouse = MouseTracker(enabled=require_lmb)
     recorder = FlightRecorder(
         root / "replays",
@@ -325,10 +327,18 @@ def run_genrush_clean(
                 if last_fire.deadline is not None
                 else None
             )
-            sched_jitter = (
+            raw_dispatch_lag_ms = (
                 (last_fire.dispatch_done - last_fire.deadline) * 1000.0
                 if last_fire.deadline is not None
                 else None
+            )
+            # Residual physical keydown error relative to the intended press
+            # time. Once dispatch-lag compensation is active this, not the raw
+            # deadline->SYN lag, is the scheduler error relevant to landing.
+            sched_jitter = (
+                (last_fire.dispatch_done - last_fire.desired) * 1000.0
+                if last_fire.desired is not None
+                else raw_dispatch_lag_ms
             )
             input_dispatch_ms = (
                 last_fire.dispatch_done - last_fire.dispatch_start
@@ -354,6 +364,10 @@ def run_genrush_clean(
                     "crossing_uncertainty_ms": ctx.get("crossing_uncertainty_ms"),
                     "lead_uncertainty_ms": ctx.get("lead_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
+                    "dispatch_lag_ms": raw_dispatch_lag_ms,
+                    "dispatch_lag_compensation_ms": ctx.get("dispatch_lag_compensation_ms"),
+                    "dispatch_lag_uncertainty_ms": ctx.get("dispatch_lag_uncertainty_ms"),
+                    "dispatch_timing": ctx.get("dispatch_timing"),
                     "scheduler_callback_jitter_ms": callback_jitter,
                     "input_dispatch_ms": input_dispatch_ms,
                     "keydown_syn_time": last_fire.dispatch_done,
@@ -483,6 +497,11 @@ def run_genrush_clean(
                 # subsystem after UInput.syn()/press() completes.  Use that
                 # timestamp, not the pre-write function-entry timestamp.
                 physical_press_t = float(ev.dispatch_done)
+                observed_dispatch_lag_ms = None
+                if ev.deadline is not None and ev.mode == "SCHEDULED":
+                    observed_dispatch_lag_ms = dispatch_timing.record(
+                        float(ev.deadline), physical_press_t
+                    )
                 if ev.desired is not None:
                     c["effective_dispatch_lead_ms"] = max(
                         0.0,
@@ -494,6 +513,8 @@ def run_genrush_clean(
                 c["input_dispatch_ms"] = (
                     float(ev.dispatch_done) - float(ev.dispatch_start)
                 ) * 1000.0
+                c["dispatch_lag_observed_ms"] = observed_dispatch_lag_ms
+                c["dispatch_timing"] = dispatch_timing.telemetry()
                 post_fire.begin(physical_press_t)
                 observer.on_trigger(
                     physical_press_t,
@@ -513,6 +534,7 @@ def run_genrush_clean(
                     trigger_mode=ev.mode,
                     measured_speed_at_lock=c.get("speed_at_lock"),
                     planned_press_time=ev.desired,
+                    scheduler_deadline=ev.deadline,
                     callback_entry_time=ev.callback_entry,
                     keydown_begin_time=ev.dispatch_start,
                     keydown_syn_time=physical_press_t,
@@ -527,6 +549,10 @@ def run_genrush_clean(
                     landing_uncertainty_width_deg=c.get("landing_uncertainty_width_deg"),
                     crossing_uncertainty_ms=c.get("crossing_uncertainty_ms"),
                     lead_uncertainty_ms=c.get("lead_uncertainty_ms"),
+                    dispatch_lag_compensation_ms=c.get("dispatch_lag_compensation_ms"),
+                    dispatch_lag_uncertainty_ms=c.get("dispatch_lag_uncertainty_ms"),
+                    dispatch_lag_observed_ms=c.get("dispatch_lag_observed_ms"),
+                    dispatch_timing=c.get("dispatch_timing"),
                 )
                 tui.log(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
@@ -750,6 +776,9 @@ def run_genrush_clean(
                         "landing_uncertainty_width_deg": pred.get("landing_uncertainty_width_deg"),
                         "crossing_uncertainty_ms": pred.get("crossing_uncertainty_ms"),
                         "lead_uncertainty_ms": pred.get("lead_uncertainty_ms"),
+                        "dispatch_lag_compensation_ms": dispatch_timing.compensation_ms(),
+                        "dispatch_lag_uncertainty_ms": dispatch_timing.uncertainty_ms(),
+                        "dispatch_timing": dispatch_timing.telemetry(),
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
@@ -769,11 +798,20 @@ def run_genrush_clean(
             elif press_t > now:
                 if planned_press is None or abs(press_t - planned_press) >= 0.0005:
                     planned_press = press_t
-                    scheduler.schedule(
-                        press_t,
-                        reason="SCHEDULED_GREAT",
-                        desired_press_time=press_t,
+                    dispatch_deadline = dispatch_timing.deadline_for_physical_press(
+                        press_t
                     )
+                    if dispatch_deadline <= now:
+                        scheduler.trigger_now(
+                            "IMMEDIATE_DISPATCH_COMPENSATED",
+                            desired_press_time=press_t,
+                        )
+                    else:
+                        scheduler.schedule(
+                            dispatch_deadline,
+                            reason="SCHEDULED_GREAT",
+                            desired_press_time=press_t,
+                        )
                     predictor.mark_committed()
 
             if now - check_start > 3.5:
