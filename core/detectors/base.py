@@ -182,7 +182,10 @@ def extract_zones_from_masks(
         if runs:
             runs.sort(key=lambda x: x[2], reverse=True)
             w_start, w_end, w_len = runs[0]
-            w_center = (w_start + w_len / 2.0) % 360.0
+            # Runs describe samples at integer-degree bin centres.  The
+            # physical interval spans half a bin beyond each end, so its centre
+            # is the midpoint of the first/last sample centres: (N-1)/2.
+            w_center = (w_start + (w_len - 1.0) / 2.0) % 360.0
             w_dict = {
                 "start": float(w_start),
                 "end": float(w_end),
@@ -201,7 +204,7 @@ def extract_zones_from_masks(
                     "start": float(b_s),
                     "end": float(b_e),
                     "width": float(b_l),
-                    "center": float((b_s + b_l / 2.0) % 360),
+                    "center": float((b_s + (b_l - 1.0) / 2.0) % 360),
                     "source": "MEASURED",
                 }
 
@@ -232,7 +235,7 @@ def extract_zones_from_masks(
                 "start": float(b_s),
                 "end": float(b_e),
                 "width": float(b_l),
-                "center": float((b_s + b_l / 2.0) % 360),
+                "center": float((b_s + (b_l - 1.0) / 2.0) % 360),
                 "source": "MEASURED",
             }
 
