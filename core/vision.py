@@ -435,8 +435,21 @@ class VisionEngine:
                     det_base["detector_name"] = "HYBRID_NEEDLE_FALLBACK_BASELINE"
                     return det_base
             else:
-                self.reset()
-                return None
+                # HYBRID presence succeeded on this frame; only the needle
+                # tracker is weak.  A failed BASELINE recovery is therefore
+                # NOT evidence that the whole skillcheck vanished.  Keep the
+                # generation/zones alive and let HYBRID reacquire next frame.
+                det_hyb["white_zone"] = self.locked_white_zone
+                det_hyb["black_zone"] = self.locked_black_zone
+                det_hyb["cx"] = self.locked_center[0]
+                det_hyb["cy"] = self.locked_center[1]
+                det_hyb["center"] = self.locked_center
+                det_hyb["ring_present"] = True
+                det_hyb["needle_valid"] = False
+                det_hyb["needle_strength"] = 0.0
+                det_hyb["status"] = "NEEDLE_REACQUIRE_GRACE"
+                det_hyb["detector_name"] = "HYBRID_NEEDLE_REACQUIRE_GRACE"
+                return det_hyb
 
         # Frame 1 loss: return hybrid marked invalid (never emit random or guess angle)
         det_hyb["white_zone"] = self.locked_white_zone
