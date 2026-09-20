@@ -492,9 +492,9 @@ def run_genrush_clean(
                 check_lead = lead.get_lead_ms()
                 predictor.reset(False, session_base_speed=base_speed)
                 predictor.set_delivery_lead(
-            check_lead,
-            lead.get_uncertainty_ms() if lead.initialized else 0.0,
-        )
+                    check_lead,
+                    lead.get_uncertainty_ms() if lead.initialized else 0.0,
+                )
                 observer.reset()
                 scheduler.rearm()
                 locked_w, locked_b = w, b
