@@ -287,11 +287,19 @@ def run_genrush_clean(
         info["capture_health"] = grabber.get_diagnostics()
         if last_fire:
             ctx = last_fire.context
-            sched_jitter = (
+            callback_jitter = (
                 (last_fire.callback_entry - last_fire.deadline) * 1000.0
                 if last_fire.deadline is not None
                 else None
             )
+            sched_jitter = (
+                (last_fire.dispatch_done - last_fire.deadline) * 1000.0
+                if last_fire.deadline is not None
+                else None
+            )
+            input_dispatch_ms = (
+                last_fire.dispatch_done - last_fire.dispatch_start
+            ) * 1000.0
             info.update(
                 {
                     "trigger_mode": last_fire.mode,
@@ -313,6 +321,9 @@ def run_genrush_clean(
                     "crossing_uncertainty_ms": ctx.get("crossing_uncertainty_ms"),
                     "lead_uncertainty_ms": ctx.get("lead_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
+                    "scheduler_callback_jitter_ms": callback_jitter,
+                    "input_dispatch_ms": input_dispatch_ms,
+                    "keydown_syn_time": last_fire.dispatch_done,
                     "detector_fallback": ctx.get("detector_fallback", False),
                     "compensation_regime": "CONTINUOUS_MEASURED_SPEED",
                 }
@@ -420,20 +431,24 @@ def run_genrush_clean(
                 scheduler.cancel_pending()
                 vision.notify_pressed()
                 c = ev.context
-                # Physical predicted time from the actual key dispatch to the
-                # target crossing.  This is valid for both scheduled and
-                # overdue IMMEDIATE_SAFE fires.  The old code incorrectly used
-                # time_to_target from the planning frame.
+                # The physical keydown becomes visible to the Linux input
+                # subsystem after UInput.syn()/press() completes.  Use that
+                # timestamp, not the pre-write function-entry timestamp.
+                physical_press_t = float(ev.dispatch_done)
                 if ev.desired is not None:
                     c["effective_dispatch_lead_ms"] = max(
                         0.0,
-                        check_lead + (float(ev.desired) - float(ev.dispatch_start)) * 1000.0,
+                        check_lead + (float(ev.desired) - physical_press_t) * 1000.0,
                     )
                 else:
                     c["effective_dispatch_lead_ms"] = check_lead
-                post_fire.begin(ev.dispatch_start)
+                c["keydown_syn_time"] = physical_press_t
+                c["input_dispatch_ms"] = (
+                    float(ev.dispatch_done) - float(ev.dispatch_start)
+                ) * 1000.0
+                post_fire.begin(physical_press_t)
                 observer.on_trigger(
-                    ev.dispatch_start,
+                    physical_press_t,
                     float(c.get("target_angle") or 0.0),
                     float(c.get("speed_at_fire") or predictor.speed_deg_s),
                     locked_w,
@@ -441,7 +456,7 @@ def run_genrush_clean(
                     used_latency_ms=check_lead,
                 )
                 recorder.on_trigger(
-                    ev.dispatch_start,
+                    physical_press_t,
                     ev.reason,
                     float(c.get("target_angle") or 0.0),
                     float(c.get("estimated_angle") or c.get("target_angle") or 0.0),
@@ -450,6 +465,10 @@ def run_genrush_clean(
                     trigger_mode=ev.mode,
                     measured_speed_at_lock=c.get("speed_at_lock"),
                     planned_press_time=ev.desired,
+                    callback_entry_time=ev.callback_entry,
+                    keydown_begin_time=ev.dispatch_start,
+                    keydown_syn_time=physical_press_t,
+                    input_dispatch_ms=c.get("input_dispatch_ms"),
                     frame_age_ms=c.get("frame_age_ms"),
                     decode_delivery_age_ms=c.get("frame_age_ms"),
                     fit_telemetry=c.get("fit"),
