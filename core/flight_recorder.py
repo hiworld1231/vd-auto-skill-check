@@ -35,6 +35,7 @@ class FlightRecorder:
         self._worker.start()
 
     def start_check(self, now: float, chain_count: int = 1, latency_ms: float = 0.0,
+                    lead_uncertainty_ms: float = 0.0,
                     target_mode: str = "GREAT", target_ratio: float = 0.5,
                     locked_w=None, locked_b=None, **_: Any) -> None:
         self._counter += 1
@@ -44,7 +45,9 @@ class FlightRecorder:
             "timestamp_iso": dt.datetime.now().isoformat(),
             "session": dict(self.session_meta),
             "start_monotonic": float(now), "chain_count": int(chain_count),
-            "configured_latency_ms": float(latency_ms), "target_mode": target_mode,
+            "configured_latency_ms": float(latency_ms),
+            "configured_lead_uncertainty_ms": float(lead_uncertainty_ms),
+            "target_mode": target_mode,
             "target_ratio": float(target_ratio), "locked_w": locked_w, "locked_b": locked_b,
             "frames": list(self._pre), "trigger_event": None, "outcome_info": None,
         }
