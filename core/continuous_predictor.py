@@ -519,6 +519,7 @@ class ContinuousAngularPredictor:
             "crossing_latest_ms": crossing_latest_ms,
             "crossing_uncertainty_ms": max(0.0, crossing_latest_ms - crossing_earliest_ms),
             "white_window_ms": white_window_ms,
+            "great_width_deg": float(white_zone["width"]) if white_zone and white_zone.get("width") is not None else None,
             "landing_uncertainty_low_angle": landing_low_u % 360.0,
             "landing_uncertainty_high_angle": landing_high_u % 360.0,
             "landing_uncertainty_width_deg": max(0.0, landing_high_u - landing_low_u),
