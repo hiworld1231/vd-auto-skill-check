@@ -51,6 +51,10 @@ class FlightRecorder:
             "needle_strength": det.get("needle_strength") if isinstance(det, dict) else None,
             "detector": det.get("detector_name") if isinstance(det, dict) else None,
             "ring_present": det.get("ring_present") if isinstance(det, dict) else None,
+            "white_zone": dict(det.get("white_zone")) if isinstance(det, dict) and isinstance(det.get("white_zone"), dict) else None,
+            "black_zone": dict(det.get("black_zone")) if isinstance(det, dict) and isinstance(det.get("black_zone"), dict) else None,
+            "center": list(det.get("center")) if isinstance(det, dict) and det.get("center") is not None else None,
+            "status": det.get("status") if isinstance(det, dict) else None,
             "pred": dict(pred) if isinstance(pred, dict) else None,
             "timing": dict(timing_diag or {}),
         }
@@ -78,9 +82,12 @@ class FlightRecorder:
         ep["end_monotonic"] = float(now)
         ep["duration_s"] = float(now) - float(ep["start_monotonic"])
         ep["outcome_info"] = dict(outcome_info or {})
-        save = self.record_all or str(ep["outcome_info"].get("outcome")) != "GREAT"
-        if not save:
-            return
+        outcome = str(ep["outcome_info"].get("outcome"))
+        # JSON telemetry is cheap and must be complete; dropping GREAT creates
+        # survivorship bias and makes replay statistics misleading.  Keep
+        # diagnostic images selective unless record_all was explicitly asked.
+        if not self.record_all and outcome == "GREAT":
+            ep.pop("snapshots", None)
         try:
             self._q.put_nowait(ep)
         except queue.Full:
