@@ -16,13 +16,16 @@ import numpy as np
 class FlightRecorder:
     """Async JSON-first replay recorder. No disk I/O occurs in the fire callback."""
     def __init__(self, output_dir: Path, max_queue_size: int = 64, pre_roll_frames: int = 10,
-                 save_video: bool = False, save_diagnostic_strip: bool = True, record_all: bool = False):
+                 save_video: bool = False, save_diagnostic_strip: bool = True, record_all: bool = False,
+                 session_meta: Optional[Dict[str, Any]] = None):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.save_video = bool(save_video)
         self.save_diagnostic_strip = bool(save_diagnostic_strip)
         self.record_all = bool(record_all)
+        self.session_meta = dict(session_meta or {})
         self._pre = deque(maxlen=int(pre_roll_frames))
+        self._snap_pre = deque(maxlen=6)
         self._episode: Optional[Dict[str, Any]] = None
         self._counter = 0
         self._q: queue.Queue = queue.Queue(maxsize=max_queue_size)
@@ -38,6 +41,7 @@ class FlightRecorder:
         self._episode = {
             "check_id": f"check_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._counter:04d}",
             "timestamp_iso": dt.datetime.now().isoformat(),
+            "session": dict(self.session_meta),
             "start_monotonic": float(now), "chain_count": int(chain_count),
             "configured_latency_ms": float(latency_ms), "target_mode": target_mode,
             "target_ratio": float(target_ratio), "locked_w": locked_w, "locked_b": locked_b,
@@ -62,13 +66,19 @@ class FlightRecorder:
             self._pre.append(meta)
             return
         self._episode["frames"].append(meta)
-        snaps = self._episode.setdefault("snapshots", [])
-        if len(snaps) < 6 and frame_bgr is not None:
-            snaps.append(frame_bgr.copy())
+        if frame_bgr is not None:
+            if self._episode.get("trigger_event") is None:
+                self._snap_pre.append(frame_bgr.copy())
+            else:
+                snaps = self._episode.setdefault("snapshots", list(self._snap_pre))
+                if len(snaps) < 18:
+                    snaps.append(frame_bgr.copy())
 
     def on_trigger(self, now: float, reason: str, target_angle: float, est_angle: float,
                    last_speed: float, latency_ms: float, **kwargs: Any) -> None:
         if self._episode is not None:
+            if self._snap_pre and "snapshots" not in self._episode:
+                self._episode["snapshots"] = list(self._snap_pre)
             self._episode["trigger_event"] = {
                 "trigger_time": float(now), "reason": reason, "target_angle": target_angle,
                 "est_angle": est_angle, "speed_deg_s": last_speed, "latency_ms": latency_ms, **kwargs,
