@@ -85,7 +85,7 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertFalse(d.allow)
         self.assertEqual(d.reason, "GREAT_INTERVAL_UNSAFE")
 
-    def test_reconstructed_great_requires_stable_fit(self):
+    def test_reconstructed_great_safe_envelope_can_fire_on_usable_speed(self):
         pred = {
             "time_until_press_ms": 20.0,
             "great_interval_safe": True,
@@ -94,22 +94,14 @@ class GreatFirePolicyTests(unittest.TestCase):
             "great_width_deg": 9.5,
             "white_source": "RECONSTRUCTED_FROM_BLACK",
         }
-        unstable = decide_great_fire(
+        d = decide_great_fire(
             pred,
             fit_stable=False,
             speed_usable=True,
         )
-        self.assertFalse(unstable.allow)
-        self.assertEqual(unstable.reason, "GREAT_GEOMETRY_UNTRUSTED")
-
-        stable = decide_great_fire(
-            pred,
-            fit_stable=True,
-            speed_usable=True,
-        )
-        self.assertTrue(stable.allow)
-        self.assertTrue(stable.best_effort)
-        self.assertEqual(stable.reason, "RECONSTRUCTED_GREAT_STABLE_FIT")
+        self.assertTrue(d.allow)
+        self.assertTrue(d.best_effort)
+        self.assertEqual(d.reason, "RECONSTRUCTED_GREAT_SAFE_ENVELOPE")
 
     def test_reconstructed_great_never_uses_last_chance_intersection(self):
         d = decide_great_fire(
