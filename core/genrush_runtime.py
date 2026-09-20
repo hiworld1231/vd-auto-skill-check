@@ -136,6 +136,55 @@ def _generation_motion_update(
     return (max(vals) - min(vals)) >= float(min_span_deg)
 
 
+def _frenzy_relocation_evidence(
+    new_white: Optional[Dict[str, Any]],
+    new_black: Optional[Dict[str, Any]],
+    locked_white: Optional[Dict[str, Any]],
+    *,
+    generation_needle_valid: bool,
+    min_move_deg: float = 90.0,
+    max_white_black_gap_deg: float = 10.0,
+) -> Dict[str, Any]:
+    """Return strict geometry evidence for a Frenzy relocation.
+
+    Real recorded Frenzy transitions relocate the GREAT sector by well over
+    100 degrees and keep the white GREAT arc adjacent to the following black
+    GOOD arc. Post-hit visual artifacts often violate one or both properties.
+    """
+    out = {
+        "qualifies": False,
+        "zone_center": None,
+        "relocation_delta_deg": None,
+        "white_black_gap_deg": None,
+    }
+    if (
+        not generation_needle_valid
+        or not _is_measured_zone(new_white)
+        or not _is_measured_zone(new_black)
+        or not isinstance(locked_white, dict)
+    ):
+        return out
+    try:
+        center = float(new_white["center"]) % 360.0
+        old_center = float(locked_white["center"]) % 360.0
+        delta = _circ(center, old_center)
+        gap = (float(new_black["start"]) - float(new_white["end"])) % 360.0
+    except (KeyError, TypeError, ValueError):
+        return out
+    out.update(
+        {
+            "zone_center": center,
+            "relocation_delta_deg": delta,
+            "white_black_gap_deg": gap,
+            "qualifies": bool(
+                delta >= float(min_move_deg)
+                and gap <= float(max_white_black_gap_deg)
+            ),
+        }
+    )
+    return out
+
+
 def _generation_lead(
     chain_count: int,
     *,
@@ -200,6 +249,12 @@ def run_genrush_clean(
     seed_lead = float(config.get("genrush_seed_lead_ms", 60.0))
     frenzy_lead = float(config.get("frenzy_lead_ms", 80.0))
     frenzy_lead_uncertainty = float(config.get("frenzy_lead_uncertainty_ms", 0.0))
+    frenzy_relocation_min_deg = float(
+        config.get("frenzy_relocation_min_deg", 90.0)
+    )
+    frenzy_white_black_gap_max_deg = float(
+        config.get("frenzy_white_black_gap_max_deg", 10.0)
+    )
     prefire_ring_end_absence_s = max(
         0.050,
         float(config.get("prefire_ring_end_absence_ms", 100.0)) / 1000.0,
@@ -901,20 +956,28 @@ def run_genrush_clean(
                     ),
                 )
 
+                relocation = {
+                    "qualifies": False,
+                    "zone_center": None,
+                    "relocation_delta_deg": None,
+                    "white_black_gap_deg": None,
+                }
                 if ring_present:
                     nw, nb = vision.extract_zones(det)
                     nw = _sane_zone(nw, 5.0, 16.0)
                     nb = _sane_zone(nb, 18.0, 65.0)
-                    zone_move = bool(
-                        nw
-                        and locked_w
-                        and isinstance(det, dict)
-                        and bool(det.get("generation_needle_valid"))
-                        and _circ(
-                            float(nw.get("center", 0)), float(locked_w.get("center", 0))
-                        )
-                        > 15.0
+                    relocation = _frenzy_relocation_evidence(
+                        nw,
+                        nb,
+                        locked_w,
+                        generation_needle_valid=bool(
+                            isinstance(det, dict)
+                            and det.get("generation_needle_valid")
+                        ),
+                        min_move_deg=frenzy_relocation_min_deg,
+                        max_white_black_gap_deg=frenzy_white_black_gap_max_deg,
                     )
+                    zone_move = bool(relocation["qualifies"])
 
                 old_generation_motion = observer.has_recent_motion()
                 decision = post_fire.update(
@@ -922,8 +985,9 @@ def run_genrush_clean(
                     ring_present=ring_present,
                     plateau_found=observer.has_plateau(),
                     zone_moved=zone_move,
+                    zone_center=relocation.get("zone_center"),
                     rollback=rollback,
-                    fresh_motion=(old_generation_motion or generation_motion),
+                    fresh_motion=generation_motion,
                 )
 
                 recorder.on_frame(
@@ -940,6 +1004,18 @@ def run_genrush_clean(
                         "post_fire_relocated_streak": decision.relocated_streak,
                         "old_generation_motion": old_generation_motion,
                         "next_generation_motion": generation_motion,
+                        "frenzy_relocation_qualified": bool(
+                            relocation.get("qualifies")
+                        ),
+                        "frenzy_relocation_delta_deg": relocation.get(
+                            "relocation_delta_deg"
+                        ),
+                        "frenzy_white_black_gap_deg": relocation.get(
+                            "white_black_gap_deg"
+                        ),
+                        "frenzy_relocation_center": relocation.get(
+                            "zone_center"
+                        ),
                         "generation_detector": (
                             det.get("generation_detector")
                             if isinstance(det, dict)

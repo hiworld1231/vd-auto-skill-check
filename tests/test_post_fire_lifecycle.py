@@ -57,6 +57,7 @@ class PostFireLifecycleTests(unittest.TestCase):
                 ring_present=True,
                 plateau_found=False,
                 zone_moved=True,
+                zone_center=242.0,
                 fresh_motion=True,
             )
             self.assertEqual(d.state, WAIT)
@@ -65,10 +66,51 @@ class PostFireLifecycleTests(unittest.TestCase):
             ring_present=True,
             plateau_found=False,
             zone_moved=True,
+            zone_center=243.0,
             fresh_motion=True,
         )
         self.assertEqual(d.state, FRENZY)
-        self.assertEqual(d.reason, "PERSISTENT_RELOCATION_WITH_MOTION")
+        self.assertEqual(
+            d.reason, "PERSISTENT_STABLE_RELOCATION_WITH_NEW_MOTION"
+        )
+
+    def test_jittering_relocation_candidates_never_build_streak(self):
+        sm = PostFireLifecycle(
+            relocation_not_before_s=0.100,
+            relocation_frames=3,
+            relocation_center_tolerance_deg=6.0,
+        )
+        sm.begin(1.0)
+        centers = (220.0, 245.0, 270.0, 225.0)
+        for i, center in enumerate(centers):
+            d = sm.update(
+                1.120 + i * 0.020,
+                ring_present=True,
+                plateau_found=False,
+                zone_moved=True,
+                zone_center=center,
+                fresh_motion=True,
+            )
+            self.assertEqual(d.state, WAIT)
+            self.assertEqual(d.relocated_streak, 1)
+
+    def test_old_needle_rollback_cannot_substitute_for_new_generation_motion(self):
+        sm = PostFireLifecycle(
+            relocation_not_before_s=0.100,
+            relocation_frames=3,
+        )
+        sm.begin(1.0)
+        for t in (1.120, 1.140, 1.160, 1.180):
+            d = sm.update(
+                t,
+                ring_present=True,
+                plateau_found=False,
+                zone_moved=True,
+                zone_center=245.0,
+                rollback=True,
+                fresh_motion=False,
+            )
+            self.assertEqual(d.state, WAIT)
 
     def test_rollback_alone_never_confirms_frenzy(self):
         sm = PostFireLifecycle()

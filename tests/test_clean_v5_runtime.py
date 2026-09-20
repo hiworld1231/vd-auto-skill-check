@@ -8,6 +8,7 @@ from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
 from core.genrush_runtime import (
+    _frenzy_relocation_evidence,
     _generation_lead,
     _generation_motion_update,
     _presence_absence_update,
@@ -93,6 +94,109 @@ class CleanV5Tests(unittest.TestCase):
             )
             self.assertFalse(moving)
         self.assertEqual(samples, [])
+
+    def test_small_post_hit_zone_shift_cannot_fake_frenzy(self):
+        old_w = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        new_w = {
+            "start": 102.0, "end": 112.0, "center": 107.0,
+            "width": 10.0, "source": "MEASURED_FIXED_CENTER",
+        }
+        new_b = {
+            "start": 113.0, "end": 153.0, "center": 133.0,
+            "width": 40.0, "source": "MEASURED_FIXED_CENTER",
+        }
+        ev = _frenzy_relocation_evidence(
+            new_w, new_b, old_w,
+            generation_needle_valid=True,
+            min_move_deg=90.0,
+            max_white_black_gap_deg=10.0,
+        )
+        self.assertFalse(ev["qualifies"])
+        self.assertAlmostEqual(ev["relocation_delta_deg"], 22.0)
+
+    def test_large_but_unpaired_visual_artifact_cannot_fake_frenzy(self):
+        old_w = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        new_w = {
+            "start": 220.0, "end": 230.0, "center": 225.0,
+            "width": 10.0, "source": "MEASURED_FIXED_CENTER",
+        }
+        # Geometrically impossible for the normal white->black success sector:
+        new_b = {
+            "start": 270.0, "end": 310.0, "center": 290.0,
+            "width": 40.0, "source": "MEASURED_FIXED_CENTER",
+        }
+        ev = _frenzy_relocation_evidence(
+            new_w, new_b, old_w,
+            generation_needle_valid=True,
+            min_move_deg=90.0,
+            max_white_black_gap_deg=10.0,
+        )
+        self.assertFalse(ev["qualifies"])
+        self.assertGreater(ev["relocation_delta_deg"], 90.0)
+        self.assertGreater(ev["white_black_gap_deg"], 10.0)
+
+    def test_realistic_frenzy_relocation_geometry_qualifies(self):
+        old_w = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        new_w = {
+            "start": 238.0, "end": 248.0, "center": 243.0,
+            "width": 10.0, "source": "MEASURED_FIXED_CENTER",
+        }
+        new_b = {
+            "start": 250.0, "end": 290.0, "center": 270.0,
+            "width": 40.0, "source": "MEASURED_FIXED_CENTER",
+        }
+        ev = _frenzy_relocation_evidence(
+            new_w, new_b, old_w,
+            generation_needle_valid=True,
+            min_move_deg=90.0,
+            max_white_black_gap_deg=10.0,
+        )
+        self.assertTrue(ev["qualifies"])
+        self.assertAlmostEqual(ev["relocation_delta_deg"], 158.0)
+        self.assertAlmostEqual(ev["white_black_gap_deg"], 2.0)
+
+    def test_archived_minimum_true_frenzy_relocation_still_qualifies(self):
+        # Archived real chain6->7 transition:
+        old_w = {
+            "start": 221.0, "end": 231.0, "center": 226.48939900947659,
+            "width": 10.0, "source": "MEASURED",
+        }
+        new_w = {
+            "start": 98.4534192667837,
+            "end": 109.29413683471543,
+            "center": 103.87377805074956,
+            "width": 10.840717567931733,
+            "source": "MEASURED_FIXED_CENTER",
+        }
+        new_b = {
+            "start": 109.97915310662923,
+            "end": 152.11025444230802,
+            "center": 131.04470377446862,
+            "width": 42.13110133567879,
+            "source": "MEASURED_FIXED_CENTER",
+        }
+        ev = _frenzy_relocation_evidence(
+            new_w, new_b, old_w,
+            generation_needle_valid=True,
+            min_move_deg=90.0,
+            max_white_black_gap_deg=10.0,
+        )
+        self.assertTrue(ev["qualifies"])
+        self.assertAlmostEqual(
+            ev["relocation_delta_deg"], 122.61562095872702, places=3
+        )
+        self.assertAlmostEqual(
+            ev["white_black_gap_deg"], 0.6850162719138, places=3
+        )
 
     def test_frenzy_generation_uses_separate_lead(self):
         lead_ms, unc_ms = _generation_lead(
