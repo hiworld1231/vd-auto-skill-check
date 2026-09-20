@@ -282,11 +282,21 @@ def run_genrush_clean(
         nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
         scheduler.cancel_pending()
         scheduler.rearm()
+        prior_generation_speed = (
+            float(predictor.speed_deg_s)
+            if predictor.has_adapted
+            else float(predictor.get_actuation_speed())
+        )
         if preserve_center:
             vision.reset_generation(preserve_center=True)
         else:
             vision.reset()
-        predictor.reset(keep_speed=False, is_chain=new_chain > 1, session_base_speed=base_speed)
+        predictor.reset(
+            keep_speed=(new_chain > 1),
+            default_speed=(prior_generation_speed if new_chain > 1 else None),
+            is_chain=new_chain > 1,
+            session_base_speed=base_speed,
+        )
         observer.reset()
         post_fire.reset()
         in_check = True
@@ -320,7 +330,14 @@ def run_genrush_clean(
             target_ratio=0.5,
         )
         tui.set_status(f"CHECK #{chain}")
-        tui.log(f"▶ check chain={chain} lead={check_lead:.1f}ms")
+        tui.log(
+            f"▶ check chain={chain} lead={check_lead:.1f}ms"
+            + (
+                f" prior_speed={prior_generation_speed:.1f}°/s"
+                if chain > 1
+                else ""
+            )
+        )
 
     def finish(
         now: float, *, frenzy_transition: bool = False, reason: Optional[str] = None
