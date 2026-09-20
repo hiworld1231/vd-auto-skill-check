@@ -13,5 +13,7 @@
     "width": 320,
     "height": 240
   },
-  "allow_mss_fallback": false
+  "allow_mss_fallback": false,
+  "persist_lead_calibration": true,
+  "lead_calibration_max_age_days": 7
 }
