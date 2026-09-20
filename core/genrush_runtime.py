@@ -15,6 +15,7 @@ import cv2
 
 from core.capture import CaptureError, ScreenGrabber
 from core.continuous_predictor import ContinuousAngularPredictor
+from core.fire_policy import decide_great_fire
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
 from core.mouse_tracker import MouseTracker
@@ -611,11 +612,31 @@ def run_genrush_clean(
             if pred is None:
                 continue
 
+            usable = predictor.has_usable_speed()
             stable = predictor.has_stable_speed()
-            urgent = predictor.has_usable_speed() and float(
-                pred.get("time_until_press_ms", 9999.0)
-            ) <= 35.0
-            if not (stable or urgent):
+            fire_policy = decide_great_fire(
+                pred,
+                fit_stable=stable,
+                speed_usable=usable,
+            )
+
+            if pred.get("target_passed") and not pred.get("should_press_now"):
+                no_fire_reason = "TOO_LATE_UNSAFE"
+                scheduler.cancel_pending()
+                planned_press = None
+                predictor.mark_tracking()
+                continue
+
+            if not fire_policy.allow:
+                # A deadline armed on an older fit is no longer trustworthy if
+                # fresh evidence cannot keep the landing envelope inside GREAT.
+                # Cancel first; a later clean frame may safely arm it again.
+                if planned_press is not None:
+                    scheduler.cancel_pending()
+                    planned_press = None
+                    predictor.mark_tracking()
+                if float(pred.get("time_until_press_ms", 9999.0)) <= 0.0:
+                    no_fire_reason = fire_policy.reason
                 continue
 
             if speed_at_lock is None:
@@ -633,6 +654,12 @@ def run_genrush_clean(
                         "speed_at_fire": float(pred.get("speed_deg_s") or predictor.speed_deg_s),
                         "raw_fit_speed_at_fire": float(predictor.speed_deg_s),
                         "actuation_speed_reason": pred.get("actuation_speed_reason"),
+                        "fire_policy_reason": fire_policy.reason,
+                        "fire_policy_best_effort": fire_policy.best_effort,
+                        "great_interval_safe": bool(pred.get("great_interval_safe", False)),
+                        "great_interval_intersects": bool(pred.get("great_interval_intersects", False)),
+                        "landing_uncertainty_width_deg": pred.get("landing_uncertainty_width_deg"),
+                        "crossing_uncertainty_ms": pred.get("crossing_uncertainty_ms"),
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
@@ -646,20 +673,15 @@ def run_genrush_clean(
                     }
                 )
 
-            if pred.get("target_passed") and not pred.get("should_press_now"):
-                no_fire_reason = "TOO_LATE_UNSAFE"
-                scheduler.cancel_pending()
-                continue
-
             if pred.get("should_press_now"):
-                scheduler.trigger_now("IMMEDIATE_SAFE", desired_press_time=press_t)
+                scheduler.trigger_now("IMMEDIATE_GREAT", desired_press_time=press_t)
                 predictor.mark_committed()
             elif press_t > now:
                 if planned_press is None or abs(press_t - planned_press) >= 0.0005:
                     planned_press = press_t
                     scheduler.schedule(
                         press_t,
-                        reason="SCHEDULED_CONTINUOUS",
+                        reason="SCHEDULED_GREAT",
                         desired_press_time=press_t,
                     )
                     predictor.mark_committed()
