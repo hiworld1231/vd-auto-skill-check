@@ -240,7 +240,7 @@ class VisionEngine:
             # reconstruct a 9.5° white arc from a measured black arc.
             w_d = det_base.get("white_zone")
             b_d = det_base.get("black_zone")
-            w_valid = (w_d is not None and 5.0 <= w_d.get("width", 0.0) <= 15.0)
+            w_valid = (w_d is not None and 5.0 <= w_d.get("width", 0.0) <= 16.0)
             b_valid = (b_d is not None and 18.0 <= b_d.get("width", 0.0) <= 65.0)
 
             if w_valid:
