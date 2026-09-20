@@ -275,6 +275,64 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
             # Losses reset upon successful recovery
             self.assertEqual(self.vision.consecutive_hybrid_losses, 0)
 
+    def test_needle_loss_does_not_reset_confirmed_ring(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+        self.vision.state = STATE_ACTIVE_TRACKING
+        self.vision.locked_white_zone = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        self.vision.locked_black_zone = {
+            "start": 90.0, "end": 130.0, "center": 110.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        self.vision.locked_center = (160.0, 162.5)
+
+        weak = {
+            "ring_present": True,
+            "needle_valid": False,
+            "needle_angle": 45.0,
+            "needle_strength": 5.0,
+            "white_zone": self.vision.locked_white_zone,
+            "black_zone": self.vision.locked_black_zone,
+            "status": "LOW_CONFIDENCE",
+        }
+        recovered = dict(weak)
+        recovered.update({
+            "needle_valid": True,
+            "needle_angle": 52.0,
+            "needle_strength": 70.0,
+            "status": "OK",
+        })
+
+        with patch.object(
+            self.vision.hybrid_detector,
+            "detect",
+            side_effect=[dict(weak), dict(weak), recovered],
+        ), patch.object(
+            self.vision.baseline_detector,
+            "detect",
+            return_value=None,
+        ):
+            first = self.vision.detect_frame(gray, frame)
+            second = self.vision.detect_frame(gray, frame)
+            third = self.vision.detect_frame(gray, frame)
+
+        self.assertIsNotNone(first)
+        self.assertFalse(first["needle_valid"])
+        self.assertIsNotNone(second)
+        self.assertTrue(second["ring_present"])
+        self.assertFalse(second["needle_valid"])
+        self.assertEqual(second["status"], "NEEDLE_REACQUIRE_GRACE")
+        self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
+
+        self.assertIsNotNone(third)
+        self.assertTrue(third["needle_valid"])
+        self.assertAlmostEqual(third["needle_angle"], 52.0)
+        self.assertEqual(self.vision.consecutive_hybrid_losses, 0)
+        self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
+
     def test_hybrid_presence_uses_measured_shifted_center(self):
         gray, bgr = create_synthetic_check_frame(
             needle_angle_deg=45.0,
