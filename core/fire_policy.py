@@ -46,13 +46,14 @@ def decide_great_fire(
     if bool(pred.get("great_interval_safe", False)):
         if measured_geometry:
             return GreatFireDecision(True, "GREAT_INTERVAL_SAFE")
-        if reconstructed_geometry and fit_stable:
-            # Keep the old playable reconstruction path, but never call it a
-            # high-confidence GREAT.  Geometry uncertainty must not be combined
-            # with the short-track urgent bypass.
+        if reconstructed_geometry and speed_usable:
+            # The entire kinematic uncertainty envelope already fits inside
+            # the reconstructed GREAT arc. Requiring a second "stable fit"
+            # gate here starves short checks even though the modeled landing
+            # interval is safe enough to play.
             return GreatFireDecision(
                 True,
-                "RECONSTRUCTED_GREAT_STABLE_FIT",
+                "RECONSTRUCTED_GREAT_SAFE_ENVELOPE",
                 best_effort=True,
             )
         return GreatFireDecision(False, "GREAT_GEOMETRY_UNTRUSTED")
