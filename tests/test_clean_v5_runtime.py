@@ -7,6 +7,7 @@ from pathlib import Path
 from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
+from core.genrush_runtime import _generation_lead
 from core.outcome_observer import OutcomeObserver
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.detectors.base import extract_zones_from_masks
@@ -35,6 +36,61 @@ class CleanV5Tests(unittest.TestCase):
             self.assertEqual(calls, ["IMMEDIATE"])
         finally:
             s.close()
+
+    def test_frenzy_generation_uses_separate_lead(self):
+        lead_ms, unc_ms = _generation_lead(
+            2,
+            normal_lead_ms=126.9,
+            normal_uncertainty_ms=8.1,
+            frenzy_lead_ms=80.0,
+            frenzy_uncertainty_ms=0.0,
+        )
+        self.assertAlmostEqual(lead_ms, 80.0)
+        self.assertAlmostEqual(unc_ms, 0.0)
+
+        normal_ms, normal_unc = _generation_lead(
+            1,
+            normal_lead_ms=126.9,
+            normal_uncertainty_ms=8.1,
+            frenzy_lead_ms=80.0,
+            frenzy_uncertainty_ms=0.0,
+        )
+        self.assertAlmostEqual(normal_ms, 126.9)
+        self.assertAlmostEqual(normal_unc, 8.1)
+
+    def test_scheduler_propagates_dispatch_token(self):
+        calls = []
+        def cb(reason, **kw):
+            calls.append((reason, kw.get("scheduler_token")))
+        sched = PreciseTriggerScheduler(cb)
+        try:
+            sched.trigger_now("IMMEDIATE", dispatch_token=17)
+            self.assertEqual(calls, [("IMMEDIATE", 17)])
+        finally:
+            sched.close()
+
+    def test_old_scheduler_token_can_be_rejected_after_generation_change(self):
+        physical = []
+        active = {"token": 1}
+        def cb(reason, **kw):
+            token = kw.get("scheduler_token")
+            if token != active["token"]:
+                return
+            physical.append(reason)
+
+        sched = PreciseTriggerScheduler(cb, spin_window_s=0.0005)
+        try:
+            sched.schedule(
+                time.monotonic() + 0.030,
+                reason="SCHEDULED_TEST",
+                dispatch_token=1,
+            )
+            time.sleep(0.010)
+            active["token"] = 2
+            time.sleep(0.050)
+            self.assertEqual(physical, [])
+        finally:
+            sched.close()
 
     def test_dry_trigger_explicit(self):
         h = HardwareTrigger(dry_run=True)

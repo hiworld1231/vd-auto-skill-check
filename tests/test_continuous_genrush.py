@@ -233,6 +233,40 @@ class TestContinuousGenRush(unittest.TestCase):
         p.speed_fits.extend([(1.0, 430.0), (1.1, 520.0), (1.2, 610.0)])
         self.assertFalse(p.has_stable_speed())
 
+    def test_frenzy_80ms_lead_keeps_1000dps_success_window_open(self):
+        w = {
+            "start": 95.0, "end": 105.0, "center": 100.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0, "end": 145.0, "center": 125.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+
+        late = ContinuousAngularPredictor(126.9, session_base_speed=278.0)
+        late.reset(
+            keep_speed=True,
+            default_speed=1000.0,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        late.update(0.0, 20.0, 80.0, w, b)
+        late_pred = late.predict(0.0, 20.0, target="GREAT")
+        self.assertIsNotNone(late_pred)
+        self.assertFalse(late_pred["should_press_now"])
+
+        frenzy = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
+        frenzy.reset(
+            keep_speed=True,
+            default_speed=1000.0,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        frenzy.update(0.0, 20.0, 80.0, w, b)
+        frenzy_pred = frenzy.predict(0.0, 20.0, target="GREAT")
+        self.assertIsNotNone(frenzy_pred)
+        self.assertTrue(frenzy_pred["should_press_now"])
+
     def test_frenzy_ignores_first_doubled_segment_and_holds_prior(self):
         p = ContinuousAngularPredictor(126.9, session_base_speed=278.0)
         w = {

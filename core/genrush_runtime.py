@@ -85,6 +85,19 @@ def _is_measured_zone(z: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _generation_lead(
+    chain_count: int,
+    *,
+    normal_lead_ms: float,
+    normal_uncertainty_ms: float,
+    frenzy_lead_ms: float,
+    frenzy_uncertainty_ms: float,
+) -> tuple[float, float]:
+    if int(chain_count) > 1:
+        return float(frenzy_lead_ms), max(0.0, float(frenzy_uncertainty_ms))
+    return float(normal_lead_ms), max(0.0, float(normal_uncertainty_ms))
+
+
 def _sane_zone(z: Optional[Dict[str, Any]], lo: float, hi: float) -> Optional[Dict[str, Any]]:
     if not isinstance(z, dict):
         return None
@@ -134,6 +147,8 @@ def run_genrush_clean(
     require_lmb = bool(config.get("require_lmb", True) if require_lmb is None else require_lmb)
     detector_name = str(detector_name or config.get("detector", "hybrid"))
     seed_lead = float(config.get("genrush_seed_lead_ms", 60.0))
+    frenzy_lead = float(config.get("frenzy_lead_ms", 80.0))
+    frenzy_lead_uncertainty = float(config.get("frenzy_lead_uncertainty_ms", 0.0))
     base_speed = float(config.get("session_base_speed", 278.0))
 
     pf = run_preflight(dry_run=dry_run, require_lmb=require_lmb)
@@ -211,6 +226,15 @@ def run_genrush_clean(
     fire_q: queue.SimpleQueue = queue.SimpleQueue()
     ctx_lock = threading.Lock()
     fire_ctx: Dict[str, Any] = {}
+    fire_epoch = 0
+
+    def advance_fire_epoch() -> int:
+        nonlocal fire_epoch
+        with ctx_lock:
+            fire_epoch += 1
+            fire_ctx.clear()
+            fire_ctx["fire_epoch"] = fire_epoch
+            return fire_epoch
 
     def fire_callback(
         reason: str,
@@ -218,11 +242,17 @@ def run_genrush_clean(
         desired_press_time=None,
         scheduler_dispatch_target=None,
         callback_entry_time=None,
+        scheduler_token=None,
     ) -> None:
         entry = float(callback_entry_time if callback_entry_time is not None else time.monotonic())
+        # The token check and physical keydown are intentionally atomic with
+        # respect to reset/start_generation.  An old worker callback that has
+        # already left the scheduler lock must not press Space in a new chain.
         with ctx_lock:
+            if scheduler_token != fire_epoch:
+                return
             ctx = dict(fire_ctx)
-        result = keyboard.trigger()
+            result = keyboard.trigger()
         mode = "SCHEDULED" if reason.startswith("SCHEDULED") else "IMMEDIATE"
         fire_q.put(
             FireEvent(
@@ -259,6 +289,7 @@ def run_genrush_clean(
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
         nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
+        advance_fire_epoch()
         scheduler.cancel_pending()
         scheduler.rearm()
         vision.reset()
@@ -280,12 +311,17 @@ def run_genrush_clean(
     def start_generation(now: float, new_chain: int, preserve_center: bool = False) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
         nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
+        previous_fire = last_fire
+        advance_fire_epoch()
         scheduler.cancel_pending()
         scheduler.rearm()
-        prior_generation_speed = (
-            float(predictor.speed_deg_s)
-            if predictor.has_adapted
-            else float(predictor.get_actuation_speed())
+        prior_generation_speed = float(
+            (
+                (previous_fire.context or {}).get("speed_at_fire")
+                if previous_fire is not None
+                else None
+            )
+            or predictor.get_actuation_speed()
         )
         if preserve_center:
             vision.reset_generation(preserve_center=True)
@@ -303,10 +339,20 @@ def run_genrush_clean(
         pressed = False
         chain = new_chain
         check_start = now
-        check_lead = lead.get_lead_ms(chain_count=1, chain_offset_ms=0.0)
+        check_lead, generation_lead_uncertainty = _generation_lead(
+            new_chain,
+            normal_lead_ms=lead.get_lead_ms(
+                chain_count=1, chain_offset_ms=0.0
+            ),
+            normal_uncertainty_ms=(
+                lead.get_uncertainty_ms() if lead.initialized else 0.0
+            ),
+            frenzy_lead_ms=frenzy_lead,
+            frenzy_uncertainty_ms=frenzy_lead_uncertainty,
+        )
         predictor.set_delivery_lead(
             check_lead,
-            lead.get_uncertainty_ms() if lead.initialized else 0.0,
+            generation_lead_uncertainty,
             dispatch_timing.uncertainty_ms(),
         )
         locked_w = None
@@ -320,10 +366,10 @@ def run_genrush_clean(
             now,
             chain_count=chain,
             latency_ms=check_lead,
-            lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
+            lead_uncertainty_ms=generation_lead_uncertainty,
             dispatch_uncertainty_ms=dispatch_timing.uncertainty_ms(),
             delivery_uncertainty_ms=(
-                (lead.get_uncertainty_ms() if lead.initialized else 0.0)
+                generation_lead_uncertainty
                 + dispatch_timing.uncertainty_ms()
             ),
             target_mode="GREAT",
@@ -343,6 +389,11 @@ def run_genrush_clean(
         now: float, *, frenzy_transition: bool = False, reason: Optional[str] = None
     ) -> Dict[str, Any]:
         nonlocal in_check
+        # Invalidate any pending callback before outcome/recorder work.  This
+        # closes the race where a deadline left the scheduler worker just before
+        # cancel_pending() and would otherwise press Space after check end.
+        advance_fire_epoch()
+        scheduler.cancel_pending()
         info = observer.conclude_check(
             frenzy_transition=frenzy_transition, no_fire_reason=reason
         )
@@ -519,6 +570,10 @@ def run_genrush_clean(
                     ev: FireEvent = fire_q.get_nowait()
                 except queue.Empty:
                     break
+                if int(ev.context.get("fire_epoch", -1)) != fire_epoch or not in_check:
+                    # A physical keydown can only be queued for the generation
+                    # whose token survived the atomic callback guard.
+                    continue
                 if not ev.success:
                     raise RuntimeError(
                         f"keyboard dispatch failed via {keyboard.backend}: {ev.error}"
@@ -622,6 +677,7 @@ def run_genrush_clean(
                 b = _sane_zone(b, 18.0, 65.0)
                 if w is None:
                     continue
+                advance_fire_epoch()
                 in_check = True
                 chain = 1
                 check_start = now
@@ -837,6 +893,8 @@ def run_genrush_clean(
                 fire_ctx.clear()
                 fire_ctx.update(
                     {
+                        "fire_epoch": fire_epoch,
+                        "chain_at_plan": chain,
                         "target_angle": pred.get("target_angle"),
                         "estimated_angle": angle,
                         "speed_at_lock": speed_at_lock,
@@ -878,6 +936,7 @@ def run_genrush_clean(
                 scheduler.trigger_now(
                     "IMMEDIATE_PREARM" if provisional else "IMMEDIATE_GREAT",
                     desired_press_time=press_t,
+                    dispatch_token=fire_epoch,
                 )
                 predictor.mark_committed()
             elif press_t > now:
@@ -890,6 +949,7 @@ def run_genrush_clean(
                         scheduler.trigger_now(
                             "IMMEDIATE_DISPATCH_COMPENSATED",
                             desired_press_time=press_t,
+                            dispatch_token=fire_epoch,
                         )
                     else:
                         scheduler.schedule(
@@ -900,6 +960,7 @@ def run_genrush_clean(
                                 else "SCHEDULED_GREAT"
                             ),
                             desired_press_time=press_t,
+                            dispatch_token=fire_epoch,
                         )
                     predictor.mark_committed()
 
