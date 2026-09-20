@@ -492,9 +492,10 @@ def run_genrush_clean(
                 after_fire = now - (
                     last_fire.dispatch_start if last_fire else check_start
                 )
-                if after_fire >= 0.080 and (zone_move or rollback):
+                plateau_locked = observer.has_plateau()
+                if after_fire >= 0.080 and (zone_move or rollback) and not plateau_locked:
                     why = "ZONE_RELOCATED" if zone_move else "NEEDLE_ROLLBACK"
-                    tui.log(f"🔥 FRENZY confirm={why}")
+                    tui.log(f"🔥 FRENZY candidate={why} no_plateau=1")
                     finish(now, frenzy_transition=True)
                     start_generation(now, chain + 1, preserve_center=True)
                 else:
