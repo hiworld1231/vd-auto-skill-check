@@ -244,29 +244,32 @@ class ContinuousAngularPredictor:
             and (self._fit_residual_mad_deg is None or self._fit_residual_mad_deg <= 4.0)
         )
 
+    def _mark_fit_uncertain(self) -> bool:
+        if self.motion_onset:
+            self.state = STATE_PROVISIONAL
+        return False
+
     def has_stable_speed(self) -> bool:
         # Fit quality must be evaluated from the current samples on every frame.
-        # Being ARMED/COMMITTED is a scheduler state, not proof that a newer fit
-        # is still trustworthy.
+        # Being ARMED is a scheduler state, not proof that a newer fit is still
+        # trustworthy.
         if not self.has_usable_speed():
-            return False
-        # Moonlight's real-match data shows short tracks are the dominant miss
-        # source.  Normal commits therefore wait for a longer fit; the explicit
-        # short-check path can still use >=3 measured samples when there is no
-        # time left to wait.
+            return self._mark_fit_uncertain()
+        # Normal commits wait for a longer fit; the explicit urgent path can
+        # still inspect >=3 measured samples when there is no time left to wait.
         if self._fit_sample_count < 5 or self._fit_span_s < 0.045:
-            return False
+            return self._mark_fit_uncertain()
 
         recent = [x[1] for x in list(self.speed_fits)[-3:]]
         if len(recent) < 2:
-            return False
+            return self._mark_fit_uncertain()
         med = float(statistics.median(recent))
         spread = max(recent) - min(recent)
         allowed_spread = max(30.0, 0.08 * abs(med))
         if spread > allowed_spread:
-            return False
+            return self._mark_fit_uncertain()
         if self._fit_residual_mad_deg is not None and self._fit_residual_mad_deg > 2.5:
-            return False
+            return self._mark_fit_uncertain()
 
         self.state = STATE_LOCKED
         self.locked_speed = self.speed_deg_s
