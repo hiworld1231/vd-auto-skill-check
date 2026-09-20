@@ -85,6 +85,24 @@ def _is_measured_zone(z: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _presence_absence_update(
+    absent_since: Optional[float],
+    *,
+    now: float,
+    present: bool,
+) -> tuple[Optional[float], float]:
+    """Track continuous pre-fire ring absence.
+
+    A check must never be ended because one late frame was missed after the
+    check has existed for a while.  Only continuous absence counts.
+    """
+    if present:
+        return None, 0.0
+    if absent_since is None:
+        absent_since = float(now)
+    return absent_since, max(0.0, float(now) - float(absent_since))
+
+
 def _generation_lead(
     chain_count: int,
     *,
@@ -149,6 +167,10 @@ def run_genrush_clean(
     seed_lead = float(config.get("genrush_seed_lead_ms", 60.0))
     frenzy_lead = float(config.get("frenzy_lead_ms", 80.0))
     frenzy_lead_uncertainty = float(config.get("frenzy_lead_uncertainty_ms", 0.0))
+    prefire_ring_end_absence_s = max(
+        0.050,
+        float(config.get("prefire_ring_end_absence_ms", 100.0)) / 1000.0,
+    )
     base_speed = float(config.get("session_base_speed", 278.0))
 
     pf = run_preflight(dry_run=dry_run, require_lmb=require_lmb)
@@ -284,11 +306,13 @@ def run_genrush_clean(
     last_id = None
     last_unique_ts = None
     last_post_angle = None
+    pre_fire_absent_since: Optional[float] = None
     last_fire: Optional[FireEvent] = None
 
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
         nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
+        nonlocal pre_fire_absent_since
         advance_fire_epoch()
         scheduler.cancel_pending()
         scheduler.rearm()
@@ -307,10 +331,12 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
+        pre_fire_absent_since = None
 
     def start_generation(now: float, new_chain: int, preserve_center: bool = False) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
         nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
+        nonlocal pre_fire_absent_since
         previous_fire = last_fire
         advance_fire_epoch()
         scheduler.cancel_pending()
@@ -362,6 +388,7 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
+        pre_fire_absent_since = None
         recorder.start_check(
             now,
             chain_count=chain,
@@ -695,6 +722,7 @@ def run_genrush_clean(
                 speed_at_lock = None
                 planned_press = None
                 no_fire_reason = None
+                pre_fire_absent_since = None
                 recorder.start_check(
                     now,
                     chain_count=chain,
@@ -796,9 +824,28 @@ def run_genrush_clean(
                     continue
                 continue
 
-            if det is None or not det.get("ring_present"):
-                if now - check_start > 0.10:
-                    finish(now, reason=no_fire_reason or "RING_ENDED_BEFORE_FIRE")
+            ring_present_now = bool(det is not None and det.get("ring_present"))
+            pre_fire_absent_since, pre_fire_absent_s = _presence_absence_update(
+                pre_fire_absent_since,
+                now=now,
+                present=ring_present_now,
+            )
+            if not ring_present_now:
+                recorder.on_frame(
+                    frame_ts,
+                    frame,
+                    det,
+                    None,
+                    {
+                        "frame_age_ms": frame_age_ms,
+                        "decode_delivery_age_ms": frame_age_ms,
+                        "prefire_ring_absence_ms": pre_fire_absent_s * 1000.0,
+                        "prefire_presence_grace": True,
+                    },
+                )
+                if pre_fire_absent_s >= prefire_ring_end_absence_s:
+                    no_fire_reason = "RING_ENDED_BEFORE_FIRE"
+                    finish(now, reason=no_fire_reason)
                     reset_all()
                 continue
 
