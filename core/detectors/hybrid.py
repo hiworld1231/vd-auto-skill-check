@@ -33,21 +33,7 @@ class HybridDetector(BaseDetector):
         self.tpl_norm = tpl_f - np.mean(tpl_f)
         self.tpl_std = float(np.linalg.norm(self.tpl_norm))
 
-        angles = np.arange(360, dtype=np.float32) * (np.pi / 180.0)
-        cos_a = np.cos(angles)[:, None]
-        sin_a = np.sin(angles)[:, None]
-
-        # 8 radial samples along needle ray (r=24 to r=62)
-        needle_radii = np.linspace(24.0, 62.0, 8, dtype=np.float32)[None, :]
-        x_ndl = np.clip(np.round(self.cx + needle_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
-        y_ndl = np.clip(np.round(self.cy + needle_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
-        self.needle_indices_1d = (y_ndl * self.geo.roi_width + x_ndl).astype(np.int32)
-
-        # 6 radial samples across outer ring for zone extraction (r=63 to r=68)
-        ring_radii = np.linspace(63.0, 68.0, 6, dtype=np.float32)[None, :]
-        x_ring = np.clip(np.round(self.cx + ring_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
-        y_ring = np.clip(np.round(self.cy + ring_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
-        self.ring_indices_1d = (y_ring * self.geo.roi_width + x_ring).astype(np.int32)
+        self._build_ray_tables()
 
         # Tracking state
         self.last_angle: Optional[float] = None
@@ -57,6 +43,28 @@ class HybridDetector(BaseDetector):
         self.consecutive_losses: int = 0
         self.reacquire_count: int = 0
         self.frame_count_in_check: int = 0
+
+    def _build_ray_tables(self) -> None:
+        angles = np.arange(360, dtype=np.float32) * (np.pi / 180.0)
+        cos_a = np.cos(angles)[:, None]
+        sin_a = np.sin(angles)[:, None]
+
+        needle_radii = np.linspace(24.0, 62.0, 8, dtype=np.float32)[None, :]
+        x_ndl = np.clip(np.round(self.cx + needle_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
+        y_ndl = np.clip(np.round(self.cy + needle_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
+        self.needle_indices_1d = (y_ndl * self.geo.roi_width + x_ndl).astype(np.int32)
+
+        ring_radii = np.linspace(63.0, 68.0, 6, dtype=np.float32)[None, :]
+        x_ring = np.clip(np.round(self.cx + ring_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
+        y_ring = np.clip(np.round(self.cy + ring_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
+        self.ring_indices_1d = (y_ring * self.geo.roi_width + x_ring).astype(np.int32)
+
+    def set_geometry(self, cx: float, cy: float) -> None:
+        cx, cy = float(cx), float(cy)
+        if abs(cx - self.cx) < 0.01 and abs(cy - self.cy) < 0.01:
+            return
+        self.cx, self.cy = cx, cy
+        self._build_ray_tables()
 
     def reset(self):
         """Resets tracking between skill checks."""
