@@ -86,6 +86,43 @@ class CleanV5Tests(unittest.TestCase):
         self.assertEqual(result["outcome"], "GREAT")
         self.assertAlmostEqual(result["observed_response_ms"], 50.0, delta=0.01)
 
+    def test_decoded_duplicates_do_not_fake_a_landing_plateau(self):
+        o = OutcomeObserver(60)
+        w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
+        o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60)
+        # Four 120-FPS decoded samples span only ~25 ms and can represent just
+        # two unique 60-Hz render frames.
+        for t in (1.050, 1.0583, 1.0666, 1.0749):
+            o.observe_sample(t, 100.0, 30)
+        self.assertFalse(o.has_plateau())
+
+    def test_time_supported_freeze_confirms_landing(self):
+        o = OutcomeObserver(60)
+        w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
+        o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60)
+        for t, a in [
+            (1.050, 100.2),
+            (1.058, 100.0),
+            (1.067, 100.1),
+            (1.075, 100.0),
+            (1.084, 100.1),
+            (1.092, 100.0),
+        ]:
+            o.observe_sample(t, a, 30)
+        self.assertTrue(o.has_plateau())
+        result = o.conclude_check()
+        self.assertEqual(result["outcome"], "GREAT")
+        self.assertGreaterEqual(result["plateau_span_ms"], 35.0)
+        self.assertGreaterEqual(result["plateau_sample_count"], 4)
+
+    def test_capture_gap_does_not_bridge_into_fake_plateau(self):
+        o = OutcomeObserver(60)
+        w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
+        o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
+        for t in (1.050, 1.058, 1.066, 1.120, 1.128, 1.136):
+            o.observe_sample(t, 100.0, 30)
+        self.assertFalse(o.has_plateau())
+
     def test_mask_gap_after_great_is_good_not_miss(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
