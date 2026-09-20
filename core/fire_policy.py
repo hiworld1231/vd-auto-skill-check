@@ -70,22 +70,6 @@ def decide_great_fire(
             best_effort=not measured_geometry,
         )
 
-    # Before the deadline, keep a center-targeted best-effort schedule alive.
-    # Later frames can and will reschedule it.  Cancelling every provisional
-    # deadline was the source of repeated NO_FIRE / TOO_LATE_UNSAFE outcomes.
-    if speed_usable and not bool(pred.get("target_passed", False)) and time_until > 0.0:
-        return GreatFireDecision(
-            True, "GREAT_CENTER_BEST_EFFORT", best_effort=True
-        )
-
-    # If the ideal center deadline has already arrived, an immediate keydown is
-    # still worthwhile when the predictor says delivery remains inside the known
-    # success sector.
-    if speed_usable and bool(pred.get("should_press_now", False)):
-        return GreatFireDecision(
-            True, "IMMEDIATE_SUCCESS_FALLBACK", best_effort=True
-        )
-
     width = pred.get("landing_uncertainty_width_deg")
     great_width = pred.get("great_width_deg")
     intersects = bool(pred.get("great_interval_intersects", False))
@@ -100,6 +84,20 @@ def decide_great_fire(
     ):
         return GreatFireDecision(
             True, "GREAT_LAST_CHANCE_INTERSECTION", best_effort=True
+        )
+
+    # If the ideal center deadline has already arrived, an immediate keydown is
+    # still worthwhile when delivery remains inside the known success sector.
+    if speed_usable and bool(pred.get("should_press_now", False)):
+        return GreatFireDecision(
+            True, "IMMEDIATE_SUCCESS_FALLBACK", best_effort=True
+        )
+
+    # Before the deadline, keep a center-targeted best-effort schedule alive.
+    # Later frames continuously replace it with better estimates.
+    if speed_usable and not bool(pred.get("target_passed", False)) and time_until > 0.0:
+        return GreatFireDecision(
+            True, "GREAT_CENTER_BEST_EFFORT", best_effort=True
         )
 
     return GreatFireDecision(False, "GREAT_INTERVAL_UNSAFE")
