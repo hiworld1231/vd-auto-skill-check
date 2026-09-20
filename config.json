@@ -15,5 +15,7 @@
   },
   "allow_mss_fallback": false,
   "persist_lead_calibration": true,
-  "lead_calibration_max_age_days": 7
+  "lead_calibration_max_age_days": 7,
+  "frenzy_lead_ms": 80,
+  "frenzy_lead_uncertainty_ms": 0
 }
