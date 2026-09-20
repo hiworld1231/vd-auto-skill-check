@@ -106,7 +106,14 @@ class LeadLevelController:
         self.accepted_at_last_update = 0
 
     def get_uncertainty_ms(self) -> float:
-        """Robust uncertainty of the current lead level for fire-envelope math."""
+        """Predictive one-check delivery uncertainty for fire-envelope math.
+
+        The landing envelope needs the expected scatter of the next individual
+        delivery, not the standard error of the estimated session median.
+        Therefore the robust MAD scale is intentionally *not* divided by
+        sqrt(n).  More samples make the center estimate more trustworthy, but
+        they do not make per-check delivery variability disappear.
+        """
         cluster = self._current_cluster()
         if (
             self.restored_from_disk
@@ -118,10 +125,7 @@ class LeadLevelController:
             return self.uncertainty_default_ms
         med = float(statistics.median(cluster))
         mad = self._mad(cluster, med)
-        # 1.4826 converts normal-distribution MAD to sigma.  Divide by sqrt(n)
-        # for uncertainty of the robust level, while retaining a small floor for
-        # detector/quantization effects that identical samples cannot expose.
-        estimate = 1.4826 * mad / math.sqrt(float(len(cluster)))
+        estimate = 1.4826 * mad
         return max(self.uncertainty_floor_ms, min(25.0, estimate))
 
     def get_lead_ms(
@@ -318,6 +322,7 @@ class LeadLevelController:
             "seed_lead_ms": self.seed_lead_ms,
             "current_lead_ms": self.current_lead_ms,
             "lead_uncertainty_ms": self.get_uncertainty_ms(),
+            "lead_uncertainty_kind": "PREDICTIVE_ROBUST_SIGMA",
             "rolling_median_ms": med,
             "rolling_mad_ms": mad,
             "current_cluster_median_ms": cluster_med,
