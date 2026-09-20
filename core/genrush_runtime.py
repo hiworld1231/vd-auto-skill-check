@@ -78,6 +78,13 @@ def _valid_needle(det: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _is_measured_zone(z: Optional[Dict[str, Any]]) -> bool:
+    return bool(
+        isinstance(z, dict)
+        and str(z.get("source", "")).startswith("MEASURED")
+    )
+
+
 def _sane_zone(z: Optional[Dict[str, Any]], lo: float, hi: float) -> Optional[Dict[str, Any]]:
     if not isinstance(z, dict):
         return None
@@ -455,6 +462,10 @@ def run_genrush_clean(
             info.get("error_ms"),
             chain=chain,
             latency_ms=check_lead,
+            reason=(
+                info.get("no_fire_reason")
+                or info.get("post_fire_reason")
+            ),
         )
         in_check = False
         return info
@@ -603,6 +614,7 @@ def run_genrush_clean(
                 predictor.set_delivery_lead(
                     check_lead,
                     lead.get_uncertainty_ms() if lead.initialized else 0.0,
+                    dispatch_timing.uncertainty_ms(),
                 )
                 observer.reset()
                 scheduler.rearm()
@@ -723,6 +735,25 @@ def run_genrush_clean(
                     {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms, "stale": True},
                 )
                 continue
+
+            det_w = _sane_zone(
+                det.get("white_zone") if isinstance(det, dict) else None,
+                5.0,
+                16.0,
+            )
+            det_b = _sane_zone(
+                det.get("black_zone") if isinstance(det, dict) else None,
+                18.0,
+                65.0,
+            )
+            if (
+                det_w is not None
+                and _is_measured_zone(det_w)
+                and not _is_measured_zone(locked_w)
+            ):
+                locked_w = det_w
+                if det_b is not None:
+                    locked_b = det_b
 
             w, b = vision.extract_zones(
                 det, (locked_w, locked_b) if locked_w else None

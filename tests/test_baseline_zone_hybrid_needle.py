@@ -137,7 +137,34 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
             },
         }
 
-    def test_black_only_reconstruction_waits_for_measured_great(self):
+    def test_black_only_reconstruction_starts_check_immediately(self):
+        reconstructed = {
+            "start": 80.5,
+            "end": 90.0,
+            "center": 85.25,
+            "width": 9.5,
+            "source": "RECONSTRUCTED_FROM_BLACK",
+        }
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+
+        with patch.object(
+            self.vision.baseline_detector,
+            "detect",
+            return_value=self._mock_acquire_detection(dict(reconstructed)),
+        ):
+            det = self.vision.detect_frame(gray, frame)
+
+        self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
+        self.assertEqual(
+            self.vision.locked_white_zone["source"],
+            "RECONSTRUCTED_FROM_BLACK",
+        )
+        self.assertEqual(
+            det["white_zone"]["source"], "RECONSTRUCTED_FROM_BLACK"
+        )
+
+    def test_active_tracking_upgrades_reconstructed_great_to_measured(self):
         reconstructed = {
             "start": 80.5,
             "end": 90.0,
@@ -152,67 +179,45 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
             "width": 9.6,
             "source": "MEASURED",
         }
-        frame = np.zeros((240, 320, 3), dtype=np.uint8)
-        gray = np.zeros((240, 320), dtype=np.uint8)
-
-        with patch.object(
-            self.vision.baseline_detector,
-            "detect",
-            side_effect=[
-                self._mock_acquire_detection(dict(reconstructed)),
-                self._mock_acquire_detection(dict(measured)),
-            ],
-        ):
-            first = self.vision.detect_frame(gray, frame)
-            self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
-            self.assertIsNone(self.vision.locked_white_zone)
-            self.assertIsNone(first["white_zone"])
-
-            second = self.vision.detect_frame(gray, frame)
-            self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
-            self.assertEqual(
-                self.vision.locked_white_zone["source"], "MEASURED"
-            )
-            self.assertAlmostEqual(
-                self.vision.locked_white_zone["center"], 87.0
-            )
-            self.assertEqual(self.vision.black_only_acquire_count, 0)
-            self.assertEqual(second["white_zone"]["source"], "MEASURED")
-
-    def test_black_only_reconstruction_falls_back_after_three_frames(self):
-        reconstructed = {
-            "start": 80.5,
-            "end": 90.0,
-            "center": 85.25,
-            "width": 9.5,
-            "source": "RECONSTRUCTED_FROM_BLACK",
+        black = {
+            "start": 92.0,
+            "end": 132.0,
+            "center": 112.0,
+            "width": 40.0,
+            "source": "MEASURED",
         }
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         gray = np.zeros((240, 320), dtype=np.uint8)
-        detections = [
-            self._mock_acquire_detection(dict(reconstructed))
-            for _ in range(3)
-        ]
 
         with patch.object(
             self.vision.baseline_detector,
             "detect",
-            side_effect=detections,
+            return_value=self._mock_acquire_detection(dict(reconstructed)),
         ):
-            for _ in range(2):
-                det = self.vision.detect_frame(gray, frame)
-                self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
-                self.assertIsNone(det["white_zone"])
+            self.vision.detect_frame(gray, frame)
 
-            det = self.vision.detect_frame(gray, frame)
-            self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
-            self.assertEqual(
-                self.vision.locked_white_zone["source"],
-                "RECONSTRUCTED_FROM_BLACK",
+        with patch.object(
+            self.vision.hybrid_detector,
+            "detect",
+            return_value={
+                "ring_present": True,
+                "needle_valid": True,
+                "needle_angle": 55.0,
+                "needle_strength": 80.0,
+                "white_zone": measured,
+                "black_zone": black,
+                "status": "OK",
+            },
+        ):
+            det = self.vision.detect_frame(
+                gray,
+                frame,
+                expected_angle=55.0,
             )
-            self.assertEqual(
-                det["white_zone"]["source"], "RECONSTRUCTED_FROM_BLACK"
-            )
+
+        self.assertEqual(self.vision.locked_white_zone["source"], "MEASURED")
+        self.assertAlmostEqual(self.vision.locked_white_zone["center"], 87.0)
+        self.assertEqual(det["white_zone"]["source"], "MEASURED")
 
     def test_active_tracking_critical_path_bypasses_baseline_vision(self):
         """Step 2: Subsequent ACTIVE frames execute HYBRID needle tracking without calling Baseline warpPolar."""

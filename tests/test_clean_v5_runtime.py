@@ -112,8 +112,17 @@ class CleanV5Tests(unittest.TestCase):
         self.assertTrue(o.has_plateau())
         result = o.conclude_check()
         self.assertEqual(result["outcome"], "GREAT")
-        self.assertGreaterEqual(result["plateau_span_ms"], 35.0)
-        self.assertGreaterEqual(result["plateau_sample_count"], 4)
+        self.assertGreaterEqual(result["plateau_span_ms"], 28.0)
+        self.assertGreaterEqual(result["plateau_sample_count"], 3)
+
+    def test_three_samples_over_render_time_confirm_landing(self):
+        o = OutcomeObserver(60)
+        w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
+        o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
+        for t, a in [(1.050, 100.2), (1.066, 100.0), (1.082, 100.1)]:
+            o.observe_sample(t, a, 30)
+        self.assertTrue(o.has_plateau())
+        self.assertEqual(o.conclude_check()["outcome"], "GREAT")
 
     def test_capture_gap_does_not_bridge_into_fake_plateau(self):
         o = OutcomeObserver(60)

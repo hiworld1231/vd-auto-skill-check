@@ -281,13 +281,19 @@ class HybridDetector(BaseDetector):
                     else "LOW_CONFIDENCE"
                 )
 
-        # Shadow-validate zones periodically (every 25 frames)
-        if self.frame_count_in_check % 25 == 0 and self.locked_white_zone is None:
+        # If acquisition had to start from reconstructed GREAT geometry,
+        # retry cheaply during active tracking and upgrade as soon as a real
+        # measured white arc becomes visible.  Do not wait 25 frames: at 60 Hz
+        # that would be far too late for short checks.
+        locked_src = str((self.locked_white_zone or {}).get("source", ""))
+        needs_white_upgrade = not locked_src.startswith("MEASURED")
+        if self.frame_count_in_check % 5 == 0 and needs_white_upgrade:
             w_fresh, b_fresh, _, _, _ = self._extract_fresh_zones(frame_flat)
-            if w_fresh is not None:
-                self.locked_white_zone = w_fresh
-            if b_fresh is not None:
-                self.locked_black_zone = b_fresh
+            fresh_src = str((w_fresh or {}).get("source", ""))
+            if w_fresh is not None and fresh_src.startswith("MEASURED"):
+                self.locked_white_zone = dict(w_fresh)
+            if b_fresh is not None and str(b_fresh.get("source", "")).startswith("MEASURED"):
+                self.locked_black_zone = dict(b_fresh)
 
         t1 = time.perf_counter()
         det_time_ms = (t1 - t0) * 1000.0
