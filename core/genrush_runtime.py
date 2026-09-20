@@ -20,6 +20,7 @@ from core.lead_level_controller import LeadLevelController
 from core.mouse_tracker import MouseTracker
 from core.outcome_observer import OutcomeObserver
 from core.preflight import run_preflight
+from core.post_fire_lifecycle import FRENZY, RING_END, PostFireLifecycle
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.tui import SkillCheckTUI
 from core.vision import VisionEngine
@@ -141,6 +142,7 @@ def run_genrush_clean(
         seed_lead, target_offset_ratio=0.5, session_base_speed=base_speed, fit_window=10
     )
     observer = OutcomeObserver(seed_lead, base_speed)
+    post_fire = PostFireLifecycle()
     lead = LeadLevelController(seed_lead)
     mouse = MouseTracker(enabled=require_lmb)
     recorder = FlightRecorder(
@@ -209,17 +211,17 @@ def run_genrush_clean(
     last_id = None
     last_unique_ts = None
     last_post_angle = None
-    ring_absent_since = None
     last_fire: Optional[FireEvent] = None
 
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
-        nonlocal planned_press, no_fire_reason, ring_absent_since, last_fire, last_post_angle
+        nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
         scheduler.cancel_pending()
         scheduler.rearm()
         vision.reset()
         predictor.reset(keep_speed=False, session_base_speed=base_speed)
         observer.reset()
+        post_fire.reset()
         in_check = False
         pressed = False
         chain = 0
@@ -229,13 +231,12 @@ def run_genrush_clean(
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
-        ring_absent_since = None
         last_fire = None
         last_post_angle = None
 
     def start_generation(now: float, new_chain: int, preserve_center: bool = False) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
-        nonlocal speed_at_lock, planned_press, no_fire_reason, ring_absent_since, last_fire, last_post_angle
+        nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
         scheduler.cancel_pending()
         scheduler.rearm()
         if preserve_center:
@@ -244,6 +245,7 @@ def run_genrush_clean(
             vision.reset()
         predictor.reset(keep_speed=False, is_chain=new_chain > 1, session_base_speed=base_speed)
         observer.reset()
+        post_fire.reset()
         in_check = True
         pressed = False
         chain = new_chain
@@ -255,7 +257,6 @@ def run_genrush_clean(
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
-        ring_absent_since = None
         last_fire = None
         last_post_angle = None
         recorder.start_check(
@@ -414,6 +415,7 @@ def run_genrush_clean(
                     )
                 else:
                     c["effective_dispatch_lead_ms"] = check_lead
+                post_fire.begin(ev.dispatch_start)
                 observer.on_trigger(
                     ev.dispatch_start,
                     float(c.get("target_angle") or 0.0),
@@ -504,21 +506,11 @@ def run_genrush_clean(
                 continue
 
             if pressed:
-                if det is None or not det.get("ring_present"):
-                    if ring_absent_since is None:
-                        ring_absent_since = now
-                    elif now - ring_absent_since >= 0.060:
-                        finish(now)
-                        reset_all()
-                    continue
+                ring_present = bool(det is not None and det.get("ring_present"))
 
-                if ring_absent_since is not None and now - ring_absent_since >= 0.050:
-                    finish(now, frenzy_transition=True)
-                    start_generation(now, chain + 1, preserve_center=True)
-                    continue
-                ring_absent_since = None
-
-                if _valid_needle(det):
+                rollback = False
+                zone_move = False
+                if ring_present and _valid_needle(det):
                     observer.observe_sample(
                         frame_ts,
                         float(det["needle_angle"]),
@@ -530,37 +522,53 @@ def run_genrush_clean(
                         and ((cur - last_post_angle + 180.0) % 360.0 - 180.0) < -25.0
                     )
                     last_post_angle = cur
-                else:
-                    rollback = False
 
-                nw, nb = vision.extract_zones(det)
-                nw = _sane_zone(nw, 5.0, 16.0)
-                nb = _sane_zone(nb, 18.0, 65.0)
-                zone_move = bool(
-                    nw
-                    and locked_w
-                    and _circ(
-                        float(nw.get("center", 0)), float(locked_w.get("center", 0))
+                if ring_present:
+                    nw, nb = vision.extract_zones(det)
+                    nw = _sane_zone(nw, 5.0, 16.0)
+                    nb = _sane_zone(nb, 18.0, 65.0)
+                    zone_move = bool(
+                        nw
+                        and locked_w
+                        and _circ(
+                            float(nw.get("center", 0)), float(locked_w.get("center", 0))
+                        )
+                        > 15.0
                     )
-                    > 15.0
+
+                decision = post_fire.update(
+                    now,
+                    ring_present=ring_present,
+                    plateau_found=observer.has_plateau(),
+                    zone_moved=zone_move,
+                    rollback=rollback,
+                    fresh_motion=observer.has_recent_motion(),
                 )
-                after_fire = now - (
-                    last_fire.dispatch_start if last_fire else check_start
+
+                recorder.on_frame(
+                    frame_ts,
+                    frame,
+                    det,
+                    None,
+                    {
+                        "frame_age_ms": frame_age_ms,
+                        "decode_delivery_age_ms": frame_age_ms,
+                        "post_fire_state": decision.state,
+                        "post_fire_reason": decision.reason,
+                        "post_fire_absence_ms": decision.absence_ms,
+                        "post_fire_relocated_streak": decision.relocated_streak,
+                    },
                 )
-                plateau_locked = observer.has_plateau()
-                if after_fire >= 0.080 and (zone_move or rollback) and not plateau_locked:
-                    why = "ZONE_RELOCATED" if zone_move else "NEEDLE_ROLLBACK"
-                    tui.log(f"🔥 FRENZY candidate={why} no_plateau=1")
+
+                if decision.state == FRENZY:
+                    tui.log(f"🔥 FRENZY confirm={decision.reason}")
                     finish(now, frenzy_transition=True)
                     start_generation(now, chain + 1, preserve_center=True)
-                else:
-                    recorder.on_frame(
-                        frame_ts,
-                        frame,
-                        det,
-                        None,
-                        {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms},
-                    )
+                    continue
+                if decision.state == RING_END:
+                    finish(now)
+                    reset_all()
+                    continue
                 continue
 
             if det is None or not det.get("ring_present"):
