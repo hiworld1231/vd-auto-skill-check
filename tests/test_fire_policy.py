@@ -124,6 +124,49 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertTrue(d.allow)
         self.assertEqual(d.reason, "GREAT_CENTER_BEST_EFFORT")
 
+    def test_frenzy_prior_never_fires_by_itself(self):
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": -5.0,
+                "great_interval_safe": False,
+                "great_interval_intersects": True,
+                "landing_uncertainty_width_deg": 20.0,
+                "great_width_deg": 10.0,
+                "white_source": "MEASURED",
+                "speed_source": "FRENZY_PRIOR",
+                "is_chain": True,
+                "fit_sample_count": 0,
+                "target_passed": False,
+                "should_press_now": True,
+                "reactive_safe_fallback": True,
+            },
+            fit_stable=False,
+            speed_usable=False,
+        )
+        self.assertFalse(d.allow)
+        self.assertEqual(d.reason, "FRENZY_WAIT_MEASURED_SPEED")
+
+    def test_frenzy_blended_measured_speed_can_schedule(self):
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": 35.0,
+                "great_interval_safe": True,
+                "great_interval_intersects": True,
+                "landing_uncertainty_width_deg": 5.0,
+                "great_width_deg": 10.0,
+                "white_source": "MEASURED",
+                "speed_source": "FRENZY_BLEND",
+                "is_chain": True,
+                "fit_sample_count": 3,
+                "target_passed": False,
+                "should_press_now": False,
+            },
+            fit_stable=False,
+            speed_usable=True,
+        )
+        self.assertTrue(d.allow)
+        self.assertEqual(d.reason, "GREAT_INTERVAL_SAFE")
+
     def test_first_frame_session_prior_prearms_future_deadline(self):
         d = decide_great_fire(
             {
