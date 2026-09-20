@@ -32,7 +32,8 @@ def decide_great_fire(
     This avoids turning harmless estimator uncertainty into guaranteed NO_FIRE,
     while still refusing broad/poorly constrained shots.
     """
-    time_until = float(pred.get("time_until_press_ms", 9999.0) or 9999.0)
+    raw_time_until = pred.get("time_until_press_ms", 9999.0)
+    time_until = float(9999.0 if raw_time_until is None else raw_time_until)
     urgent = bool(speed_usable and time_until <= float(urgent_window_ms))
     fit_ready = bool(fit_stable or urgent)
     if not fit_ready:
