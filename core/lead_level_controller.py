@@ -56,6 +56,8 @@ class LeadLevelController:
         self.updates_total = 0
         self.accepted_at_last_update = 0
         self.initialized = False
+        self.restored_from_disk = False
+        self._restored_uncertainty_ms: Optional[float] = None
         self.last_result: Dict[str, Any] = {}
 
     @staticmethod
@@ -83,9 +85,35 @@ class LeadLevelController:
         n = self.recent_shift_samples if self.initialized else self.cold_min_samples
         return vals[-min(len(vals), n):]
 
+    def restore_calibration(
+        self, lead_ms: float, uncertainty_ms: float
+    ) -> None:
+        """Warm-start from a validated persistent level without fake samples."""
+        if not self._finite(lead_ms) or not (
+            self.min_lead_ms <= float(lead_ms) <= self.max_lead_ms
+        ):
+            raise ValueError("restored lead outside controller range")
+        if not self._finite(uncertainty_ms):
+            raise ValueError("restored uncertainty must be finite")
+        self.current_lead_ms = self._clip(float(lead_ms))
+        self.initialized = True
+        self.restored_from_disk = True
+        self._restored_uncertainty_ms = max(
+            self.uncertainty_floor_ms, min(25.0, float(uncertainty_ms))
+        )
+        self.samples.clear()
+        self.accepted_total = 0
+        self.accepted_at_last_update = 0
+
     def get_uncertainty_ms(self) -> float:
         """Robust uncertainty of the current lead level for fire-envelope math."""
         cluster = self._current_cluster()
+        if (
+            self.restored_from_disk
+            and self._restored_uncertainty_ms is not None
+            and self.accepted_total < self.recent_shift_samples
+        ):
+            return self._restored_uncertainty_ms
         if len(cluster) < 2:
             return self.uncertainty_default_ms
         med = float(statistics.median(cluster))
