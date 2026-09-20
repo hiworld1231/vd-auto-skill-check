@@ -66,9 +66,10 @@ class OutcomeObserver:
         # over 35 ms was too slow and produced UNCONFIRMED even on real hits.
         # Keep the time-supported guard so duplicate decoded frames alone are
         # insufficient, but allow confirmation from three stable samples over
-        # at least 20 ms.
+        # at least 28 ms. This is still faster than the old 35 ms gate, while
+        # four 120-FPS duplicates spanning only ~25 ms cannot fake a landing.
         min_samples = 3
-        min_span_s = 0.020
+        min_span_s = 0.028
         max_adjacent_gap_s = 0.040
         max_spread_deg = 1.6
 
