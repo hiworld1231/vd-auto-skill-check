@@ -2,10 +2,28 @@ import unittest
 
 import numpy as np
 
-from core.detectors.base import refine_zone_from_score
+from core.detectors.base import extract_zones_from_masks, refine_zone_from_score
 
 
 class SubdegreeZoneGeometryTests(unittest.TestCase):
+    def test_integer_run_center_is_midpoint_of_sample_bins(self):
+        white = np.zeros(360, dtype=bool)
+        white[10:20] = True
+        w, _ = extract_zones_from_masks(white, None)
+        self.assertIsNotNone(w)
+        self.assertEqual(w["start"], 10.0)
+        self.assertEqual(w["end"], 19.0)
+        self.assertEqual(w["width"], 10.0)
+        self.assertAlmostEqual(w["center"], 14.5)
+
+    def test_integer_wraparound_center_has_no_half_degree_bias(self):
+        white = np.zeros(360, dtype=bool)
+        white[356:360] = True
+        white[0:6] = True
+        w, _ = extract_zones_from_masks(white, None)
+        self.assertIsNotNone(w)
+        self.assertAlmostEqual(w["center"], 0.5)
+
     def test_interpolates_both_boundaries_between_degree_bins(self):
         score = np.full(360, -1.0, dtype=np.float64)
         score[10:18] = 1.0
