@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 
 CALIBRATION_SCHEMA_VERSION = 1
-CALIBRATION_MODEL = "v6-keydown-syn-great-center-v1"
+CALIBRATION_MODEL = "v6-keydown-syn-great-center-predictive-unc-v2"
 
 
 @dataclass(frozen=True)
