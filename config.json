@@ -1,8 +1,8 @@
 {
   "fps": 120,
-  "genrush_seed_lead_ms": 60.0,
-  "session_base_speed": 278.0,
-  "space_hold_ms": 35.0,
+  "genrush_seed_lead_ms": 60,
+  "session_base_speed": 278,
+  "space_hold_ms": 35,
   "detector": "hybrid",
   "allow_pynput_fallback": false,
   "show_hud": false,
@@ -12,5 +12,6 @@
     "top": 420,
     "width": 320,
     "height": 240
-  }
+  },
+  "allow_mss_fallback": false
 }
