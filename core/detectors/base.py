@@ -122,6 +122,7 @@ def extract_zones_from_masks(
                 "end": float(w_end),
                 "width": float(w_len),
                 "center": float(w_center),
+                "source": "MEASURED",
             }
 
     if black_mask is not None:
@@ -135,6 +136,7 @@ def extract_zones_from_masks(
                     "end": float(b_e),
                     "width": float(b_l),
                     "center": float((b_s + b_l / 2.0) % 360),
+                    "source": "MEASURED",
                 }
 
         # Physical fallback if white is clear but black is shadowed
@@ -145,6 +147,7 @@ def extract_zones_from_masks(
                 "end": float((b_s + 42.0) % 360),
                 "width": 42.0,
                 "center": float((b_s + 21.0) % 360),
+                "source": "RECONSTRUCTED_FROM_WHITE",
             }
 
         # Occlusion fallback: if white was occluded, deduce Great zone from Good zone
@@ -157,12 +160,14 @@ def extract_zones_from_masks(
                 "end": float(b_s),
                 "width": 9.5,
                 "center": float((w_s + 4.75) % 360),
+                "source": "RECONSTRUCTED_FROM_BLACK",
             }
             b_dict = {
                 "start": float(b_s),
                 "end": float(b_e),
                 "width": float(b_l),
                 "center": float((b_s + b_l / 2.0) % 360),
+                "source": "MEASURED",
             }
 
     return w_dict, b_dict
