@@ -24,6 +24,8 @@ class HardwareTrigger:
         self._ui = None
         self._key = None
         self._keyboard = None
+        self._release_threads = set()
+        self._release_lock = threading.Lock()
         self.backend = "DRY_RUN" if self.dry_run else "UNAVAILABLE"
         if self.dry_run:
             return
@@ -46,6 +48,18 @@ class HardwareTrigger:
             except Exception:
                 self._keyboard = None
 
+    def _release_after_hold(self) -> None:
+        try:
+            time.sleep(self.hold_seconds)
+            if self.backend == "EVDEV_UINPUT" and self._ui is not None:
+                self._ui.write(self._ecodes.EV_KEY, self._ecodes.KEY_SPACE, 0)
+                self._ui.syn()
+            elif self.backend == "PYNPUT" and self._keyboard is not None:
+                self._keyboard.release(self._key)
+        finally:
+            with self._release_lock:
+                self._release_threads.discard(threading.current_thread())
+
     def trigger(self) -> InputDispatchResult:
         start = time.monotonic()
         if self.dry_run:
@@ -54,20 +68,31 @@ class HardwareTrigger:
             if self.backend == "EVDEV_UINPUT" and self._ui is not None:
                 self._ui.write(self._ecodes.EV_KEY, self._ecodes.KEY_SPACE, 1)
                 self._ui.syn()
-                time.sleep(self.hold_seconds)
-                self._ui.write(self._ecodes.EV_KEY, self._ecodes.KEY_SPACE, 0)
-                self._ui.syn()
             elif self.backend == "PYNPUT" and self._keyboard is not None:
                 self._keyboard.press(self._key)
-                time.sleep(self.hold_seconds)
-                self._keyboard.release(self._key)
             else:
                 raise RuntimeError("no usable keyboard backend")
-            return InputDispatchResult(True, self.backend, start, time.monotonic())
+
+            # KEY_DOWN is physically visible after syn()/press().  Do not make
+            # the detector blind for the hold duration; release asynchronously.
+            dispatched = time.monotonic()
+            thread = threading.Thread(
+                target=self._release_after_hold,
+                name="SpaceKeyRelease",
+                daemon=True,
+            )
+            with self._release_lock:
+                self._release_threads.add(thread)
+            thread.start()
+            return InputDispatchResult(True, self.backend, start, dispatched)
         except Exception as exc:
             return InputDispatchResult(False, self.backend, start, time.monotonic(), str(exc))
 
     def close(self) -> None:
+        with self._release_lock:
+            threads = list(self._release_threads)
+        for thread in threads:
+            thread.join(timeout=max(0.1, self.hold_seconds + 0.05))
         if self._ui is not None:
             try:
                 self._ui.close()
