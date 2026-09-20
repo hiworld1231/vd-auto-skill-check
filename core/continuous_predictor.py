@@ -42,6 +42,8 @@ class ContinuousAngularPredictor:
     ):
         self.base_latency_ms = float(latency_ms)
         self.latency_s = float(latency_ms) / 1000.0
+        self.lead_uncertainty_s = 0.0
+        self.dispatch_uncertainty_s = 0.0
         self.latency_uncertainty_s = 0.0
         self.target_offset_ratio = float(target_offset_ratio)
         self.session_base_speed = float(session_base_speed)
@@ -53,10 +55,22 @@ class ContinuousAngularPredictor:
         self.reset()
 
     def set_delivery_lead(
-        self, lead_ms: float, uncertainty_ms: float = 0.0
+        self,
+        lead_ms: float,
+        uncertainty_ms: float = 0.0,
+        dispatch_uncertainty_ms: float = 0.0,
     ) -> None:
         self.latency_s = max(0.0, float(lead_ms)) / 1000.0
-        self.latency_uncertainty_s = max(0.0, float(uncertainty_ms)) / 1000.0
+        self.lead_uncertainty_s = max(0.0, float(uncertainty_ms)) / 1000.0
+        self.dispatch_uncertainty_s = (
+            max(0.0, float(dispatch_uncertainty_ms)) / 1000.0
+        )
+        # Both are predictive one-event error scales.  Sum them conservatively
+        # for the hard GREAT gate instead of letting two independent timing
+        # uncertainties cancel each other on paper.
+        self.latency_uncertainty_s = (
+            self.lead_uncertainty_s + self.dispatch_uncertainty_s
+        )
 
     @property
     def speed_mode(self) -> str:
@@ -539,7 +553,9 @@ class ContinuousAngularPredictor:
             "great_interval_safe": bool(great_interval_safe),
             "great_interval_intersects": bool(great_interval_intersects),
             "speed_uncertainty_reliable": self._fit_sample_count >= 5,
-            "lead_uncertainty_ms": self.latency_uncertainty_s * 1000.0,
+            "lead_uncertainty_ms": self.lead_uncertainty_s * 1000.0,
+            "dispatch_uncertainty_ms": self.dispatch_uncertainty_s * 1000.0,
+            "delivery_uncertainty_ms": self.latency_uncertainty_s * 1000.0,
             "press_timestamp": press_timestamp,
             "time_until_press_ms": (press_timestamp - current_t) * 1000.0,
             "should_press_now": should_press_now,
