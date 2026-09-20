@@ -312,11 +312,16 @@ class VisionEngine:
         # Hybrid already attempted local window search + full 360 scan internally.
         # If recovery does not occur for >= 2 consecutive frames:
         if self.consecutive_hybrid_losses >= 2:
+            fallback_expected = (
+                expected_angle
+                if expected_angle is not None
+                else self.hybrid_detector.last_angle
+            )
             det_base = self.baseline_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
-                expected_angle=expected_angle,
-                search_window=search_window,
+                expected_angle=fallback_expected,
+                search_window=max(float(search_window), 60.0),
                 dt_frame=dt_frame,
                 expected_speed=expected_speed,
             )
@@ -339,7 +344,7 @@ class VisionEngine:
                     det_base["white_zone"] = self.locked_white_zone
                     det_base["black_zone"] = self.locked_black_zone
                     det_base["needle_valid"] = False
-                    det_base["status"] = "LOW_CONFIDENCE"
+                    det_base["status"] = str(det_base.get("status") or "LOW_CONFIDENCE")
                     det_base["detector_name"] = "HYBRID_NEEDLE_FALLBACK_BASELINE"
                     return det_base
             else:
