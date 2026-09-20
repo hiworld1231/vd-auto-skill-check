@@ -7,7 +7,11 @@ from pathlib import Path
 from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
-from core.genrush_runtime import _generation_lead, _presence_absence_update
+from core.genrush_runtime import (
+    _generation_lead,
+    _generation_motion_update,
+    _presence_absence_update,
+)
 from core.outcome_observer import OutcomeObserver
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.detectors.base import extract_zones_from_masks
@@ -59,6 +63,36 @@ class CleanV5Tests(unittest.TestCase):
         since, _ = _presence_absence_update(None, now=20.000, present=False)
         since, elapsed = _presence_absence_update(since, now=20.101, present=False)
         self.assertGreaterEqual(elapsed, 0.100)
+
+    def test_next_generation_motion_is_independent_from_old_landing_needle(self):
+        samples = []
+        self.assertFalse(
+            _generation_motion_update(
+                samples, t=1.000, angle=10.0, valid=True
+            )
+        )
+        self.assertFalse(
+            _generation_motion_update(
+                samples, t=1.016, angle=10.1, valid=True
+            )
+        )
+        self.assertTrue(
+            _generation_motion_update(
+                samples, t=1.033, angle=18.0, valid=True
+            )
+        )
+
+    def test_invalid_generation_needle_cannot_fake_motion(self):
+        samples = []
+        for i, angle in enumerate((10.0, 30.0, 60.0)):
+            moving = _generation_motion_update(
+                samples,
+                t=2.0 + i * 0.016,
+                angle=angle,
+                valid=False,
+            )
+            self.assertFalse(moving)
+        self.assertEqual(samples, [])
 
     def test_frenzy_generation_uses_separate_lead(self):
         lead_ms, unc_ms = _generation_lead(

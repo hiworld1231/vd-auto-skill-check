@@ -271,6 +271,9 @@ class VisionEngine:
                 dt_frame=dt_frame,
                 expected_speed=expected_speed,
             )
+            det_generation = self.hybrid_detector.scan_generation_candidate(
+                frame_bgr
+            )
             det_hyb = self.hybrid_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
@@ -282,22 +285,23 @@ class VisionEngine:
                 skip_presence_check=True,
             )
 
-            if det_base is not None:
-                out = dict(det_base)
-                out["ring_present"] = bool(det_base.get("ring_present"))
-                # Keep the BASELINE needle from the currently visible ring
-                # separate from the continuity HYBRID needle below. During a
-                # Frenzy relocation these can belong to different generations:
-                # HYBRID is intentionally following the previous trajectory for
-                # landing evidence, while BASELINE has already found the next
-                # generation's ring + needle.
-                out["generation_needle_angle"] = det_base.get("needle_angle")
-                out["generation_needle_strength"] = det_base.get("needle_strength")
-                out["generation_needle_confidence"] = det_base.get("needle_confidence")
+            # Lifecycle/new-generation evidence must not depend only on
+            # the SPACE prompt template. Prefer a prompt-independent scan at
+            # the already calibrated center; fall back to BASELINE when that
+            # scan cannot recover sane ring geometry.
+            lifecycle_det = det_generation if det_generation is not None else det_base
+            if lifecycle_det is not None:
+                out = dict(lifecycle_det)
+                out["ring_present"] = bool(lifecycle_det.get("ring_present", True))
+                out["generation_needle_angle"] = lifecycle_det.get("needle_angle")
+                out["generation_needle_strength"] = lifecycle_det.get("needle_strength")
+                out["generation_needle_confidence"] = lifecycle_det.get("needle_confidence")
                 out["generation_needle_valid"] = bool(
-                    det_base.get("needle_valid")
-                    and float(det_base.get("needle_strength", 0.0) or 0.0) >= 15.0
+                    lifecycle_det.get("needle_valid")
+                    and float(lifecycle_det.get("needle_strength", 0.0) or 0.0) >= 15.0
                 )
+                out["generation_detector"] = lifecycle_det.get("detector_name")
+                out["baseline_prompt_present"] = bool(det_base is not None)
             else:
                 out = {
                     "ring_present": False,
@@ -311,6 +315,8 @@ class VisionEngine:
                     "generation_needle_strength": 0.0,
                     "generation_needle_confidence": 0.0,
                     "generation_needle_valid": False,
+                    "generation_detector": None,
+                    "baseline_prompt_present": False,
                 }
 
             if det_hyb is not None and det_hyb.get("needle_valid") and float(det_hyb.get("needle_strength", 0.0) or 0.0) >= 15.0:
@@ -318,7 +324,7 @@ class VisionEngine:
                 out["needle_strength"] = det_hyb.get("needle_strength")
                 out["needle_confidence"] = det_hyb.get("needle_confidence")
                 out["needle_valid"] = True
-                out["detector_name"] = "POST_HIT_HYBRID_NEEDLE_BASELINE_LIFECYCLE"
+                out["detector_name"] = "POST_HIT_HYBRID_NEEDLE_GENERATION_LIFECYCLE"
             else:
                 # Never substitute a fresh BASELINE full-scan red peak as the
                 # landing angle.

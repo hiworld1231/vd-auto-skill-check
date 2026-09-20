@@ -103,6 +103,39 @@ def _presence_absence_update(
     return absent_since, max(0.0, float(now) - float(absent_since))
 
 
+def _generation_motion_update(
+    samples,
+    *,
+    t: float,
+    angle: Optional[float],
+    valid: bool,
+    max_samples: int = 6,
+    min_span_deg: float = 2.0,
+) -> bool:
+    """Track motion of the *next* Frenzy generation independently.
+
+    Post-fire landing continuity follows the previous generation. Frenzy
+    confirmation must also accept motion measured on the freshly relocated
+    generation, otherwise a correctly frozen old needle can suppress the next
+    chain and end as UNCONFIRMED.
+    """
+    if not valid or angle is None:
+        return False
+    samples.append((float(t), float(angle) % 360.0))
+    keep = max(3, int(max_samples))
+    if len(samples) > keep:
+        del samples[:-keep]
+    if len(samples) < 3:
+        return False
+    recent = samples[-3:]
+    ref = recent[0][1]
+    vals = [
+        ref + ((a - ref + 180.0) % 360.0 - 180.0)
+        for _t, a in recent
+    ]
+    return (max(vals) - min(vals)) >= float(min_span_deg)
+
+
 def _generation_lead(
     chain_count: int,
     *,
@@ -311,13 +344,14 @@ def run_genrush_clean(
     last_id = None
     last_unique_ts = None
     last_post_angle = None
+    post_generation_samples = []
     pre_fire_absent_since: Optional[float] = None
     last_fire: Optional[FireEvent] = None
 
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
         nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
-        nonlocal pre_fire_absent_since
+        nonlocal pre_fire_absent_since, post_generation_samples
         advance_fire_epoch()
         scheduler.cancel_pending()
         scheduler.rearm()
@@ -336,6 +370,7 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
+        post_generation_samples.clear()
         pre_fire_absent_since = None
 
     def start_generation(
@@ -350,7 +385,7 @@ def run_genrush_clean(
     ) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
         nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
-        nonlocal pre_fire_absent_since
+        nonlocal pre_fire_absent_since, post_generation_samples
         previous_fire = last_fire
         advance_fire_epoch()
         scheduler.cancel_pending()
@@ -426,6 +461,7 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
+        post_generation_samples.clear()
         pre_fire_absent_since = None
         recorder.start_check(
             now,
@@ -711,6 +747,7 @@ def run_genrush_clean(
                 c["dispatch_lag_observed_ms"] = observed_dispatch_lag_ms
                 c["dispatch_timing"] = dispatch_timing.telemetry()
                 post_fire.begin(physical_press_t)
+                post_generation_samples.clear()
                 observer.on_trigger(
                     physical_press_t,
                     float(c.get("target_angle") or 0.0),
@@ -850,6 +887,20 @@ def run_genrush_clean(
                     )
                     last_post_angle = cur
 
+                generation_motion = _generation_motion_update(
+                    post_generation_samples,
+                    t=frame_ts,
+                    angle=(
+                        det.get("generation_needle_angle")
+                        if isinstance(det, dict)
+                        else None
+                    ),
+                    valid=bool(
+                        isinstance(det, dict)
+                        and det.get("generation_needle_valid")
+                    ),
+                )
+
                 if ring_present:
                     nw, nb = vision.extract_zones(det)
                     nw = _sane_zone(nw, 5.0, 16.0)
@@ -857,19 +908,22 @@ def run_genrush_clean(
                     zone_move = bool(
                         nw
                         and locked_w
+                        and isinstance(det, dict)
+                        and bool(det.get("generation_needle_valid"))
                         and _circ(
                             float(nw.get("center", 0)), float(locked_w.get("center", 0))
                         )
                         > 15.0
                     )
 
+                old_generation_motion = observer.has_recent_motion()
                 decision = post_fire.update(
                     now,
                     ring_present=ring_present,
                     plateau_found=observer.has_plateau(),
                     zone_moved=zone_move,
                     rollback=rollback,
-                    fresh_motion=observer.has_recent_motion(),
+                    fresh_motion=(old_generation_motion or generation_motion),
                 )
 
                 recorder.on_frame(
@@ -884,6 +938,18 @@ def run_genrush_clean(
                         "post_fire_reason": decision.reason,
                         "post_fire_absence_ms": decision.absence_ms,
                         "post_fire_relocated_streak": decision.relocated_streak,
+                        "old_generation_motion": old_generation_motion,
+                        "next_generation_motion": generation_motion,
+                        "generation_detector": (
+                            det.get("generation_detector")
+                            if isinstance(det, dict)
+                            else None
+                        ),
+                        "baseline_prompt_present": (
+                            det.get("baseline_prompt_present")
+                            if isinstance(det, dict)
+                            else None
+                        ),
                     },
                 )
 
