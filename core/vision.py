@@ -184,12 +184,35 @@ class VisionEngine:
             self.hybrid_detector.set_geometry(cx, cy)
             self.hybrid_detector.locked_white_zone = self.locked_white_zone
             self.hybrid_detector.locked_black_zone = self.locked_black_zone
-            if det.get("needle_angle") is not None and det.get("needle_valid", True):
-                self.hybrid_detector.last_angle = float(det["needle_angle"])
+
+            generation_valid = bool(det.get("generation_needle_valid"))
+            if generation_valid:
+                bootstrap_angle = det.get("generation_needle_angle")
+                bootstrap_strength = det.get("generation_needle_strength")
+                bootstrap_confidence = det.get("generation_needle_confidence")
+            else:
+                bootstrap_angle = det.get("needle_angle")
+                bootstrap_strength = det.get("needle_strength")
+                bootstrap_confidence = det.get("needle_confidence")
+
+            if bootstrap_angle is not None and (
+                generation_valid or det.get("needle_valid", True)
+            ):
+                self.hybrid_detector.last_angle = float(bootstrap_angle)
                 self.hybrid_detector.last_t = time.monotonic()
                 self.hybrid_detector.consecutive_losses = 0
 
         out = dict(det)
+        if bool(det.get("generation_needle_valid")):
+            out["needle_angle"] = float(det["generation_needle_angle"])
+            out["needle_strength"] = float(det.get("generation_needle_strength") or 0.0)
+            out["needle_confidence"] = float(
+                det.get("generation_needle_confidence")
+                or det.get("generation_needle_strength")
+                or 0.0
+            )
+            out["needle_valid"] = True
+            out["handoff_needle_source"] = "BASELINE_NEW_GENERATION"
         out["ring_present"] = True
         out["white_zone"] = self.locked_white_zone
         out["black_zone"] = self.locked_black_zone
@@ -262,6 +285,19 @@ class VisionEngine:
             if det_base is not None:
                 out = dict(det_base)
                 out["ring_present"] = bool(det_base.get("ring_present"))
+                # Keep the BASELINE needle from the currently visible ring
+                # separate from the continuity HYBRID needle below. During a
+                # Frenzy relocation these can belong to different generations:
+                # HYBRID is intentionally following the previous trajectory for
+                # landing evidence, while BASELINE has already found the next
+                # generation's ring + needle.
+                out["generation_needle_angle"] = det_base.get("needle_angle")
+                out["generation_needle_strength"] = det_base.get("needle_strength")
+                out["generation_needle_confidence"] = det_base.get("needle_confidence")
+                out["generation_needle_valid"] = bool(
+                    det_base.get("needle_valid")
+                    and float(det_base.get("needle_strength", 0.0) or 0.0) >= 15.0
+                )
             else:
                 out = {
                     "ring_present": False,
@@ -271,6 +307,10 @@ class VisionEngine:
                     "cx": self.locked_center[0] if self.locked_center else self.hybrid_detector.cx,
                     "cy": self.locked_center[1] if self.locked_center else self.hybrid_detector.cy,
                     "center": self.locked_center,
+                    "generation_needle_angle": None,
+                    "generation_needle_strength": 0.0,
+                    "generation_needle_confidence": 0.0,
+                    "generation_needle_valid": False,
                 }
 
             if det_hyb is not None and det_hyb.get("needle_valid") and float(det_hyb.get("needle_strength", 0.0) or 0.0) >= 15.0:
