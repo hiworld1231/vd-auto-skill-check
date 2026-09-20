@@ -64,6 +64,7 @@ class VisionEngine:
         self.locked_black_zone: Optional[Dict[str, float]] = None
         self.locked_center: Optional[Tuple[float, float]] = None
         self.consecutive_hybrid_losses: int = 0
+        self.consecutive_ring_losses: int = 0
         self.is_pressed: bool = False
         # A black-only frame can reconstruct a plausible GREAT arc, but locking
         # it immediately throws away the chance to measure the real white arc
@@ -98,6 +99,7 @@ class VisionEngine:
         self.locked_black_zone = None
         self.locked_center = None
         self.consecutive_hybrid_losses = 0
+        self.consecutive_ring_losses = 0
         self.black_only_acquire_count = 0
         self.is_pressed = False
         if self.baseline_detector is not None:
@@ -119,6 +121,7 @@ class VisionEngine:
         self.locked_black_zone = None
         self.locked_center = center
         self.consecutive_hybrid_losses = 0
+        self.consecutive_ring_losses = 0
         self.black_only_acquire_count = 0
         self.is_pressed = False
         if self.baseline_detector is not None:
@@ -168,10 +171,11 @@ class VisionEngine:
         # 1. Post-Fire / Pressed state (monitoring for frenzy or ring end)
         # -------------------------------------------------------------
         if self.is_pressed:
-            # Lifecycle/zone evidence still comes from BASELINE, but landing
-            # motion must stay on the continuity-aware HYBRID tracker.  A
-            # full 360° post-hit scan can lock onto red hit-animation pixels
-            # and manufacture impossible angle jumps.
+            # The SPACE prompt/lifecycle template can disappear immediately
+            # after keydown, before the needle freeze is visible.  Keep landing
+            # motion independent from prompt presence: BASELINE supplies ring/
+            # zone lifecycle, HYBRID continues the old needle trajectory without
+            # requiring the prompt to remain on-screen.
             det_base = self.baseline_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
@@ -180,9 +184,6 @@ class VisionEngine:
                 dt_frame=dt_frame,
                 expected_speed=expected_speed,
             )
-            if det_base is None or not det_base.get("ring_present"):
-                return None
-
             det_hyb = self.hybrid_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
@@ -191,9 +192,23 @@ class VisionEngine:
                 dt_frame=dt_frame,
                 expected_speed=expected_speed,
                 locked_zones=(self.locked_white_zone, self.locked_black_zone),
+                skip_presence_check=True,
             )
 
-            out = dict(det_base)
+            if det_base is not None:
+                out = dict(det_base)
+                out["ring_present"] = bool(det_base.get("ring_present"))
+            else:
+                out = {
+                    "ring_present": False,
+                    "confidence": 0.0,
+                    "white_zone": None,
+                    "black_zone": None,
+                    "cx": self.locked_center[0] if self.locked_center else self.hybrid_detector.cx,
+                    "cy": self.locked_center[1] if self.locked_center else self.hybrid_detector.cy,
+                    "center": self.locked_center,
+                }
+
             if det_hyb is not None and det_hyb.get("needle_valid") and float(det_hyb.get("needle_strength", 0.0) or 0.0) >= 15.0:
                 out["needle_angle"] = det_hyb["needle_angle"]
                 out["needle_strength"] = det_hyb.get("needle_strength")
@@ -201,10 +216,10 @@ class VisionEngine:
                 out["needle_valid"] = True
                 out["detector_name"] = "POST_HIT_HYBRID_NEEDLE_BASELINE_LIFECYCLE"
             else:
-                # Never substitute a fresh full-scan red peak as the landing
-                # angle.  Lifecycle data is still useful even when motion is
-                # temporarily untrusted.
+                # Never substitute a fresh BASELINE full-scan red peak as the
+                # landing angle.
                 out["needle_valid"] = False
+                out["needle_strength"] = 0.0
                 out["detector_name"] = "POST_HIT_LIFECYCLE_ONLY"
 
             if out.get("white_zone") is not None:
@@ -303,8 +318,53 @@ class VisionEngine:
         )
 
         if det_hyb is None or not det_hyb.get("ring_present"):
+            # Do not kill an active check on one strict HYBRID presence miss.
+            # Confirm with the slower BASELINE detector first; only sustained
+            # dual-detector absence ends the generation.
+            fallback_expected = (
+                expected_angle
+                if expected_angle is not None
+                else self.hybrid_detector.last_angle
+            )
+            det_base = self.baseline_detector.detect(
+                frame_bgr=frame_bgr,
+                frame_gray=frame_gray,
+                expected_angle=fallback_expected,
+                search_window=max(float(search_window), 60.0),
+                dt_frame=dt_frame,
+                expected_speed=expected_speed,
+            )
+            if det_base is not None and det_base.get("ring_present"):
+                self.consecutive_ring_losses = 0
+                det_base["white_zone"] = self.locked_white_zone
+                det_base["black_zone"] = self.locked_black_zone
+                det_base["detector_name"] = "HYBRID_PRESENCE_FALLBACK_BASELINE"
+                if det_base.get("needle_valid"):
+                    self.hybrid_detector.last_angle = det_base.get("needle_angle")
+                    self.hybrid_detector.last_t = time.monotonic()
+                    self.hybrid_detector.consecutive_losses = 0
+                return det_base
+
+            self.consecutive_ring_losses += 1
+            if self.consecutive_ring_losses < 3:
+                return {
+                    "ring_present": True,
+                    "needle_valid": False,
+                    "needle_strength": 0.0,
+                    "white_zone": self.locked_white_zone,
+                    "black_zone": self.locked_black_zone,
+                    "cx": self.locked_center[0],
+                    "cy": self.locked_center[1],
+                    "center": self.locked_center,
+                    "detector_name": "RING_PRESENCE_GRACE",
+                    "status": "PRESENCE_RECHECK",
+                    "confidence": 0.0,
+                }
+
             self.reset()
             return None
+
+        self.consecutive_ring_losses = 0
 
         is_needle_valid = det_hyb.get("needle_valid", False) and (det_hyb.get("needle_strength", 0.0) >= 15.0)
 
