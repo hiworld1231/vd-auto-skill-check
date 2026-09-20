@@ -62,10 +62,15 @@ class OutcomeObserver:
         enough evidence: two duplicated source frames can look like a freeze.
         Require both angular stability and a real monotonic time span.
         """
-        min_samples = 4
-        min_span_s = 0.035
-        max_adjacent_gap_s = 0.035
-        max_spread_deg = 1.4
+        # Live checks can remove the ring quickly after a hit.  Four samples
+        # over 35 ms was too slow and produced UNCONFIRMED even on real hits.
+        # Keep the time-supported guard so duplicate decoded frames alone are
+        # insufficient, but allow confirmation from three stable samples over
+        # at least 20 ms.
+        min_samples = 3
+        min_span_s = 0.020
+        max_adjacent_gap_s = 0.040
+        max_spread_deg = 1.6
 
         if len(self.samples) < min_samples or self.trigger_t is None:
             return None
