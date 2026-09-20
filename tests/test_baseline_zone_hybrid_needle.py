@@ -25,6 +25,8 @@ if str(ROOT) not in sys.path:
 
 from core.vision import VisionEngine, STATE_SPAWN_ACQUIRE, STATE_ACTIVE_TRACKING
 from core.detectors import SPACE_TEMPLATE
+from core.detectors.baseline import BaselineDetector
+from core.detectors.hybrid import HybridDetector, _bounded_local_parabolic_delta
 
 
 def create_synthetic_check_frame(
@@ -114,6 +116,104 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertIsNotNone(self.vision.locked_center)
         self.assertAlmostEqual(self.vision.locked_white_zone["width"], 14.0, delta=4.0)
 
+    @staticmethod
+    def _mock_acquire_detection(white_zone):
+        return {
+            "ring_present": True,
+            "needle_valid": True,
+            "needle_angle": 45.0,
+            "needle_strength": 80.0,
+            "confidence": 0.99,
+            "cx": 160.0,
+            "cy": 162.5,
+            "center": (160.0, 162.5),
+            "white_zone": white_zone,
+            "black_zone": {
+                "start": 90.0,
+                "end": 130.0,
+                "center": 110.0,
+                "width": 40.0,
+                "source": "MEASURED",
+            },
+        }
+
+    def test_black_only_reconstruction_waits_for_measured_great(self):
+        reconstructed = {
+            "start": 80.5,
+            "end": 90.0,
+            "center": 85.25,
+            "width": 9.5,
+            "source": "RECONSTRUCTED_FROM_BLACK",
+        }
+        measured = {
+            "start": 82.2,
+            "end": 91.8,
+            "center": 87.0,
+            "width": 9.6,
+            "source": "MEASURED",
+        }
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+
+        with patch.object(
+            self.vision.baseline_detector,
+            "detect",
+            side_effect=[
+                self._mock_acquire_detection(dict(reconstructed)),
+                self._mock_acquire_detection(dict(measured)),
+            ],
+        ):
+            first = self.vision.detect_frame(gray, frame)
+            self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
+            self.assertIsNone(self.vision.locked_white_zone)
+            self.assertIsNone(first["white_zone"])
+
+            second = self.vision.detect_frame(gray, frame)
+            self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
+            self.assertEqual(
+                self.vision.locked_white_zone["source"], "MEASURED"
+            )
+            self.assertAlmostEqual(
+                self.vision.locked_white_zone["center"], 87.0
+            )
+            self.assertEqual(self.vision.black_only_acquire_count, 0)
+            self.assertEqual(second["white_zone"]["source"], "MEASURED")
+
+    def test_black_only_reconstruction_falls_back_after_three_frames(self):
+        reconstructed = {
+            "start": 80.5,
+            "end": 90.0,
+            "center": 85.25,
+            "width": 9.5,
+            "source": "RECONSTRUCTED_FROM_BLACK",
+        }
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+        detections = [
+            self._mock_acquire_detection(dict(reconstructed))
+            for _ in range(3)
+        ]
+
+        with patch.object(
+            self.vision.baseline_detector,
+            "detect",
+            side_effect=detections,
+        ):
+            for _ in range(2):
+                det = self.vision.detect_frame(gray, frame)
+                self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
+                self.assertIsNone(det["white_zone"])
+
+            det = self.vision.detect_frame(gray, frame)
+            self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
+            self.assertEqual(
+                self.vision.locked_white_zone["source"],
+                "RECONSTRUCTED_FROM_BLACK",
+            )
+            self.assertEqual(
+                det["white_zone"]["source"], "RECONSTRUCTED_FROM_BLACK"
+            )
+
     def test_active_tracking_critical_path_bypasses_baseline_vision(self):
         """Step 2: Subsequent ACTIVE frames execute HYBRID needle tracking without calling Baseline warpPolar."""
         gray, bgr = create_synthetic_check_frame(needle_angle_deg=45.0)
@@ -169,6 +269,41 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
             mock_base.assert_called_once()
             # Losses reset upon successful recovery
             self.assertEqual(self.vision.consecutive_hybrid_losses, 0)
+
+    def test_baseline_expected_angle_rejects_unrelated_red_peak(self):
+        gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
+        det = BaselineDetector().detect(
+            frame_bgr=bgr,
+            frame_gray=gray,
+            expected_angle=45.0,
+            search_window=35.0,
+        )
+        self.assertIsNotNone(det)
+        self.assertFalse(det["needle_valid"])
+        self.assertEqual(det["status"], "OUTSIDE_EXPECTED_WINDOW")
+
+    def test_hybrid_reacquire_does_not_jump_to_distant_red_peak(self):
+        gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
+        h = HybridDetector()
+        h.last_angle = 45.0
+        h.last_t = time.monotonic() - 0.016
+        det = h.detect(
+            frame_bgr=bgr,
+            frame_gray=gray,
+            expected_angle=None,
+            search_window=35.0,
+            dt_frame=0.016,
+            expected_speed=300.0,
+        )
+        self.assertIsNotNone(det)
+        self.assertFalse(det["needle_valid"])
+        self.assertEqual(det["status"], "REACQUIRE_OUTSIDE_CONTINUITY")
+
+    def test_local_parabolic_interpolation_never_wraps_window_edges(self):
+        left_edge = np.array([100.0, 20.0, 5.0], dtype=np.float32)
+        right_edge = np.array([5.0, 20.0, 100.0], dtype=np.float32)
+        self.assertEqual(_bounded_local_parabolic_delta(left_edge, 0), 0.0)
+        self.assertEqual(_bounded_local_parabolic_delta(right_edge, 2), 0.0)
 
     def test_zone_lifecycle_and_reset_for_new_check_generation(self):
         """Step 4: reset() clears locked zones so next check generation re-acquires freshly."""

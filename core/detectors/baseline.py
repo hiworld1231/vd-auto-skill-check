@@ -16,6 +16,7 @@ from core.detectors.base import (
     TEMPLATE_W,
     parabolic_peak,
     extract_zones_from_masks,
+    refine_zone_from_score,
 )
 
 
@@ -81,12 +82,17 @@ class BaselineDetector(BaseDetector):
             if curr_v >= prev_v and curr_v > next_v and curr_v > 15.0:
                 peaks.append((i, curr_v))
 
+        outside_expected_window = False
         if expected_angle is not None and peaks:
-            cand = [p for p in peaks if abs((p[0] - expected_angle + 180) % 360 - 180) <= search_window]
+            cand = [
+                p for p in peaks
+                if abs((p[0] - expected_angle + 180) % 360 - 180) <= search_window
+            ]
             if cand:
                 peak_idx = max(cand, key=lambda x: x[1])[0]
             else:
                 peak_idx = int(np.argmax(red_profile))
+                outside_expected_window = True
         else:
             peak_idx = int(np.argmax(red_profile))
 
@@ -107,8 +113,25 @@ class BaselineDetector(BaseDetector):
         white_mask = ((r66_val > th_white) & (r66_r > 150) & (r66_g > 150) & (r66_b > 150)) | (r66_val > 185)
         black_mask = (r66_val < th_black) | (r66_val < 42)
 
-        is_needle_valid = needle_strength >= 15.0
+        is_needle_valid = needle_strength >= 15.0 and not outside_expected_window
         w_d, b_d = extract_zones_from_masks(white_mask, black_mask)
+
+        white_primary = np.minimum.reduce(
+            [
+                r66_val - th_white,
+                r66_r - 150.0,
+                r66_g - 150.0,
+                r66_b - 150.0,
+            ]
+        )
+        white_score = np.maximum(white_primary, r66_val - 185.0)
+        black_score = th_black - r66_val
+        w_d = refine_zone_from_score(
+            w_d, white_score, min_width=5.0, max_width=16.0
+        )
+        b_d = refine_zone_from_score(
+            b_d, black_score, min_width=18.0, max_width=65.0
+        )
 
         t1 = time.perf_counter()
         det_time_ms = (t1 - t0) * 1000.0
@@ -130,5 +153,13 @@ class BaselineDetector(BaseDetector):
             "ring_present": True,
             "detector_name": self.name,
             "detector_time_ms": det_time_ms,
-            "status": "OK" if is_needle_valid else "LOW_CONFIDENCE",
+            "status": (
+                "OK"
+                if is_needle_valid
+                else (
+                    "OUTSIDE_EXPECTED_WINDOW"
+                    if outside_expected_window
+                    else "LOW_CONFIDENCE"
+                )
+            ),
         }

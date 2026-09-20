@@ -97,7 +97,7 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertEqual(pred["angular_distance_deg"],0.0)
         self.assertLessEqual(pred["time_to_hit_ms"],0.001)
 
-    def test_replay5_unstable_1k_track_uses_conservative_local_speed(self):
+    def test_replay5_unstable_1k_track_has_no_magic_speed_slowdown(self):
         # Live replay(5), 2026-09-19 15:20:07.  The old urgent path used the
         # unstable 1030.7 deg/s all-pairs fit and landed ~13 deg before GREAT.
         p = ContinuousAngularPredictor(81.92233377980533, session_base_speed=278.0)
@@ -121,16 +121,14 @@ class TestContinuousGenRush(unittest.TestCase):
         used = p.get_actuation_speed()
         telem = p.get_shadow_telemetry()
         self.assertGreater(raw, 1000.0)
-        self.assertLess(used, raw)
-        self.assertGreater(used, 880.0)
-        self.assertLess(used, 980.0)
-        self.assertEqual(telem["actuation_speed_reason"], "HIGH_SPEED_CONSERVATIVE_LOCAL")
+        self.assertAlmostEqual(used, raw, delta=1.0)
+        self.assertEqual(telem["actuation_speed_reason"], "UNCERTAINTY_MIDPOINT")
         pred = p.predict(samples[-1][0], samples[-1][1], target="GREAT")
         self.assertIsNotNone(pred)
-        self.assertGreater(pred["time_to_hit_ms"], 84.0)
-        self.assertLess(pred["time_to_hit_ms"], 90.0)
+        self.assertGreater(pred["landing_uncertainty_width_deg"], 0.0)
+        self.assertIn("great_interval_safe", pred)
 
-    def test_replay6_three_point_1k_track_is_provisionally_slowed(self):
+    def test_replay6_three_point_1k_track_keeps_unbiased_speed(self):
         p = ContinuousAngularPredictor(80.255536, session_base_speed=278.0)
         w = {"start": 78.0, "end": 88.0, "center": 83.0, "width": 10.0}
         b = {"start": 89.0, "end": 131.0, "center": 110.0, "width": 42.0}
@@ -139,11 +137,101 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertTrue(p.has_usable_speed())
         self.assertGreater(p.speed_deg_s, 1000.0)
         used = p.get_actuation_speed()
-        self.assertAlmostEqual(used, p.speed_deg_s * 0.85, delta=1.0)
+        self.assertAlmostEqual(used, p.speed_deg_s, delta=1.0)
         self.assertEqual(
             p.get_shadow_telemetry()["actuation_speed_reason"],
-            "HIGH_SPEED_PROVISIONAL_85PCT",
+            "UNCERTAINTY_MIDPOINT",
         )
+
+    def test_uncertainty_shadow_is_tight_on_clean_linear_track(self):
+        p, lock = self._run_speed(550.0)
+        self.assertIsNotNone(lock)
+        telem = p.get_shadow_telemetry()
+        self.assertTrue(telem["speed_uncertainty_reliable"])
+        self.assertLess(telem["speed_uncertainty_low"], 550.0)
+        self.assertGreater(telem["speed_uncertainty_high"], 550.0)
+        self.assertLess(telem["speed_uncertainty_high"] - telem["speed_uncertainty_low"], 50.0)
+
+        t = 0.151
+        a = (270.0 + 550.0 * t) % 360.0
+        pred = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertGreaterEqual(pred["crossing_uncertainty_ms"], 0.0)
+        self.assertGreater(pred["white_window_ms"], 0.0)
+        self.assertTrue(pred["great_interval_safe"])
+        self.assertLess(pred["landing_uncertainty_width_deg"], pred["great_width_deg"])
+
+    def test_lead_uncertainty_expands_great_landing_envelope(self):
+        p, lock = self._run_speed(550.0)
+        self.assertIsNotNone(lock)
+        t = 0.151
+        a = (270.0 + 550.0 * t) % 360.0
+
+        p.set_delivery_lead(122.1, 0.0)
+        tight = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(tight)
+
+        p.set_delivery_lead(122.1, 4.0)
+        wide = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(wide)
+        self.assertAlmostEqual(wide["lead_uncertainty_ms"], 4.0)
+        self.assertGreater(
+            wide["landing_uncertainty_width_deg"],
+            tight["landing_uncertainty_width_deg"],
+        )
+
+    def test_dispatch_uncertainty_expands_total_delivery_envelope(self):
+        p, lock = self._run_speed(550.0)
+        self.assertIsNotNone(lock)
+        t = 0.151
+        a = (270.0 + 550.0 * t) % 360.0
+
+        p.set_delivery_lead(122.1, 2.0, 0.0)
+        lead_only = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(lead_only)
+
+        p.set_delivery_lead(122.1, 2.0, 1.5)
+        combined = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(combined)
+        self.assertAlmostEqual(combined["lead_uncertainty_ms"], 2.0)
+        self.assertAlmostEqual(combined["dispatch_uncertainty_ms"], 1.5)
+        self.assertAlmostEqual(combined["delivery_uncertainty_ms"], 3.5)
+        self.assertGreater(
+            combined["landing_uncertainty_width_deg"],
+            lead_only["landing_uncertainty_width_deg"],
+        )
+
+    def test_uncertainty_shadow_expands_for_disagreeing_track(self):
+        p = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
+        w = {"start": 90.0, "end": 100.0, "center": 95.0, "width": 10.0}
+        for t, a in [
+            (0.000, 270.0),
+            (0.016, 278.0),
+            (0.033, 291.0),
+            (0.049, 299.0),
+            (0.066, 315.0),
+            (0.083, 324.0),
+        ]:
+            p.update(t, a, 80.0, w, None)
+        telem = p.get_shadow_telemetry()
+        self.assertIsNotNone(telem["slope_mad_deg_s"])
+        self.assertGreater(
+            telem["speed_uncertainty_high"] - telem["speed_uncertainty_low"],
+            0.06 * telem["raw_fit_speed"],
+        )
+
+    def test_committed_does_not_bypass_new_fit_instability(self):
+        p, lock = self._run_speed(450.0)
+        self.assertIsNotNone(lock)
+        self.assertTrue(p.has_stable_speed())
+        p.mark_committed()
+        self.assertEqual(p.fire_state, "ARMED")
+
+        # Simulate newer fits disagreeing after a deadline was already armed.
+        # Old CLEAN V5 returned True solely because state==COMMITTED.
+        p.speed_fits.clear()
+        p.speed_fits.extend([(1.0, 430.0), (1.1, 520.0), (1.2, 610.0)])
+        self.assertFalse(p.has_stable_speed())
 
     def test_short_check_never_substitutes_base_prior(self):
         p = ContinuousAngularPredictor(100.0, session_base_speed=278.0)

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import importlib.metadata
+import platform
 import queue
+import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -10,15 +14,55 @@ from typing import Any, Dict, Optional
 import cv2
 
 from core.capture import CaptureError, ScreenGrabber
-from core.continuous_predictor import ContinuousAngularPredictor, STATE_COMMITTED
+from core.continuous_predictor import ContinuousAngularPredictor
+from core.dispatch_timing import DispatchTimingModel
+from core.fire_policy import decide_great_fire
 from core.flight_recorder import FlightRecorder
+from core.lead_calibration import LeadCalibrationStore, make_calibration_fingerprint
 from core.lead_level_controller import LeadLevelController
 from core.mouse_tracker import MouseTracker
 from core.outcome_observer import OutcomeObserver
 from core.preflight import run_preflight
+from core.post_fire_lifecycle import FRENZY, RING_END, PostFireLifecycle
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.tui import SkillCheckTUI
 from core.vision import VisionEngine
+
+
+def _session_metadata(root: Path, config: Dict[str, Any], *, fps: int, region: Dict[str, int], detector: str) -> Dict[str, Any]:
+    try:
+        git_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        ).stdout.strip()
+    except Exception:
+        git_sha = "UNKNOWN"
+
+    versions: Dict[str, str] = {
+        "python": platform.python_version(),
+        "opencv": str(getattr(cv2, "__version__", "UNKNOWN")),
+    }
+    for package in ("numpy", "rich", "mss", "evdev"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "NOT_INSTALLED"
+
+    return {
+        "session_id": uuid.uuid4().hex,
+        "build_git_sha": git_sha,
+        "runtime_versions": versions,
+        "effective_config": {
+            **dict(config),
+            "fps": int(fps),
+            "region": dict(region),
+            "detector": str(detector),
+        },
+    }
 
 
 def _circ(a: float, b: float) -> float:
@@ -90,15 +134,26 @@ def run_genrush_clean(
         raise RuntimeError("PRE-FLIGHT FAILED: " + pf.summary())
 
     tui = SkillCheckTUI()
-    grabber = ScreenGrabber(region, fps=fps, framerate_mode="vfr")
+    grabber = ScreenGrabber(
+        region,
+        fps=fps,
+        framerate_mode="vfr",
+        allow_mss_fallback=bool(config.get("allow_mss_fallback", False)),
+    )
     vision = VisionEngine(backend_name=detector_name)
     predictor = ContinuousAngularPredictor(
         seed_lead, target_offset_ratio=0.5, session_base_speed=base_speed, fit_window=10
     )
     observer = OutcomeObserver(seed_lead, base_speed)
+    post_fire = PostFireLifecycle()
     lead = LeadLevelController(seed_lead)
+    dispatch_timing = DispatchTimingModel()
     mouse = MouseTracker(enabled=require_lmb)
-    recorder = FlightRecorder(root / "replays", record_all=record_all)
+    recorder = FlightRecorder(
+        root / "replays",
+        record_all=record_all,
+        session_meta=_session_metadata(root, config, fps=fps, region=region, detector=detector_name),
+    )
     keyboard = HardwareTrigger(
         dry_run=dry_run,
         hold_seconds=float(config.get("space_hold_ms", 35.0)) / 1000.0,
@@ -106,6 +161,38 @@ def run_genrush_clean(
     )
     if not dry_run and keyboard.backend == "UNAVAILABLE":
         raise RuntimeError("No usable keyboard backend; refusing silent dry-run")
+
+    calibration_store = None
+    calibration_load = None
+    if bool(config.get("persist_lead_calibration", True)) and not dry_run:
+        capture_backend = "GSR_VFR" if grabber.use_gsr else "MSS"
+        fingerprint = make_calibration_fingerprint(
+            fps=fps,
+            region=region,
+            detector=detector_name,
+            capture_backend=capture_backend,
+            input_backend=keyboard.backend,
+        )
+        calibration_store = LeadCalibrationStore(
+            root / ".vd_lead_calibration.json",
+            fingerprint,
+            max_age_s=float(config.get("lead_calibration_max_age_days", 7.0))
+            * 86400.0,
+        )
+        calibration_load = calibration_store.load()
+        recorder.session_meta["lead_calibration_load"] = calibration_load.telemetry()
+        if calibration_load.accepted:
+            lead.restore_calibration(
+                float(calibration_load.lead_ms),
+                float(calibration_load.uncertainty_ms),
+            )
+            tui.log(
+                f"🧭 restored lead={lead.current_lead_ms:.1f}ms "
+                f"±{lead.get_uncertainty_ms():.1f}ms "
+                f"age={float(calibration_load.age_s or 0.0) / 3600.0:.1f}h"
+            )
+        elif calibration_load.reason != "NOT_FOUND":
+            tui.log(f"🧭 calibration ignored: {calibration_load.reason}")
 
     if require_lmb:
         deadline = time.monotonic() + 0.7
@@ -160,17 +247,17 @@ def run_genrush_clean(
     last_id = None
     last_unique_ts = None
     last_post_angle = None
-    ring_absent_since = None
     last_fire: Optional[FireEvent] = None
 
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
-        nonlocal planned_press, no_fire_reason, ring_absent_since, last_fire, last_post_angle
+        nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
         scheduler.cancel_pending()
         scheduler.rearm()
         vision.reset()
         predictor.reset(keep_speed=False, session_base_speed=base_speed)
         observer.reset()
+        post_fire.reset()
         in_check = False
         pressed = False
         chain = 0
@@ -180,13 +267,12 @@ def run_genrush_clean(
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
-        ring_absent_since = None
         last_fire = None
         last_post_angle = None
 
     def start_generation(now: float, new_chain: int, preserve_center: bool = False) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
-        nonlocal speed_at_lock, planned_press, no_fire_reason, ring_absent_since, last_fire, last_post_angle
+        nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
         scheduler.cancel_pending()
         scheduler.rearm()
         if preserve_center:
@@ -195,22 +281,36 @@ def run_genrush_clean(
             vision.reset()
         predictor.reset(keep_speed=False, is_chain=new_chain > 1, session_base_speed=base_speed)
         observer.reset()
+        post_fire.reset()
         in_check = True
         pressed = False
         chain = new_chain
         check_start = now
         check_lead = lead.get_lead_ms(chain_count=1, chain_offset_ms=0.0)
-        predictor.latency_s = check_lead / 1000.0
+        predictor.set_delivery_lead(
+            check_lead,
+            lead.get_uncertainty_ms() if lead.initialized else 0.0,
+            dispatch_timing.uncertainty_ms(),
+        )
         locked_w = None
         locked_b = None
         speed_at_lock = None
         planned_press = None
         no_fire_reason = None
-        ring_absent_since = None
         last_fire = None
         last_post_angle = None
         recorder.start_check(
-            now, chain_count=chain, latency_ms=check_lead, target_mode="GREAT", target_ratio=0.5
+            now,
+            chain_count=chain,
+            latency_ms=check_lead,
+            lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
+            dispatch_uncertainty_ms=dispatch_timing.uncertainty_ms(),
+            delivery_uncertainty_ms=(
+                (lead.get_uncertainty_ms() if lead.initialized else 0.0)
+                + dispatch_timing.uncertainty_ms()
+            ),
+            target_mode="GREAT",
+            target_ratio=0.5,
         )
         tui.set_status(f"CHECK #{chain}")
         tui.log(f"▶ check chain={chain} lead={check_lead:.1f}ms")
@@ -225,24 +325,63 @@ def run_genrush_clean(
         outcome = str(info.get("outcome", "UNCONFIRMED"))
         info["chain_count"] = chain
         info["frenzy_transition"] = bool(frenzy_transition)
+        info["capture_health"] = grabber.get_diagnostics()
         if last_fire:
             ctx = last_fire.context
-            sched_jitter = (
+            callback_jitter = (
                 (last_fire.callback_entry - last_fire.deadline) * 1000.0
                 if last_fire.deadline is not None
                 else None
             )
+            raw_dispatch_lag_ms = (
+                (last_fire.dispatch_done - last_fire.deadline) * 1000.0
+                if last_fire.deadline is not None
+                else None
+            )
+            # Residual physical keydown error relative to the intended press
+            # time. Once dispatch-lag compensation is active this, not the raw
+            # deadline->SYN lag, is the scheduler error relevant to landing.
+            sched_jitter = (
+                (last_fire.dispatch_done - last_fire.desired) * 1000.0
+                if last_fire.desired is not None
+                else raw_dispatch_lag_ms
+            )
+            input_dispatch_ms = (
+                last_fire.dispatch_done - last_fire.dispatch_start
+            ) * 1000.0
             info.update(
                 {
                     "trigger_mode": last_fire.mode,
                     "requested_lead_ms": check_lead,
                     "actual_used_delay_ms": ctx.get("effective_dispatch_lead_ms", check_lead),
                     "effective_dispatch_lead_ms": ctx.get("effective_dispatch_lead_ms", check_lead),
+                    # Legacy name kept for existing replay tooling.  This is
+                    # decode-delivery age, not source/render age.
                     "frame_age_ms": ctx.get("frame_age_ms"),
+                    "decode_delivery_age_ms": ctx.get("frame_age_ms"),
                     "speed_at_lock": ctx.get("speed_at_lock"),
                     "speed_at_fire": ctx.get("speed_at_fire"),
                     "fit_telemetry": ctx.get("fit", {}),
+                    "fire_policy_reason": ctx.get("fire_policy_reason"),
+                    "fire_policy_best_effort": bool(ctx.get("fire_policy_best_effort", False)),
+                    "great_interval_safe": bool(ctx.get("great_interval_safe", False)),
+                    "great_interval_intersects": bool(ctx.get("great_interval_intersects", False)),
+                    "white_source_at_fire": ctx.get("white_source"),
+                    "great_geometry_refined": bool(ctx.get("great_geometry_refined", False)),
+                    "great_boundary_method": ctx.get("great_boundary_method"),
+                    "landing_uncertainty_width_deg": ctx.get("landing_uncertainty_width_deg"),
+                    "crossing_uncertainty_ms": ctx.get("crossing_uncertainty_ms"),
+                    "lead_uncertainty_ms": ctx.get("lead_uncertainty_ms"),
+                    "dispatch_uncertainty_ms": ctx.get("dispatch_uncertainty_ms"),
+                    "delivery_uncertainty_ms": ctx.get("delivery_uncertainty_ms"),
                     "scheduler_jitter_ms": sched_jitter,
+                    "dispatch_lag_ms": raw_dispatch_lag_ms,
+                    "dispatch_lag_compensation_ms": ctx.get("dispatch_lag_compensation_ms"),
+                    "dispatch_lag_uncertainty_ms": ctx.get("dispatch_lag_uncertainty_ms"),
+                    "dispatch_timing": ctx.get("dispatch_timing"),
+                    "scheduler_callback_jitter_ms": callback_jitter,
+                    "input_dispatch_ms": input_dispatch_ms,
+                    "keydown_syn_time": last_fire.dispatch_done,
                     "detector_fallback": ctx.get("detector_fallback", False),
                     "compensation_regime": "CONTINUOUS_MEASURED_SPEED",
                 }
@@ -273,6 +412,21 @@ def run_genrush_clean(
             )
             info["lead_level_update"] = lr
             info["lead_level_telemetry"] = lead.telemetry()
+            if (
+                calibration_store is not None
+                and lr.get("accepted")
+                and lead.initialized
+            ):
+                try:
+                    calibration_store.save(
+                        lead_ms=lead.current_lead_ms,
+                        uncertainty_ms=lead.get_uncertainty_ms(),
+                        trusted_sample_count=lead.accepted_total,
+                    )
+                    info["lead_calibration_saved"] = True
+                except Exception as exc:
+                    info["lead_calibration_saved"] = False
+                    info["lead_calibration_save_error"] = str(exc)
             if lr.get("accepted"):
                 ideal = lr.get("ideal_lead_ms")
                 if lr.get("updated"):
@@ -344,24 +498,37 @@ def run_genrush_clean(
                 if pressed:
                     continue
                 pressed = True
+                predictor.mark_fired()
                 last_fire = ev
                 planned_press = None
                 scheduler.cancel_pending()
                 vision.notify_pressed()
                 c = ev.context
-                # Physical predicted time from the actual key dispatch to the
-                # target crossing.  This is valid for both scheduled and
-                # overdue IMMEDIATE_SAFE fires.  The old code incorrectly used
-                # time_to_target from the planning frame.
+                # The physical keydown becomes visible to the Linux input
+                # subsystem after UInput.syn()/press() completes.  Use that
+                # timestamp, not the pre-write function-entry timestamp.
+                physical_press_t = float(ev.dispatch_done)
+                observed_dispatch_lag_ms = None
+                if ev.deadline is not None and ev.mode == "SCHEDULED":
+                    observed_dispatch_lag_ms = dispatch_timing.record(
+                        float(ev.deadline), physical_press_t
+                    )
                 if ev.desired is not None:
                     c["effective_dispatch_lead_ms"] = max(
                         0.0,
-                        check_lead + (float(ev.desired) - float(ev.dispatch_start)) * 1000.0,
+                        check_lead + (float(ev.desired) - physical_press_t) * 1000.0,
                     )
                 else:
                     c["effective_dispatch_lead_ms"] = check_lead
+                c["keydown_syn_time"] = physical_press_t
+                c["input_dispatch_ms"] = (
+                    float(ev.dispatch_done) - float(ev.dispatch_start)
+                ) * 1000.0
+                c["dispatch_lag_observed_ms"] = observed_dispatch_lag_ms
+                c["dispatch_timing"] = dispatch_timing.telemetry()
+                post_fire.begin(physical_press_t)
                 observer.on_trigger(
-                    ev.dispatch_start,
+                    physical_press_t,
                     float(c.get("target_angle") or 0.0),
                     float(c.get("speed_at_fire") or predictor.speed_deg_s),
                     locked_w,
@@ -369,7 +536,7 @@ def run_genrush_clean(
                     used_latency_ms=check_lead,
                 )
                 recorder.on_trigger(
-                    ev.dispatch_start,
+                    physical_press_t,
                     ev.reason,
                     float(c.get("target_angle") or 0.0),
                     float(c.get("estimated_angle") or c.get("target_angle") or 0.0),
@@ -378,18 +545,36 @@ def run_genrush_clean(
                     trigger_mode=ev.mode,
                     measured_speed_at_lock=c.get("speed_at_lock"),
                     planned_press_time=ev.desired,
+                    scheduler_deadline=ev.deadline,
+                    callback_entry_time=ev.callback_entry,
+                    keydown_begin_time=ev.dispatch_start,
+                    keydown_syn_time=physical_press_t,
+                    input_dispatch_ms=c.get("input_dispatch_ms"),
                     frame_age_ms=c.get("frame_age_ms"),
+                    decode_delivery_age_ms=c.get("frame_age_ms"),
                     fit_telemetry=c.get("fit"),
+                    fire_policy_reason=c.get("fire_policy_reason"),
+                    fire_policy_best_effort=c.get("fire_policy_best_effort"),
+                    great_interval_safe=c.get("great_interval_safe"),
+                    great_interval_intersects=c.get("great_interval_intersects"),
+                    white_source=c.get("white_source"),
+                    great_geometry_refined=c.get("great_geometry_refined"),
+                    great_boundary_method=c.get("great_boundary_method"),
+                    landing_uncertainty_width_deg=c.get("landing_uncertainty_width_deg"),
+                    crossing_uncertainty_ms=c.get("crossing_uncertainty_ms"),
+                    lead_uncertainty_ms=c.get("lead_uncertainty_ms"),
+                    dispatch_uncertainty_ms=c.get("dispatch_uncertainty_ms"),
+                    delivery_uncertainty_ms=c.get("delivery_uncertainty_ms"),
+                    dispatch_lag_compensation_ms=c.get("dispatch_lag_compensation_ms"),
+                    dispatch_lag_uncertainty_ms=c.get("dispatch_lag_uncertainty_ms"),
+                    dispatch_lag_observed_ms=c.get("dispatch_lag_observed_ms"),
+                    dispatch_timing=c.get("dispatch_timing"),
                 )
                 tui.log(
                     f"💥 SPACE chain={chain} speed={float(c.get('speed_at_fire') or 0):.1f}°/s "
                     f"lead={check_lead:.1f}ms "
-                    f"eff={float(c.get('effective_dispatch_lead_ms') if c.get('effective_dispatch_lead_ms') is not None else check_lead):.1f}ms"
-                    + (
-                        f" [{c.get('actuation_speed_reason')} raw={float(c.get('raw_fit_speed_at_fire') or 0):.1f}]"
-                        if c.get("actuation_speed_reason") == "HIGH_SPEED_CONSERVATIVE_LOCAL"
-                        else ""
-                    )
+                    f"eff={float(c.get('effective_dispatch_lead_ms') if c.get('effective_dispatch_lead_ms') is not None else check_lead):.1f}ms "
+                    f"[{c.get('fire_policy_reason') or c.get('actuation_speed_reason') or 'GREAT'}]"
                 )
 
             if not in_check:
@@ -415,7 +600,10 @@ def run_genrush_clean(
                 pressed = False
                 check_lead = lead.get_lead_ms()
                 predictor.reset(False, session_base_speed=base_speed)
-                predictor.latency_s = check_lead / 1000.0
+                predictor.set_delivery_lead(
+                    check_lead,
+                    lead.get_uncertainty_ms() if lead.initialized else 0.0,
+                )
                 observer.reset()
                 scheduler.rearm()
                 locked_w, locked_b = w, b
@@ -426,6 +614,12 @@ def run_genrush_clean(
                     now,
                     chain_count=chain,
                     latency_ms=check_lead,
+                    lead_uncertainty_ms=(lead.get_uncertainty_ms() if lead.initialized else 0.0),
+                    dispatch_uncertainty_ms=dispatch_timing.uncertainty_ms(),
+                    delivery_uncertainty_ms=(
+                        (lead.get_uncertainty_ms() if lead.initialized else 0.0)
+                        + dispatch_timing.uncertainty_ms()
+                    ),
                     locked_w=w,
                     locked_b=b,
                 )
@@ -449,21 +643,11 @@ def run_genrush_clean(
                 continue
 
             if pressed:
-                if det is None or not det.get("ring_present"):
-                    if ring_absent_since is None:
-                        ring_absent_since = now
-                    elif now - ring_absent_since >= 0.060:
-                        finish(now)
-                        reset_all()
-                    continue
+                ring_present = bool(det is not None and det.get("ring_present"))
 
-                if ring_absent_since is not None and now - ring_absent_since >= 0.050:
-                    finish(now, frenzy_transition=True)
-                    start_generation(now, chain + 1, preserve_center=True)
-                    continue
-                ring_absent_since = None
-
-                if _valid_needle(det):
+                rollback = False
+                zone_move = False
+                if ring_present and _valid_needle(det):
                     observer.observe_sample(
                         frame_ts,
                         float(det["needle_angle"]),
@@ -475,36 +659,53 @@ def run_genrush_clean(
                         and ((cur - last_post_angle + 180.0) % 360.0 - 180.0) < -25.0
                     )
                     last_post_angle = cur
-                else:
-                    rollback = False
 
-                nw, nb = vision.extract_zones(det)
-                nw = _sane_zone(nw, 5.0, 16.0)
-                nb = _sane_zone(nb, 18.0, 65.0)
-                zone_move = bool(
-                    nw
-                    and locked_w
-                    and _circ(
-                        float(nw.get("center", 0)), float(locked_w.get("center", 0))
+                if ring_present:
+                    nw, nb = vision.extract_zones(det)
+                    nw = _sane_zone(nw, 5.0, 16.0)
+                    nb = _sane_zone(nb, 18.0, 65.0)
+                    zone_move = bool(
+                        nw
+                        and locked_w
+                        and _circ(
+                            float(nw.get("center", 0)), float(locked_w.get("center", 0))
+                        )
+                        > 15.0
                     )
-                    > 15.0
+
+                decision = post_fire.update(
+                    now,
+                    ring_present=ring_present,
+                    plateau_found=observer.has_plateau(),
+                    zone_moved=zone_move,
+                    rollback=rollback,
+                    fresh_motion=observer.has_recent_motion(),
                 )
-                after_fire = now - (
-                    last_fire.dispatch_start if last_fire else check_start
+
+                recorder.on_frame(
+                    frame_ts,
+                    frame,
+                    det,
+                    None,
+                    {
+                        "frame_age_ms": frame_age_ms,
+                        "decode_delivery_age_ms": frame_age_ms,
+                        "post_fire_state": decision.state,
+                        "post_fire_reason": decision.reason,
+                        "post_fire_absence_ms": decision.absence_ms,
+                        "post_fire_relocated_streak": decision.relocated_streak,
+                    },
                 )
-                if after_fire >= 0.080 and (zone_move or rollback):
-                    why = "ZONE_RELOCATED" if zone_move else "NEEDLE_ROLLBACK"
-                    tui.log(f"🔥 FRENZY confirm={why}")
+
+                if decision.state == FRENZY:
+                    tui.log(f"🔥 FRENZY confirm={decision.reason}")
                     finish(now, frenzy_transition=True)
                     start_generation(now, chain + 1, preserve_center=True)
-                else:
-                    recorder.on_frame(
-                        frame_ts,
-                        frame,
-                        det,
-                        None,
-                        {"frame_age_ms": frame_age_ms},
-                    )
+                    continue
+                if decision.state == RING_END:
+                    finish(now)
+                    reset_all()
+                    continue
                 continue
 
             if det is None or not det.get("ring_present"):
@@ -519,7 +720,7 @@ def run_genrush_clean(
                     frame,
                     det,
                     None,
-                    {"frame_age_ms": frame_age_ms, "stale": True},
+                    {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms, "stale": True},
                 )
                 continue
 
@@ -542,16 +743,36 @@ def run_genrush_clean(
                 else None
             )
             recorder.on_frame(
-                frame_ts, frame, det, pred, {"frame_age_ms": frame_age_ms}
+                frame_ts, frame, det, pred, {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms}
             )
             if pred is None:
                 continue
 
+            usable = predictor.has_usable_speed()
             stable = predictor.has_stable_speed()
-            urgent = predictor.has_usable_speed() and float(
-                pred.get("time_until_press_ms", 9999.0)
-            ) <= 35.0
-            if not (stable or urgent):
+            fire_policy = decide_great_fire(
+                pred,
+                fit_stable=stable,
+                speed_usable=usable,
+            )
+
+            if pred.get("target_passed") and not pred.get("should_press_now"):
+                no_fire_reason = "TOO_LATE_UNSAFE"
+                scheduler.cancel_pending()
+                planned_press = None
+                predictor.mark_tracking()
+                continue
+
+            if not fire_policy.allow:
+                # A deadline armed on an older fit is no longer trustworthy if
+                # fresh evidence cannot keep the landing envelope inside GREAT.
+                # Cancel first; a later clean frame may safely arm it again.
+                if planned_press is not None:
+                    scheduler.cancel_pending()
+                    planned_press = None
+                    predictor.mark_tracking()
+                if float(pred.get("time_until_press_ms", 9999.0)) <= 0.0:
+                    no_fire_reason = fire_policy.reason
                 continue
 
             if speed_at_lock is None:
@@ -569,6 +790,21 @@ def run_genrush_clean(
                         "speed_at_fire": float(pred.get("speed_deg_s") or predictor.speed_deg_s),
                         "raw_fit_speed_at_fire": float(predictor.speed_deg_s),
                         "actuation_speed_reason": pred.get("actuation_speed_reason"),
+                        "fire_policy_reason": fire_policy.reason,
+                        "fire_policy_best_effort": fire_policy.best_effort,
+                        "great_interval_safe": bool(pred.get("great_interval_safe", False)),
+                        "great_interval_intersects": bool(pred.get("great_interval_intersects", False)),
+                        "white_source": pred.get("white_source"),
+                        "great_geometry_refined": bool(pred.get("great_geometry_refined", False)),
+                        "great_boundary_method": pred.get("great_boundary_method"),
+                        "landing_uncertainty_width_deg": pred.get("landing_uncertainty_width_deg"),
+                        "crossing_uncertainty_ms": pred.get("crossing_uncertainty_ms"),
+                        "lead_uncertainty_ms": pred.get("lead_uncertainty_ms"),
+                        "dispatch_uncertainty_ms": pred.get("dispatch_uncertainty_ms"),
+                        "delivery_uncertainty_ms": pred.get("delivery_uncertainty_ms"),
+                        "dispatch_lag_compensation_ms": dispatch_timing.compensation_ms(),
+                        "dispatch_lag_uncertainty_ms": dispatch_timing.uncertainty_ms(),
+                        "dispatch_timing": dispatch_timing.telemetry(),
                         "frame_age_ms": frame_age_ms,
                         "fit": fit,
                         "detector_fallback": detector_fallback,
@@ -582,23 +818,27 @@ def run_genrush_clean(
                     }
                 )
 
-            if pred.get("target_passed") and not pred.get("should_press_now"):
-                no_fire_reason = "TOO_LATE_UNSAFE"
-                scheduler.cancel_pending()
-                continue
-
             if pred.get("should_press_now"):
-                scheduler.trigger_now("IMMEDIATE_SAFE", desired_press_time=press_t)
-                predictor.state = STATE_COMMITTED
+                scheduler.trigger_now("IMMEDIATE_GREAT", desired_press_time=press_t)
+                predictor.mark_committed()
             elif press_t > now:
                 if planned_press is None or abs(press_t - planned_press) >= 0.0005:
                     planned_press = press_t
-                    scheduler.schedule(
-                        press_t,
-                        reason="SCHEDULED_CONTINUOUS",
-                        desired_press_time=press_t,
+                    dispatch_deadline = dispatch_timing.deadline_for_physical_press(
+                        press_t
                     )
-                    predictor.state = STATE_COMMITTED
+                    if dispatch_deadline <= now:
+                        scheduler.trigger_now(
+                            "IMMEDIATE_DISPATCH_COMPENSATED",
+                            desired_press_time=press_t,
+                        )
+                    else:
+                        scheduler.schedule(
+                            dispatch_deadline,
+                            reason="SCHEDULED_GREAT",
+                            desired_press_time=press_t,
+                        )
+                    predictor.mark_committed()
 
             if now - check_start > 3.5:
                 finish(now, reason=no_fire_reason or "CHECK_TIMEOUT")

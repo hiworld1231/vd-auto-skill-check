@@ -23,7 +23,10 @@ SPEED_MODE_GEN_RUSH = "GEN_RUSH_CONTINUOUS"
 STATE_NO_MOTION = "NO_MOTION"
 STATE_PROVISIONAL = "PROVISIONAL"
 STATE_LOCKED = "LOCKED"
-STATE_COMMITTED = "COMMITTED"
+STATE_COMMITTED = "COMMITTED"  # compatibility label; not a fit-quality state
+FIRE_TRACKING = "TRACKING"
+FIRE_ARMED = "ARMED"
+FIRE_FIRED = "FIRED"
 
 
 class ContinuousAngularPredictor:
@@ -39,6 +42,9 @@ class ContinuousAngularPredictor:
     ):
         self.base_latency_ms = float(latency_ms)
         self.latency_s = float(latency_ms) / 1000.0
+        self.lead_uncertainty_s = 0.0
+        self.dispatch_uncertainty_s = 0.0
+        self.latency_uncertainty_s = 0.0
         self.target_offset_ratio = float(target_offset_ratio)
         self.session_base_speed = float(session_base_speed)
         self.configured_speed_mode = SPEED_MODE_GEN_RUSH
@@ -47,6 +53,24 @@ class ContinuousAngularPredictor:
         self.switch_info = None
         self.fit_window = max(5, min(14, int(fit_window)))
         self.reset()
+
+    def set_delivery_lead(
+        self,
+        lead_ms: float,
+        uncertainty_ms: float = 0.0,
+        dispatch_uncertainty_ms: float = 0.0,
+    ) -> None:
+        self.latency_s = max(0.0, float(lead_ms)) / 1000.0
+        self.lead_uncertainty_s = max(0.0, float(uncertainty_ms)) / 1000.0
+        self.dispatch_uncertainty_s = (
+            max(0.0, float(dispatch_uncertainty_ms)) / 1000.0
+        )
+        # Both are predictive one-event error scales.  Sum them conservatively
+        # for the hard GREAT gate instead of letting two independent timing
+        # uncertainties cancel each other on paper.
+        self.latency_uncertainty_s = (
+            self.lead_uncertainty_s + self.dispatch_uncertainty_s
+        )
 
     @property
     def speed_mode(self) -> str:
@@ -89,9 +113,13 @@ class ContinuousAngularPredictor:
         self._fit_sample_count = 0
         self._last_fit_speed_spread = 0.0
         self._short_speed_shadow: Optional[float] = None
+        self._slope_mad_deg_s: Optional[float] = None
+        self._speed_uncertainty_low: Optional[float] = None
+        self._speed_uncertainty_high: Optional[float] = None
         self._segment_speeds: Deque[float] = collections.deque(maxlen=7)
         self._actuation_speed: Optional[float] = None
         self._actuation_speed_reason = "ROBUST_LONG_FIT"
+        self.fire_state = FIRE_TRACKING
 
     @staticmethod
     def _signed_step(current: float, previous: float) -> float:
@@ -114,6 +142,17 @@ class ContinuousAngularPredictor:
             return None
 
         speed = float(statistics.median(slopes))
+        slope_mad = float(statistics.median(abs(x - speed) for x in slopes))
+        # Theil-Sen pairwise slopes are robust but correlated.  Treat the
+        # MAD-derived standard error as a shadow confidence envelope instead
+        # of pretending the median is exact.  A small 3% floor protects
+        # perfectly quantized synthetic tracks from false zero uncertainty.
+        robust_se = 1.4826 * slope_mad / math.sqrt(max(1.0, float(len(pts))))
+        half_width = max(3.0 * robust_se, 0.03 * abs(speed))
+        self._slope_mad_deg_s = slope_mad
+        self._speed_uncertainty_low = max(20.0, speed - half_width)
+        self._speed_uncertainty_high = min(1500.0, speed + half_width)
+
         intercepts = [ang - speed * t for t, ang in pts]
         intercept = float(statistics.median(intercepts))
         residuals = [abs(ang - (intercept + speed * t)) for t, ang in pts]
@@ -240,72 +279,72 @@ class ContinuousAngularPredictor:
             and (self._fit_residual_mad_deg is None or self._fit_residual_mad_deg <= 4.0)
         )
 
+    def _mark_fit_uncertain(self) -> bool:
+        if self.motion_onset:
+            self.state = STATE_PROVISIONAL
+        return False
+
     def has_stable_speed(self) -> bool:
-        if self.state in (STATE_LOCKED, STATE_COMMITTED):
-            return True
+        # Fit quality must be evaluated from the current samples on every frame.
+        # Being ARMED is a scheduler state, not proof that a newer fit is still
+        # trustworthy.
         if not self.has_usable_speed():
-            return False
-        # Moonlight's real-match data shows short tracks are the dominant miss
-        # source.  Normal commits therefore wait for a longer fit; the explicit
-        # short-check path can still use >=3 measured samples when there is no
-        # time left to wait.
+            return self._mark_fit_uncertain()
+        # Normal commits wait for a longer fit; the explicit urgent path can
+        # still inspect >=3 measured samples when there is no time left to wait.
         if self._fit_sample_count < 5 or self._fit_span_s < 0.045:
-            return False
+            return self._mark_fit_uncertain()
 
         recent = [x[1] for x in list(self.speed_fits)[-3:]]
         if len(recent) < 2:
-            return False
+            return self._mark_fit_uncertain()
         med = float(statistics.median(recent))
         spread = max(recent) - min(recent)
         allowed_spread = max(30.0, 0.08 * abs(med))
         if spread > allowed_spread:
-            return False
+            return self._mark_fit_uncertain()
         if self._fit_residual_mad_deg is not None and self._fit_residual_mad_deg > 2.5:
-            return False
+            return self._mark_fit_uncertain()
 
         self.state = STATE_LOCKED
         self.locked_speed = self.speed_deg_s
         return True
 
-    def get_actuation_speed(self) -> float:
-        """Speed used for target timing.
+    def mark_committed(self) -> None:
+        self.fire_state = FIRE_ARMED
 
-        The robust all-pairs fit remains authoritative while stable.  When a
-        very fast track is explicitly unstable, bias toward the slower local
-        segment median.  Violence District's success arc trails the GREAT zone,
-        so under uncertainty a small late bias is safer than an early landing.
-        The correction is bounded to 20% and never affects normal stable checks.
+    def mark_tracking(self) -> None:
+        self.fire_state = FIRE_TRACKING
+
+    def mark_fired(self) -> None:
+        self.fire_state = FIRE_FIRED
+
+    def get_actuation_speed(self) -> float:
+        """Return the robust central speed estimate used for GREAT-center timing.
+
+        High-speed magic multipliers are intentionally absent.  The previous
+        0.85/0.80 rules introduced a systematic late bias, which is useful for
+        merely avoiding MISS but fights the actual objective: landing near the
+        middle of the white GREAT zone.  Uncertainty is handled explicitly by
+        the landing envelope in predict(), not by changing the measured speed.
         """
         raw = float(self.speed_deg_s)
-        local = (
-            float(statistics.median(list(self._segment_speeds)[-5:]))
-            if len(self._segment_speeds) >= 3
-            else None
-        )
-        short_delta = (
-            None if self._short_speed_shadow is None
-            else float(self._short_speed_shadow) - raw
-        )
-        short_track = self._fit_sample_count < 5 or self._fit_span_s < 0.045
-        unstable = (
-            short_track
-            or self._last_fit_speed_spread > max(60.0, 0.08 * abs(raw))
-            or (short_delta is not None and abs(short_delta) > 60.0)
-        )
-        chosen = raw
-        reason = "ROBUST_LONG_FIT"
-        if raw >= 750.0 and unstable:
-            # Never speed the prediction up on an uncertain track.  If a local
-            # adjacent-segment median exists, prefer it.  Otherwise a very short
-            # 3-4 point fit gets a bounded 15% slowdown.  That buys another
-            # capture frame or two before the deadline and avoids committing on
-            # the first optimistic >1k deg/s estimate.
-            if local is not None and math.isfinite(local):
-                chosen = max(0.80 * raw, min(raw, local))
-                reason = "HIGH_SPEED_CONSERVATIVE_LOCAL"
-            elif short_track:
-                chosen = 0.85 * raw
-                reason = "HIGH_SPEED_PROVISIONAL_85PCT"
+        low = self._speed_uncertainty_low
+        high = self._speed_uncertainty_high
+        if (
+            low is not None
+            and high is not None
+            and math.isfinite(float(low))
+            and math.isfinite(float(high))
+        ):
+            chosen = 0.5 * (float(low) + float(high))
+            # Normally the envelope is symmetric around the Theil-Sen median,
+            # so this equals raw.  Clipping at physical bounds remains unbiased
+            # with respect to the surviving interval.
+            reason = "UNCERTAINTY_MIDPOINT"
+        else:
+            chosen = raw
+            reason = "ROBUST_MEDIAN"
 
         self._actuation_speed = float(chosen)
         self._actuation_speed_reason = reason
@@ -329,8 +368,14 @@ class ContinuousAngularPredictor:
             "raw_fit_speed": self.speed_deg_s,
             "segment_speed_median": segment_median,
             "actuation_speed_reason": self._actuation_speed_reason,
+            "fit_quality_state": self.state,
+            "fire_state": self.fire_state,
             "live_fit_spread": self._last_fit_speed_spread,
             "fit_residual_mad_deg": self._fit_residual_mad_deg,
+            "slope_mad_deg_s": self._slope_mad_deg_s,
+            "speed_uncertainty_low": self._speed_uncertainty_low,
+            "speed_uncertainty_high": self._speed_uncertainty_high,
+            "speed_uncertainty_reliable": self._fit_sample_count >= 5,
             "fit_span_ms": self._fit_span_s * 1000.0,
             "fit_sample_count": self._fit_sample_count,
             "short_speed_shadow": self._short_speed_shadow,
@@ -430,6 +475,65 @@ class ContinuousAngularPredictor:
             else:
                 should_press_now = False
 
+        speed_low = float(self._speed_uncertainty_low or speed)
+        speed_high = float(self._speed_uncertainty_high or speed)
+        crossing_earliest_ms = (
+            angular_dist / max(speed_high, 20.0) * 1000.0
+            if not passed_target else 0.0
+        )
+        crossing_latest_ms = (
+            angular_dist / max(speed_low, 20.0) * 1000.0
+            if not passed_target else 0.0
+        )
+        white_window_ms = None
+        great_interval_safe = False
+        great_interval_intersects = False
+        landing_low_u = expected_landing_u
+        landing_high_u = expected_landing_u
+        great_start_u = None
+        great_end_u = None
+
+        if white_zone and white_zone.get("width") is not None:
+            white_width = float(white_zone["width"])
+            white_window_ms = white_width / max(speed, 20.0) * 1000.0
+
+            # Use the measured center/width pair as one continuous unwrapped
+            # interval.  It is more robust around 359°->0° than comparing the
+            # raw circular endpoints independently.
+            great_start_u = target_u - 0.5 * white_width
+            great_end_u = target_u + 0.5 * white_width
+
+            # If the key is scheduled, landing occurs time_to_hit_s from this
+            # frame.  If the deadline is already due, the earliest possible
+            # landing is one delivery-lead later.
+            landing_horizon_s = (
+                self.latency_s
+                if passed_target or press_timestamp <= current_t
+                else max(self.latency_s, time_to_hit_s)
+            )
+            horizon_low_s = max(
+                0.0, landing_horizon_s - self.latency_uncertainty_s
+            )
+            horizon_high_s = (
+                landing_horizon_s + self.latency_uncertainty_s
+            )
+            landing_low_u = current_u + speed_low * horizon_low_s
+            landing_high_u = current_u + speed_high * horizon_high_s
+            if landing_low_u > landing_high_u:
+                landing_low_u, landing_high_u = landing_high_u, landing_low_u
+
+            # Reserve a sub-degree segmentation margin so a mathematically
+            # boundary-touching prediction is not called "safe".
+            margin = min(1.0, max(0.35, 0.08 * white_width))
+            great_interval_safe = (
+                landing_low_u >= great_start_u + margin
+                and landing_high_u <= great_end_u - margin
+            )
+            great_interval_intersects = (
+                landing_high_u >= great_start_u
+                and landing_low_u <= great_end_u
+            )
+
         return {
             "target": target,
             "target_angle": target_angle,
@@ -438,11 +542,30 @@ class ContinuousAngularPredictor:
             "actuation_speed_reason": self._actuation_speed_reason,
             "angular_distance_deg": angular_dist,
             "time_to_hit_ms": time_to_hit_s * 1000.0,
+            "crossing_earliest_ms": crossing_earliest_ms,
+            "crossing_latest_ms": crossing_latest_ms,
+            "crossing_uncertainty_ms": max(0.0, crossing_latest_ms - crossing_earliest_ms),
+            "white_window_ms": white_window_ms,
+            "great_width_deg": float(white_zone["width"]) if white_zone and white_zone.get("width") is not None else None,
+            "white_source": white_zone.get("source") if white_zone else None,
+            "great_geometry_refined": bool(white_zone.get("geometry_refined", False)) if white_zone else False,
+            "great_boundary_method": white_zone.get("boundary_method") if white_zone else None,
+            "landing_uncertainty_low_angle": landing_low_u % 360.0,
+            "landing_uncertainty_high_angle": landing_high_u % 360.0,
+            "landing_uncertainty_width_deg": max(0.0, landing_high_u - landing_low_u),
+            "great_interval_safe": bool(great_interval_safe),
+            "great_interval_intersects": bool(great_interval_intersects),
+            "speed_uncertainty_reliable": self._fit_sample_count >= 5,
+            "lead_uncertainty_ms": self.lead_uncertainty_s * 1000.0,
+            "dispatch_uncertainty_ms": self.dispatch_uncertainty_s * 1000.0,
+            "delivery_uncertainty_ms": self.latency_uncertainty_s * 1000.0,
             "press_timestamp": press_timestamp,
             "time_until_press_ms": (press_timestamp - current_t) * 1000.0,
             "should_press_now": should_press_now,
             "state": self.state,
-            "is_locked": self.state in (STATE_LOCKED, STATE_COMMITTED),
+            "fit_quality_state": self.state,
+            "fire_state": self.fire_state,
+            "is_locked": self.state == STATE_LOCKED,
             "continuous_tracking": True,
             "reactive_safe_fallback": reactive_safe,
             "target_passed": passed_target,

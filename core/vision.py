@@ -65,6 +65,11 @@ class VisionEngine:
         self.locked_center: Optional[Tuple[float, float]] = None
         self.consecutive_hybrid_losses: int = 0
         self.is_pressed: bool = False
+        # A black-only frame can reconstruct a plausible GREAT arc, but locking
+        # it immediately throws away the chance to measure the real white arc
+        # on the next source frame.  Wait briefly before falling back.
+        self.black_only_acquire_count: int = 0
+        self.black_only_fallback_frames: int = 3
 
         self._configure_backends()
 
@@ -93,6 +98,7 @@ class VisionEngine:
         self.locked_black_zone = None
         self.locked_center = None
         self.consecutive_hybrid_losses = 0
+        self.black_only_acquire_count = 0
         self.is_pressed = False
         if self.baseline_detector is not None:
             self.baseline_detector.reset()
@@ -113,6 +119,7 @@ class VisionEngine:
         self.locked_black_zone = None
         self.locked_center = center
         self.consecutive_hybrid_losses = 0
+        self.black_only_acquire_count = 0
         self.is_pressed = False
         if self.baseline_detector is not None:
             self.baseline_detector.reset()
@@ -161,6 +168,10 @@ class VisionEngine:
         # 1. Post-Fire / Pressed state (monitoring for frenzy or ring end)
         # -------------------------------------------------------------
         if self.is_pressed:
+            # Lifecycle/zone evidence still comes from BASELINE, but landing
+            # motion must stay on the continuity-aware HYBRID tracker.  A
+            # full 360° post-hit scan can lock onto red hit-animation pixels
+            # and manufacture impossible angle jumps.
             det_base = self.baseline_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
@@ -170,16 +181,39 @@ class VisionEngine:
                 expected_speed=expected_speed,
             )
             if det_base is None or not det_base.get("ring_present"):
-                self.reset()
                 return None
-            if det_base.get("white_zone") is not None:
-                det_base["white_zone"] = dict(det_base["white_zone"])
-                det_base["white_zone"].setdefault("source", "MEASURED_POST_HIT")
-            if det_base.get("black_zone") is not None:
-                det_base["black_zone"] = dict(det_base["black_zone"])
-                det_base["black_zone"].setdefault("source", "MEASURED_POST_HIT")
-            det_base["detector_name"] = "BASELINE_POST_HIT"
-            return det_base
+
+            det_hyb = self.hybrid_detector.detect(
+                frame_bgr=frame_bgr,
+                frame_gray=frame_gray,
+                expected_angle=expected_angle,
+                search_window=search_window,
+                dt_frame=dt_frame,
+                expected_speed=expected_speed,
+                locked_zones=(self.locked_white_zone, self.locked_black_zone),
+            )
+
+            out = dict(det_base)
+            if det_hyb is not None and det_hyb.get("needle_valid") and float(det_hyb.get("needle_strength", 0.0) or 0.0) >= 15.0:
+                out["needle_angle"] = det_hyb["needle_angle"]
+                out["needle_strength"] = det_hyb.get("needle_strength")
+                out["needle_confidence"] = det_hyb.get("needle_confidence")
+                out["needle_valid"] = True
+                out["detector_name"] = "POST_HIT_HYBRID_NEEDLE_BASELINE_LIFECYCLE"
+            else:
+                # Never substitute a fresh full-scan red peak as the landing
+                # angle.  Lifecycle data is still useful even when motion is
+                # temporarily untrusted.
+                out["needle_valid"] = False
+                out["detector_name"] = "POST_HIT_LIFECYCLE_ONLY"
+
+            if out.get("white_zone") is not None:
+                out["white_zone"] = dict(out["white_zone"])
+                out["white_zone"].setdefault("source", "MEASURED_POST_HIT")
+            if out.get("black_zone") is not None:
+                out["black_zone"] = dict(out["black_zone"])
+                out["black_zone"].setdefault("source", "MEASURED_POST_HIT")
+            return out
 
         # -------------------------------------------------------------
         # 2. SPAWN_ACQUIRE state (BASE presence, center sanity, zone lock)
@@ -201,43 +235,65 @@ class VisionEngine:
             if not (140.0 <= cx <= 180.0 and 142.5 <= cy <= 182.5):
                 return None
 
-            # Confident zone acquisition check
+            # Confident zone acquisition check.  "Valid width" is not the
+            # same as "measured": extract_zones_from_masks can intentionally
+            # reconstruct a 9.5° white arc from a measured black arc.
             w_d = det_base.get("white_zone")
             b_d = det_base.get("black_zone")
-            w_valid = (w_d is not None and 5.0 <= w_d.get("width", 0.0) <= 15.0)
+            w_valid = (w_d is not None and 5.0 <= w_d.get("width", 0.0) <= 16.0)
             b_valid = (b_d is not None and 18.0 <= b_d.get("width", 0.0) <= 65.0)
 
             if w_valid:
                 w_d = dict(w_d)
-                w_d["source"] = "MEASURED"
+                w_d.setdefault("source", "MEASURED")
             if b_valid:
                 b_d = dict(b_d)
-                b_d["source"] = "MEASURED"
+                b_d.setdefault("source", "MEASURED")
 
-            if w_valid or b_valid:
-                if not w_valid and b_valid:
-                    # Conservative reconstruction used only to keep the check playable.
-                    # Downstream learning can reject it through the provenance field.
-                    w_s = (b_d["start"] - 9.5) % 360.0
-                    w_d = {
-                        "start": float(w_s),
-                        "end": float(b_d["start"]),
-                        "width": 9.5,
-                        "center": float((w_s + 4.75) % 360.0),
-                        "source": "RECONSTRUCTED_FROM_BLACK",
-                    }
+            w_measured = bool(
+                w_valid and str(w_d.get("source", "")).startswith("MEASURED")
+            )
 
-                # Confident lock: white zone, black zone, center
+            should_lock = False
+            if w_measured:
+                self.black_only_acquire_count = 0
+                should_lock = True
+            elif b_valid:
+                self.black_only_acquire_count += 1
+                if self.black_only_acquire_count >= self.black_only_fallback_frames:
+                    # A real white measurement never arrived.  Retain the old
+                    # playable reconstruction, but only after giving several
+                    # unique frames a chance to expose the actual GREAT arc.
+                    if not w_valid:
+                        w_s = (b_d["start"] - 9.5) % 360.0
+                        w_d = {
+                            "start": float(w_s),
+                            "end": float(b_d["start"]),
+                            "width": 9.5,
+                            "center": float((w_s + 4.75) % 360.0),
+                            "source": "RECONSTRUCTED_FROM_BLACK",
+                        }
+                    should_lock = True
+                else:
+                    # Do not leak the detector's reconstructed white zone to the
+                    # runtime while acquisition is still waiting; otherwise the
+                    # runtime would start the check before VisionEngine locks it.
+                    det_base["white_zone"] = None
+                    det_base["black_zone"] = b_d
+            else:
+                self.black_only_acquire_count = 0
+
+            if should_lock:
                 self.locked_white_zone = w_d
                 self.locked_black_zone = b_d
                 self.locked_center = (cx, cy)
                 self.state = STATE_ACTIVE_TRACKING
                 self.consecutive_hybrid_losses = 0
+                self.black_only_acquire_count = 0
 
                 # Initialize Hybrid detector state with baseline locked parameters
                 self.hybrid_detector.reset()
-                self.hybrid_detector.cx = cx
-                self.hybrid_detector.cy = cy
+                self.hybrid_detector.set_geometry(cx, cy)
                 self.hybrid_detector.last_angle = det_base["needle_angle"]
                 self.hybrid_detector.last_t = time.monotonic()
                 self.hybrid_detector.consecutive_losses = 0
@@ -286,11 +342,16 @@ class VisionEngine:
         # Hybrid already attempted local window search + full 360 scan internally.
         # If recovery does not occur for >= 2 consecutive frames:
         if self.consecutive_hybrid_losses >= 2:
+            fallback_expected = (
+                expected_angle
+                if expected_angle is not None
+                else self.hybrid_detector.last_angle
+            )
             det_base = self.baseline_detector.detect(
                 frame_bgr=frame_bgr,
                 frame_gray=frame_gray,
-                expected_angle=expected_angle,
-                search_window=search_window,
+                expected_angle=fallback_expected,
+                search_window=max(float(search_window), 60.0),
                 dt_frame=dt_frame,
                 expected_speed=expected_speed,
             )
@@ -313,7 +374,7 @@ class VisionEngine:
                     det_base["white_zone"] = self.locked_white_zone
                     det_base["black_zone"] = self.locked_black_zone
                     det_base["needle_valid"] = False
-                    det_base["status"] = "LOW_CONFIDENCE"
+                    det_base["status"] = str(det_base.get("status") or "LOW_CONFIDENCE")
                     det_base["detector_name"] = "HYBRID_NEEDLE_FALLBACK_BASELINE"
                     return det_base
             else:

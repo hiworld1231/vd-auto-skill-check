@@ -54,35 +54,58 @@ class OutcomeObserver:
         if len(self.samples) > 40:
             del self.samples[:-40]
 
-    def _find_plateau(self) -> Optional[Tuple[float, float]]:
-        """Return (hit_angle, observed_response_ms) for the earliest stable freeze.
+    def _find_plateau(self) -> Optional[Tuple[float, float, float, int]]:
+        """Return earliest time-supported stable freeze.
 
-        Four consecutive post-fire samples are used so the timestamp can be
-        interpreted as a real observed UI response delay, not just a final
-        screenshot position.  At 120 Hz this spans roughly 25 ms.
+        Capture can decode near 120 FPS while Roblox only changes the rendered
+        needle near 60 Hz.  Counting four equal decoded frames is therefore not
+        enough evidence: two duplicated source frames can look like a freeze.
+        Require both angular stability and a real monotonic time span.
         """
-        if len(self.samples) < 4 or self.trigger_t is None:
+        min_samples = 4
+        min_span_s = 0.035
+        max_adjacent_gap_s = 0.035
+        max_spread_deg = 1.4
+
+        if len(self.samples) < min_samples or self.trigger_t is None:
             return None
 
-        for i in range(len(self.samples) - 3):
-            chunk = self.samples[i : i + 4]
-            ref = chunk[0][1]
-            vals = [ref + _signed_delta(x[1], ref) for x in chunk]
-            if max(vals) - min(vals) <= 1.4:
-                hit = float(statistics.median(vals) % 360.0)
-                response_ms = max(0.0, (chunk[0][0] - self.trigger_t) * 1000.0)
-                return hit, response_ms
+        for i in range(len(self.samples) - min_samples + 1):
+            ref = self.samples[i][1]
+            vals = []
+            previous_t = None
+            for j in range(i, len(self.samples)):
+                t, angle, _strength = self.samples[j]
+                if previous_t is not None and t - previous_t > max_adjacent_gap_s:
+                    break
+                previous_t = t
+                vals.append(ref + _signed_delta(angle, ref))
+                if max(vals) - min(vals) > max_spread_deg:
+                    break
 
-        # Conservative fallback: only accept the final four samples when they
-        # are exceptionally tight.  This preserves old replay compatibility.
-        chunk = self.samples[-4:]
+                span_s = t - self.samples[i][0]
+                count = j - i + 1
+                if count >= min_samples and span_s >= min_span_s:
+                    hit = float(statistics.median(vals) % 360.0)
+                    response_ms = max(
+                        0.0, (self.samples[i][0] - self.trigger_t) * 1000.0
+                    )
+                    return hit, response_ms, span_s * 1000.0, count
+        return None
+
+    def has_recent_motion(self, sample_count: int = 3, min_span_deg: float = 2.0) -> bool:
+        """Return whether recent trusted post-fire samples still show motion."""
+        n = max(2, int(sample_count))
+        if len(self.samples) < n:
+            return False
+        chunk = self.samples[-n:]
         ref = chunk[0][1]
         vals = [ref + _signed_delta(x[1], ref) for x in chunk]
-        if max(vals) - min(vals) <= 1.0:
-            hit = float(statistics.median(vals) % 360.0)
-            response_ms = max(0.0, (chunk[0][0] - self.trigger_t) * 1000.0)
-            return hit, response_ms
-        return None
+        return (max(vals) - min(vals)) >= float(min_span_deg)
+
+    def has_plateau(self) -> bool:
+        """Return whether a trustworthy post-fire freeze is already visible."""
+        return self._find_plateau() is not None
 
     def conclude_check(
         self,
@@ -120,7 +143,7 @@ class OutcomeObserver:
                 "observed_response_ms": None,
             }
 
-        hit, observed_response_ms = plateau
+        hit, observed_response_ms, plateau_span_ms, plateau_sample_count = plateau
         white = self.white_zone
         black = self.black_zone
         if white and is_angle_in_arc(
@@ -160,6 +183,8 @@ class OutcomeObserver:
             "center_error_deg": err_deg,
             "center_error_ms": err_ms,
             "observed_response_ms": observed_response_ms,
+            "plateau_span_ms": plateau_span_ms,
+            "plateau_sample_count": plateau_sample_count,
             "white_source": white.get("source") if white else None,
             "black_source": black.get("source") if black else None,
             "frenzy_transition": bool(frenzy_transition),

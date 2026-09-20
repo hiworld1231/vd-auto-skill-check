@@ -100,6 +100,72 @@ def extract_runs(mask: np.ndarray, min_len: int, max_len: int) -> List[Tuple[flo
     return runs
 
 
+def refine_zone_from_score(
+    zone: Optional[Dict[str, float]],
+    score: Optional[np.ndarray],
+    *,
+    min_width: float,
+    max_width: float,
+) -> Optional[Dict[str, float]]:
+    """Refine integer-degree mask boundaries using the continuous ring score.
+
+    The boolean mask selects the correct circular run robustly. The underlying
+    per-angle score then recovers sub-degree boundary locations by interpolating
+    the zero crossing on each edge. If either local crossing is malformed, the
+    original integer geometry is preserved.
+    """
+    if zone is None or score is None:
+        return zone
+    arr = np.asarray(score, dtype=np.float64).reshape(-1)
+    n = int(arr.size)
+    if n < 3:
+        return zone
+
+    try:
+        start_i = int(round(float(zone["start"]))) % n
+        width_i = max(1, int(round(float(zone["width"]))))
+    except (KeyError, TypeError, ValueError):
+        return zone
+    end_i = (start_i + width_i - 1) % n
+    prev_i = (start_i - 1) % n
+    next_i = (end_i + 1) % n
+
+    s_prev = float(arr[prev_i])
+    s_in = float(arr[start_i])
+    e_in = float(arr[end_i])
+    e_next = float(arr[next_i])
+    if not all(np.isfinite(v) for v in (s_prev, s_in, e_in, e_next)):
+        return zone
+    if not (s_prev <= 0.0 < s_in and e_in > 0.0 >= e_next):
+        return zone
+
+    start_denom = s_in - s_prev
+    end_denom = e_in - e_next
+    if start_denom <= 1e-9 or end_denom <= 1e-9:
+        return zone
+
+    start_frac = max(0.0, min(1.0, -s_prev / start_denom))
+    end_frac = max(0.0, min(1.0, e_in / end_denom))
+    start = (float(prev_i) + start_frac) % float(n)
+    end = (float(end_i) + end_frac) % float(n)
+    width = (end - start) % float(n)
+    if not (float(min_width) <= width <= float(max_width)):
+        return zone
+
+    out = dict(zone)
+    out.update(
+        {
+            "start": float(start),
+            "end": float(end),
+            "width": float(width),
+            "center": float((start + 0.5 * width) % float(n)),
+            "geometry_refined": True,
+            "boundary_method": "LINEAR_PROFILE_ZERO_CROSSING",
+        }
+    )
+    return out
+
+
 def extract_zones_from_masks(
     white_mask: Optional[np.ndarray],
     black_mask: Optional[np.ndarray],
@@ -116,12 +182,16 @@ def extract_zones_from_masks(
         if runs:
             runs.sort(key=lambda x: x[2], reverse=True)
             w_start, w_end, w_len = runs[0]
-            w_center = (w_start + w_len / 2.0) % 360.0
+            # Runs describe samples at integer-degree bin centres.  The
+            # physical interval spans half a bin beyond each end, so its centre
+            # is the midpoint of the first/last sample centres: (N-1)/2.
+            w_center = (w_start + (w_len - 1.0) / 2.0) % 360.0
             w_dict = {
                 "start": float(w_start),
                 "end": float(w_end),
                 "width": float(w_len),
                 "center": float(w_center),
+                "source": "MEASURED",
             }
 
     if black_mask is not None:
@@ -134,7 +204,8 @@ def extract_zones_from_masks(
                     "start": float(b_s),
                     "end": float(b_e),
                     "width": float(b_l),
-                    "center": float((b_s + b_l / 2.0) % 360),
+                    "center": float((b_s + (b_l - 1.0) / 2.0) % 360),
+                    "source": "MEASURED",
                 }
 
         # Physical fallback if white is clear but black is shadowed
@@ -145,6 +216,7 @@ def extract_zones_from_masks(
                 "end": float((b_s + 42.0) % 360),
                 "width": 42.0,
                 "center": float((b_s + 21.0) % 360),
+                "source": "RECONSTRUCTED_FROM_WHITE",
             }
 
         # Occlusion fallback: if white was occluded, deduce Great zone from Good zone
@@ -157,12 +229,14 @@ def extract_zones_from_masks(
                 "end": float(b_s),
                 "width": 9.5,
                 "center": float((w_s + 4.75) % 360),
+                "source": "RECONSTRUCTED_FROM_BLACK",
             }
             b_dict = {
                 "start": float(b_s),
                 "end": float(b_e),
                 "width": float(b_l),
-                "center": float((b_s + b_l / 2.0) % 360),
+                "center": float((b_s + (b_l - 1.0) / 2.0) % 360),
+                "source": "MEASURED",
             }
 
     return w_dict, b_dict

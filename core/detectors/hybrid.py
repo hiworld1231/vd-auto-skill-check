@@ -18,7 +18,19 @@ from core.detectors.base import (
     SPACE_TEMPLATE,
     parabolic_peak,
     extract_zones_from_masks,
+    refine_zone_from_score,
 )
+
+
+def _bounded_local_parabolic_delta(profile: np.ndarray, peak_idx: int) -> float:
+    """Sub-degree interpolation only when both angular neighbours are local."""
+    if peak_idx <= 0 or peak_idx >= len(profile) - 1:
+        return 0.0
+    p_prev = float(profile[peak_idx - 1])
+    p_curr = float(profile[peak_idx])
+    p_next = float(profile[peak_idx + 1])
+    denom = 2.0 * (2.0 * p_curr - p_prev - p_next)
+    return ((p_next - p_prev) / denom) if denom > 1e-5 else 0.0
 
 
 class HybridDetector(BaseDetector):
@@ -33,21 +45,7 @@ class HybridDetector(BaseDetector):
         self.tpl_norm = tpl_f - np.mean(tpl_f)
         self.tpl_std = float(np.linalg.norm(self.tpl_norm))
 
-        angles = np.arange(360, dtype=np.float32) * (np.pi / 180.0)
-        cos_a = np.cos(angles)[:, None]
-        sin_a = np.sin(angles)[:, None]
-
-        # 8 radial samples along needle ray (r=24 to r=62)
-        needle_radii = np.linspace(24.0, 62.0, 8, dtype=np.float32)[None, :]
-        x_ndl = np.clip(np.round(self.cx + needle_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
-        y_ndl = np.clip(np.round(self.cy + needle_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
-        self.needle_indices_1d = (y_ndl * self.geo.roi_width + x_ndl).astype(np.int32)
-
-        # 6 radial samples across outer ring for zone extraction (r=63 to r=68)
-        ring_radii = np.linspace(63.0, 68.0, 6, dtype=np.float32)[None, :]
-        x_ring = np.clip(np.round(self.cx + ring_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
-        y_ring = np.clip(np.round(self.cy + ring_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
-        self.ring_indices_1d = (y_ring * self.geo.roi_width + x_ring).astype(np.int32)
+        self._build_ray_tables()
 
         # Tracking state
         self.last_angle: Optional[float] = None
@@ -57,6 +55,28 @@ class HybridDetector(BaseDetector):
         self.consecutive_losses: int = 0
         self.reacquire_count: int = 0
         self.frame_count_in_check: int = 0
+
+    def _build_ray_tables(self) -> None:
+        angles = np.arange(360, dtype=np.float32) * (np.pi / 180.0)
+        cos_a = np.cos(angles)[:, None]
+        sin_a = np.sin(angles)[:, None]
+
+        needle_radii = np.linspace(24.0, 62.0, 8, dtype=np.float32)[None, :]
+        x_ndl = np.clip(np.round(self.cx + needle_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
+        y_ndl = np.clip(np.round(self.cy + needle_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
+        self.needle_indices_1d = (y_ndl * self.geo.roi_width + x_ndl).astype(np.int32)
+
+        ring_radii = np.linspace(63.0, 68.0, 6, dtype=np.float32)[None, :]
+        x_ring = np.clip(np.round(self.cx + ring_radii * cos_a).astype(np.int32), 0, self.geo.roi_width - 1)
+        y_ring = np.clip(np.round(self.cy + ring_radii * sin_a).astype(np.int32), 0, self.geo.roi_height - 1)
+        self.ring_indices_1d = (y_ring * self.geo.roi_width + x_ring).astype(np.int32)
+
+    def set_geometry(self, cx: float, cy: float) -> None:
+        cx, cy = float(cx), float(cy)
+        if abs(cx - self.cx) < 0.01 and abs(cy - self.cy) < 0.01:
+            return
+        self.cx, self.cy = cx, cy
+        self._build_ray_tables()
 
     def reset(self):
         """Resets tracking between skill checks."""
@@ -110,6 +130,23 @@ class HybridDetector(BaseDetector):
         white_mask = ((r66_val > th_white) & (r_ch > 150) & (g_ch > 150) & (b_ch > 150)) | (r66_val > 185)
         black_mask = (r66_val < th_black) | (r66_val < 42)
         w_d, b_d = extract_zones_from_masks(white_mask, black_mask)
+
+        white_primary = np.minimum.reduce(
+            [
+                r66_val - th_white,
+                r_ch - 150.0,
+                g_ch - 150.0,
+                b_ch - 150.0,
+            ]
+        )
+        white_score = np.maximum(white_primary, r66_val - 185.0)
+        black_score = th_black - r66_val
+        w_d = refine_zone_from_score(
+            w_d, white_score, min_width=5.0, max_width=16.0
+        )
+        b_d = refine_zone_from_score(
+            b_d, black_score, min_width=18.0, max_width=65.0
+        )
         return w_d, b_d, white_mask, black_mask, r66_val
 
     def detect(
@@ -167,6 +204,7 @@ class HybridDetector(BaseDetector):
 
         needle_strength = 0.0
         needle_angle = 0.0
+        reacquire_rejected = False
 
         if is_local and cand_indices is not None and len(cand_indices) > 0:
             sub_indices = self.needle_indices_1d[cand_indices]  # (K, 8)
@@ -178,13 +216,7 @@ class HybridDetector(BaseDetector):
 
             if peak_str >= 15.0:
                 peak_angle_int = int(cand_indices[k_peak])
-                idx_prev = (k_peak - 1) % len(sub_prof)
-                idx_next = (k_peak + 1) % len(sub_prof)
-                p_prev = float(sub_prof[idx_prev])
-                p_curr = peak_str
-                p_next = float(sub_prof[idx_next])
-                denom = 2.0 * (2.0 * p_curr - p_prev - p_next)
-                delta = ((p_next - p_prev) / denom) if denom > 1e-5 else 0.0
+                delta = _bounded_local_parabolic_delta(sub_prof, k_peak)
                 needle_angle = float((peak_angle_int + delta) % 360.0)
                 needle_strength = peak_str
                 self.last_angle = needle_angle
@@ -211,25 +243,43 @@ class HybridDetector(BaseDetector):
                 if curr_v >= prev_v and curr_v > next_v and curr_v > 15.0:
                     peaks.append((i, curr_v))
 
-            if expected_angle is not None and peaks:
-                cand = [p for p in peaks if abs((p[0] - expected_angle + 180.0) % 360.0 - 180.0) <= search_window]
+            tracking_ref = expected_angle if expected_angle is not None else self.last_angle
+            if tracking_ref is not None and peaks:
+                reacquire_radius = min(
+                    90.0,
+                    max(
+                        float(search_window),
+                        float(expected_speed) * float(dt) + 25.0
+                        + self.consecutive_losses * 15.0,
+                    ),
+                )
+                cand = [
+                    p for p in peaks
+                    if abs((p[0] - float(tracking_ref) + 180.0) % 360.0 - 180.0)
+                    <= reacquire_radius
+                ]
                 if cand:
                     peak_idx = max(cand, key=lambda x: x[1])[0]
                 else:
                     peak_idx = int(np.argmax(red_prof))
+                    reacquire_rejected = True
             else:
                 peak_idx = int(np.argmax(red_prof))
 
             needle_strength = float(red_prof[peak_idx])
             needle_angle = parabolic_peak(red_prof, peak_idx)
 
-            if needle_strength >= 15.0:
+            if needle_strength >= 15.0 and not reacquire_rejected:
                 self.last_angle = needle_angle
                 self.last_t = now
                 self.consecutive_losses = 0
             else:
                 self.consecutive_losses += 1
-                status = "LOW_CONFIDENCE"
+                status = (
+                    "REACQUIRE_OUTSIDE_CONTINUITY"
+                    if reacquire_rejected
+                    else "LOW_CONFIDENCE"
+                )
 
         # Shadow-validate zones periodically (every 25 frames)
         if self.frame_count_in_check % 25 == 0 and self.locked_white_zone is None:
@@ -242,7 +292,7 @@ class HybridDetector(BaseDetector):
         t1 = time.perf_counter()
         det_time_ms = (t1 - t0) * 1000.0
 
-        is_needle_valid = (needle_strength >= 15.0)
+        is_needle_valid = (needle_strength >= 15.0 and not reacquire_rejected)
         return {
             "confidence": conf,
             "cx": cx,
@@ -260,5 +310,5 @@ class HybridDetector(BaseDetector):
             "ring_present": True,
             "detector_name": self.name,
             "detector_time_ms": det_time_ms,
-            "status": status if is_needle_valid else "LOW_CONFIDENCE",
+            "status": status,
         }

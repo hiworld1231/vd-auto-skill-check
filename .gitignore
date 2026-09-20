@@ -12,3 +12,5 @@ logs/
 *.avi
 *.csv
 .DS_Store
+.vd_lead_calibration.json
+.vd_lead_calibration.json.tmp

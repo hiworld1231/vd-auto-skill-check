@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict
+
+
+@dataclass(frozen=True)
+class GreatFireDecision:
+    allow: bool
+    reason: str
+    best_effort: bool = False
+
+
+def decide_great_fire(
+    pred: Dict[str, Any],
+    *,
+    fit_stable: bool,
+    speed_usable: bool,
+    urgent_window_ms: float = 35.0,
+    last_chance_ms: float = 5.0,
+) -> GreatFireDecision:
+    """Gate scheduling by whether the predicted landing envelope fits GREAT.
+
+    Normal path: require a current stable fit and the full uncertainty envelope
+    inside the measured white zone.
+
+    Short-track path: inside the final urgent window we allow a usable measured
+    speed, but still require the full GREAT-safe envelope.
+
+    Last-chance path: only in the final few milliseconds, permit an envelope
+    that intersects GREAT when it is at most slightly wider than the white arc.
+    This avoids turning harmless estimator uncertainty into guaranteed NO_FIRE,
+    while still refusing broad/poorly constrained shots.
+    """
+    raw_time_until = pred.get("time_until_press_ms", 9999.0)
+    time_until = float(9999.0 if raw_time_until is None else raw_time_until)
+    urgent = bool(speed_usable and time_until <= float(urgent_window_ms))
+    fit_ready = bool(fit_stable or urgent)
+    if not fit_ready:
+        return GreatFireDecision(False, "FIT_NOT_READY")
+
+    white_source = str(pred.get("white_source") or "UNKNOWN")
+    measured_geometry = white_source.startswith("MEASURED")
+    reconstructed_geometry = white_source.startswith("RECONSTRUCTED")
+
+    if bool(pred.get("great_interval_safe", False)):
+        if measured_geometry:
+            return GreatFireDecision(True, "GREAT_INTERVAL_SAFE")
+        if reconstructed_geometry and fit_stable:
+            # Keep the old playable reconstruction path, but never call it a
+            # high-confidence GREAT.  Geometry uncertainty must not be combined
+            # with the short-track urgent bypass.
+            return GreatFireDecision(
+                True,
+                "RECONSTRUCTED_GREAT_STABLE_FIT",
+                best_effort=True,
+            )
+        return GreatFireDecision(False, "GREAT_GEOMETRY_UNTRUSTED")
+
+    width = pred.get("landing_uncertainty_width_deg")
+    great_width = pred.get("great_width_deg")
+    intersects = bool(pred.get("great_interval_intersects", False))
+    if (
+        measured_geometry
+        and speed_usable
+        and time_until <= float(last_chance_ms)
+        and intersects
+        and width is not None
+        and great_width is not None
+        and float(width) <= 1.15 * float(great_width)
+    ):
+        return GreatFireDecision(True, "GREAT_LAST_CHANCE_INTERSECTION", best_effort=True)
+
+    if not measured_geometry and not reconstructed_geometry:
+        return GreatFireDecision(False, "GREAT_GEOMETRY_UNTRUSTED")
+    return GreatFireDecision(False, "GREAT_INTERVAL_UNSAFE")

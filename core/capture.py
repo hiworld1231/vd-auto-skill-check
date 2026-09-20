@@ -39,11 +39,13 @@ class ScreenGrabber:
         fps: int = DEFAULT_CAPTURE_FPS,
         framerate_mode: str = "vfr",
         keyint: str = "2.0",
+        allow_mss_fallback: bool = False,
     ):
         self.region = region or CAPTURE_REGION
         self.fps = int(fps)
         self.framerate_mode = str(framerate_mode).lower()
         self.keyint = str(keyint)
+        self.allow_mss_fallback = bool(allow_mss_fallback)
 
         self.use_gsr = False
         self.gsr_process: Optional[subprocess.Popen] = None
@@ -70,17 +72,28 @@ class ScreenGrabber:
         self.transport_duplicate_waits = 0
         self._last_mss_grab_duration_ms = 0.0
 
-        if shutil.which("gpu-screen-recorder") and shutil.which("ffmpeg"):
+        have_gsr = bool(shutil.which("gpu-screen-recorder"))
+        have_ffmpeg = bool(shutil.which("ffmpeg"))
+        if have_gsr and have_ffmpeg:
             try:
                 self._init_gsr()
                 return
             except Exception as exc:
-                print(f"[CAPTURE] gpu-screen-recorder error ({exc}), falling back to mss...")
                 self.close()
+                if not self.allow_mss_fallback:
+                    raise CaptureError(f"GPU capture failed and MSS fallback is disabled: {exc}") from exc
+                print(f"[CAPTURE] gpu-screen-recorder error ({exc}), falling back to mss...")
                 # Re-open logical state after close() for the fallback.
                 self._running = True
                 self._worker_failed = False
                 self._last_error = None
+        elif not self.allow_mss_fallback:
+            missing = []
+            if not have_gsr:
+                missing.append("gpu-screen-recorder")
+            if not have_ffmpeg:
+                missing.append("ffmpeg")
+            raise CaptureError("Required low-latency capture tools missing: " + ", ".join(missing))
 
         self._init_mss()
 
@@ -115,7 +128,11 @@ class ScreenGrabber:
             "gpu-screen-recorder",
             "-w", reg_str,
             "-f", str(self.fps),
+            # -c selects the FFmpeg muxer.  h264 intentionally means raw
+            # Annex-B H.264 for the decoder pipe; -k explicitly locks the
+            # video codec instead of relying on GSR's auto default.
             "-c", "h264",
+            "-k", "h264",
             "-fm", self.framerate_mode,
             "-tune", "performance",
             "-keyint", self.keyint,
@@ -146,6 +163,8 @@ class ScreenGrabber:
             "-fflags", "nobuffer+discardcorrupt",
             "-flags", "low_delay",
             "-avioflags", "direct",
+            "-probesize", "32",
+            "-analyzeduration", "0",
             "-threads", "1",
             "-f", "h264",
         ]
