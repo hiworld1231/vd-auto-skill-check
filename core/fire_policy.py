@@ -39,14 +39,30 @@ def decide_great_fire(
     if not fit_ready:
         return GreatFireDecision(False, "FIT_NOT_READY")
 
+    white_source = str(pred.get("white_source") or "UNKNOWN")
+    measured_geometry = white_source.startswith("MEASURED")
+    reconstructed_geometry = white_source.startswith("RECONSTRUCTED")
+
     if bool(pred.get("great_interval_safe", False)):
-        return GreatFireDecision(True, "GREAT_INTERVAL_SAFE")
+        if measured_geometry:
+            return GreatFireDecision(True, "GREAT_INTERVAL_SAFE")
+        if reconstructed_geometry and fit_stable:
+            # Keep the old playable reconstruction path, but never call it a
+            # high-confidence GREAT.  Geometry uncertainty must not be combined
+            # with the short-track urgent bypass.
+            return GreatFireDecision(
+                True,
+                "RECONSTRUCTED_GREAT_STABLE_FIT",
+                best_effort=True,
+            )
+        return GreatFireDecision(False, "GREAT_GEOMETRY_UNTRUSTED")
 
     width = pred.get("landing_uncertainty_width_deg")
     great_width = pred.get("great_width_deg")
     intersects = bool(pred.get("great_interval_intersects", False))
     if (
-        speed_usable
+        measured_geometry
+        and speed_usable
         and time_until <= float(last_chance_ms)
         and intersects
         and width is not None
@@ -55,4 +71,6 @@ def decide_great_fire(
     ):
         return GreatFireDecision(True, "GREAT_LAST_CHANCE_INTERSECTION", best_effort=True)
 
+    if not measured_geometry and not reconstructed_geometry:
+        return GreatFireDecision(False, "GREAT_GEOMETRY_UNTRUSTED")
     return GreatFireDecision(False, "GREAT_INTERVAL_UNSAFE")
