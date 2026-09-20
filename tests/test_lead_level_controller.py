@@ -138,6 +138,45 @@ class TestRobustLeadLevelController(unittest.TestCase):
             "PREDICTIVE_ROBUST_SIGMA",
         )
 
+    def test_immediate_planning_lateness_is_not_scheduler_jitter(self):
+        c = LeadLevelController(126.9)
+        r = self.clean(
+            c,
+            122.7,
+            46.5,
+            mode="IMMEDIATE",
+            jitter=46.5,
+            outcome="GOOD",
+        )
+        self.assertTrue(r["accepted"])
+        self.assertAlmostEqual(r["ideal_lead_ms"], 169.2, delta=0.01)
+
+    def test_scheduled_dispatch_jitter_is_still_rejected(self):
+        c = LeadLevelController(126.9)
+        r = self.clean(
+            c,
+            126.9,
+            20.0,
+            mode="SCHEDULED",
+            jitter=12.0,
+            outcome="GOOD",
+        )
+        self.assertFalse(r["accepted"])
+        self.assertEqual(r["reject_reason"], "SCHEDULER_JITTER")
+
+    def test_live_range_accepts_measured_lead_above_old_160ms_cap(self):
+        c = LeadLevelController(126.9)
+        r = self.clean(
+            c,
+            127.1,
+            46.1,
+            mode="IMMEDIATE",
+            jitter=46.1,
+            outcome="GOOD",
+        )
+        self.assertTrue(r["accepted"])
+        self.assertAlmostEqual(r["ideal_lead_ms"], 173.2, delta=0.01)
+
     def test_unstable_fit_cannot_train(self):
         c = LeadLevelController(60)
         r = self.clean(c, 60, 45, spread=80.0)
