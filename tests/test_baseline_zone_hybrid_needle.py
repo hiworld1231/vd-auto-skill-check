@@ -374,6 +374,62 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertIsNone(third)
         self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
 
+    def test_postfire_keeps_old_hybrid_and_new_baseline_needles_separate(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+        self.vision.state = STATE_ACTIVE_TRACKING
+        self.vision.locked_white_zone = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        self.vision.locked_black_zone = {
+            "start": 90.0, "end": 130.0, "center": 110.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        self.vision.locked_center = (160.0, 162.5)
+        self.vision.notify_pressed()
+
+        new_white = {
+            "start": 200.0, "end": 210.0, "center": 205.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        new_black = {
+            "start": 210.0, "end": 250.0, "center": 230.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        baseline_new = {
+            "ring_present": True,
+            "needle_valid": True,
+            "needle_angle": 42.0,
+            "needle_strength": 90.0,
+            "needle_confidence": 90.0,
+            "cx": 160.0,
+            "cy": 162.5,
+            "center": (160.0, 162.5),
+            "white_zone": new_white,
+            "black_zone": new_black,
+        }
+        hybrid_old = {
+            "ring_present": True,
+            "needle_valid": True,
+            "needle_angle": 312.0,
+            "needle_strength": 80.0,
+            "needle_confidence": 80.0,
+        }
+
+        with patch.object(
+            self.vision.baseline_detector, "detect", return_value=baseline_new
+        ), patch.object(
+            self.vision.hybrid_detector, "detect", return_value=hybrid_old
+        ):
+            det = self.vision.detect_frame(gray, frame, is_pressed=True)
+
+        self.assertAlmostEqual(det["needle_angle"], 312.0)
+        self.assertTrue(det["needle_valid"])
+        self.assertAlmostEqual(det["generation_needle_angle"], 42.0)
+        self.assertTrue(det["generation_needle_valid"])
+        self.assertAlmostEqual(det["white_zone"]["center"], 205.0)
+
     def test_frenzy_generation_handoff_skips_spawn_reacquire(self):
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         gray = np.zeros((240, 320), dtype=np.uint8)
@@ -388,8 +444,15 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         confirming = {
             "ring_present": True,
             "needle_valid": True,
+            # Old-generation HYBRID landing trajectory:
             "needle_angle": 312.0,
             "needle_strength": 82.0,
+            "needle_valid": True,
+            # New-generation BASELINE needle on the relocated ring:
+            "generation_needle_angle": 42.0,
+            "generation_needle_strength": 88.0,
+            "generation_needle_confidence": 88.0,
+            "generation_needle_valid": True,
             "cx": 161.0,
             "cy": 163.0,
             "center": (161.0, 163.0),
@@ -401,7 +464,9 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertEqual(self.vision.state, STATE_ACTIVE_TRACKING)
         self.assertEqual(adopted["detector_name"], "FRENZY_GENERATION_HANDOFF")
         self.assertAlmostEqual(self.vision.locked_white_zone["center"], 25.0)
-        self.assertAlmostEqual(self.vision.hybrid_detector.last_angle, 312.0)
+        self.assertAlmostEqual(self.vision.hybrid_detector.last_angle, 42.0)
+        self.assertAlmostEqual(adopted["needle_angle"], 42.0)
+        self.assertEqual(adopted["handoff_needle_source"], "BASELINE_NEW_GENERATION")
         self.assertEqual(self.vision.locked_center, (161.0, 163.0))
 
         # The very next frame must be ACTIVE HYBRID tracking, not a BASELINE
