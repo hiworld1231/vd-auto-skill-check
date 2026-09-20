@@ -370,6 +370,57 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertAlmostEqual(pred["speed_deg_s"], 278.0, delta=0.1)
         self.assertGreater(pred["time_until_press_ms"], 150.0)
 
+    def test_extreme_first_normal_segment_holds_session_prior(self):
+        p = ContinuousAngularPredictor(
+            126.0,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 95.0, "end": 105.0, "center": 100.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0, "end": 145.0, "center": 125.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        p.update(0.000, 0.0, 80.0, w, b)
+        p.update(0.012, 13.62, 80.0, w, b)  # 1135 deg/s one-segment spike
+
+        pred = p.predict(0.012, 13.62, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "SESSION_PRIOR_GUARD")
+        self.assertAlmostEqual(pred["speed_deg_s"], 278.0, delta=0.1)
+        self.assertEqual(
+            p.get_shadow_telemetry()["actuation_speed_reason"],
+            "SESSION_PRIOR_SPIKE_GUARD",
+        )
+
+    def test_confirmed_high_normal_speed_replaces_spike_guard(self):
+        p = ContinuousAngularPredictor(
+            126.0,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 180.0, "end": 190.0, "center": 185.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        b = {
+            "start": 190.0, "end": 230.0, "center": 210.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        for t, a in [
+            (0.000, 0.00),
+            (0.012, 13.62),
+            (0.024, 27.24),
+        ]:
+            p.update(t, a, 80.0, w, b)
+
+        self.assertTrue(p.has_usable_speed())
+        pred = p.predict(0.024, 27.24, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "MEASURED")
+        self.assertAlmostEqual(pred["speed_deg_s"], 1135.0, delta=15.0)
+
     def test_second_unique_frame_replaces_prior_with_segment_speed(self):
         p = ContinuousAngularPredictor(
             138.9,
