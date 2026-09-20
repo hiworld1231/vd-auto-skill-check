@@ -250,38 +250,21 @@ class VisionEngine:
                 b_d = dict(b_d)
                 b_d.setdefault("source", "MEASURED")
 
-            w_measured = bool(
-                w_valid and str(w_d.get("source", "")).startswith("MEASURED")
-            )
-
-            should_lock = False
-            if w_measured:
-                self.black_only_acquire_count = 0
-                should_lock = True
-            elif b_valid:
-                self.black_only_acquire_count += 1
-                if self.black_only_acquire_count >= self.black_only_fallback_frames:
-                    # A real white measurement never arrived.  Retain the old
-                    # playable reconstruction, but only after giving several
-                    # unique frames a chance to expose the actual GREAT arc.
-                    if not w_valid:
-                        w_s = (b_d["start"] - 9.5) % 360.0
-                        w_d = {
-                            "start": float(w_s),
-                            "end": float(b_d["start"]),
-                            "width": 9.5,
-                            "center": float((w_s + 4.75) % 360.0),
-                            "source": "RECONSTRUCTED_FROM_BLACK",
-                        }
-                    should_lock = True
-                else:
-                    # Do not leak the detector's reconstructed white zone to the
-                    # runtime while acquisition is still waiting; otherwise the
-                    # runtime would start the check before VisionEngine locks it.
-                    det_base["white_zone"] = None
-                    det_base["black_zone"] = b_d
-            else:
-                self.black_only_acquire_count = 0
+            # Do not burn 2-3 render frames waiting for ideal white geometry:
+            # short checks can pass GREAT before the predictor even gets enough
+            # motion samples.  A reconstructed white arc is immediately playable
+            # and remains explicitly marked as reconstructed downstream.
+            should_lock = bool(w_valid or b_valid)
+            if not w_valid and b_valid:
+                w_s = (b_d["start"] - 9.5) % 360.0
+                w_d = {
+                    "start": float(w_s),
+                    "end": float(b_d["start"]),
+                    "width": 9.5,
+                    "center": float((w_s + 4.75) % 360.0),
+                    "source": "RECONSTRUCTED_FROM_BLACK",
+                }
+            self.black_only_acquire_count = 0
 
             if should_lock:
                 self.locked_white_zone = w_d
@@ -327,6 +310,20 @@ class VisionEngine:
 
         if is_needle_valid:
             self.consecutive_hybrid_losses = 0
+
+            fresh_w = det_hyb.get("white_zone")
+            fresh_b = det_hyb.get("black_zone")
+            locked_src = str((self.locked_white_zone or {}).get("source", ""))
+            fresh_src = str((fresh_w or {}).get("source", ""))
+            if (
+                not locked_src.startswith("MEASURED")
+                and fresh_w is not None
+                and fresh_src.startswith("MEASURED")
+            ):
+                self.locked_white_zone = dict(fresh_w)
+                if fresh_b is not None:
+                    self.locked_black_zone = dict(fresh_b)
+
             det_hyb["white_zone"] = self.locked_white_zone
             det_hyb["black_zone"] = self.locked_black_zone
             det_hyb["cx"] = self.locked_center[0]
