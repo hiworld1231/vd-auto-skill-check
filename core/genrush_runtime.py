@@ -659,7 +659,10 @@ def run_genrush_clean(
 
                 rollback = False
                 zone_move = False
-                if ring_present and _valid_needle(det):
+                # Landing motion can remain trackable after the SPACE prompt
+                # disappears.  Do not couple outcome observation to BASELINE's
+                # lifecycle presence bit.
+                if _valid_needle(det):
                     observer.observe_sample(
                         frame_ts,
                         float(det["needle_angle"]),
