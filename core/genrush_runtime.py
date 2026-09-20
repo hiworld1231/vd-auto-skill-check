@@ -771,11 +771,9 @@ def run_genrush_clean(
             angle = float(det["needle_angle"])
             strength = float(det.get("needle_strength", 0.0))
             predictor.update(frame_ts, angle, strength, locked_w, locked_b)
-            pred = (
-                predictor.predict(frame_ts, angle, "GREAT")
-                if predictor.has_usable_speed()
-                else None
-            )
+            # Predict immediately from the chain-1 session prior, then refine
+            # the same pending deadline from segment/robust measured speed.
+            pred = predictor.predict(frame_ts, angle, "GREAT")
             recorder.on_frame(
                 frame_ts, frame, det, pred, {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms}
             )
@@ -790,8 +788,12 @@ def run_genrush_clean(
                 speed_usable=usable,
             )
 
-            if pred.get("target_passed") and not pred.get("should_press_now"):
-                no_fire_reason = "TOO_LATE_UNSAFE"
+            if (
+                pred.get("target_passed")
+                and not pred.get("should_press_now")
+                and not fire_policy.allow
+            ):
+                no_fire_reason = fire_policy.reason or "TOO_LATE_UNSAFE"
                 scheduler.cancel_pending()
                 planned_press = None
                 predictor.mark_tracking()
@@ -809,7 +811,7 @@ def run_genrush_clean(
                     no_fire_reason = fire_policy.reason
                 continue
 
-            if speed_at_lock is None:
+            if speed_at_lock is None and usable:
                 speed_at_lock = float(predictor.speed_deg_s)
             fit = predictor.get_shadow_telemetry()
             press_t = float(pred["press_timestamp"])
@@ -824,6 +826,7 @@ def run_genrush_clean(
                         "speed_at_fire": float(pred.get("speed_deg_s") or predictor.speed_deg_s),
                         "raw_fit_speed_at_fire": float(predictor.speed_deg_s),
                         "actuation_speed_reason": pred.get("actuation_speed_reason"),
+                        "speed_source": pred.get("speed_source"),
                         "fire_policy_reason": fire_policy.reason,
                         "fire_policy_best_effort": fire_policy.best_effort,
                         "great_interval_safe": bool(pred.get("great_interval_safe", False)),
@@ -852,8 +855,13 @@ def run_genrush_clean(
                     }
                 )
 
+            speed_source = str(pred.get("speed_source") or "MEASURED")
+            provisional = speed_source in {"SESSION_PRIOR", "SEGMENT_PROVISIONAL"}
             if pred.get("should_press_now"):
-                scheduler.trigger_now("IMMEDIATE_GREAT", desired_press_time=press_t)
+                scheduler.trigger_now(
+                    "IMMEDIATE_PREARM" if provisional else "IMMEDIATE_GREAT",
+                    desired_press_time=press_t,
+                )
                 predictor.mark_committed()
             elif press_t > now:
                 if planned_press is None or abs(press_t - planned_press) >= 0.0005:
@@ -869,7 +877,11 @@ def run_genrush_clean(
                     else:
                         scheduler.schedule(
                             dispatch_deadline,
-                            reason="SCHEDULED_GREAT",
+                            reason=(
+                                "SCHEDULED_PREARM"
+                                if provisional
+                                else "SCHEDULED_GREAT"
+                            ),
                             desired_press_time=press_t,
                         )
                     predictor.mark_committed()

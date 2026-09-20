@@ -233,6 +233,83 @@ class TestContinuousGenRush(unittest.TestCase):
         p.speed_fits.extend([(1.0, 430.0), (1.1, 520.0), (1.2, 610.0)])
         self.assertFalse(p.has_stable_speed())
 
+    def test_first_frame_can_predict_from_session_prior(self):
+        p = ContinuousAngularPredictor(
+            138.9,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 85.0,
+            "end": 95.0,
+            "center": 90.0,
+            "width": 10.0,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 95.0,
+            "end": 135.0,
+            "center": 115.0,
+            "width": 40.0,
+            "source": "MEASURED",
+        }
+        p.update(0.0, 0.0, 80.0, w, b)
+        pred = p.predict(0.0, 0.0, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "SESSION_PRIOR")
+        self.assertAlmostEqual(pred["speed_deg_s"], 278.0, delta=0.1)
+        self.assertGreater(pred["time_until_press_ms"], 150.0)
+
+    def test_second_unique_frame_replaces_prior_with_segment_speed(self):
+        p = ContinuousAngularPredictor(
+            138.9,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 85.0,
+            "end": 95.0,
+            "center": 90.0,
+            "width": 10.0,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 95.0,
+            "end": 135.0,
+            "center": 115.0,
+            "width": 40.0,
+            "source": "MEASURED",
+        }
+        p.update(0.000, 0.0, 80.0, w, b)
+        p.update(0.016, 5.6, 80.0, w, b)
+        pred = p.predict(0.016, 5.6, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "SEGMENT_PROVISIONAL")
+        self.assertAlmostEqual(pred["speed_deg_s"], 350.0, delta=3.0)
+
+    def test_prior_can_immediately_salvage_success_when_center_deadline_passed(self):
+        p = ContinuousAngularPredictor(
+            138.9,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 85.0,
+            "end": 95.0,
+            "center": 90.0,
+            "width": 10.0,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 95.0,
+            "end": 135.0,
+            "center": 115.0,
+            "width": 40.0,
+            "source": "MEASURED",
+        }
+        p.update(0.0, 60.0, 80.0, w, b)
+        pred = p.predict(0.0, 60.0, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertLessEqual(pred["time_until_press_ms"], 0.0)
+        self.assertTrue(pred["should_press_now"])
+
     def test_short_check_never_substitutes_base_prior(self):
         p = ContinuousAngularPredictor(100.0, session_base_speed=278.0)
         w = {"start": 300.0, "end": 310.0, "center": 305.0, "width": 10.0}
