@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import importlib.metadata
+import platform
 import queue
+import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +23,42 @@ from core.preflight import run_preflight
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.tui import SkillCheckTUI
 from core.vision import VisionEngine
+
+
+def _session_metadata(root: Path, config: Dict[str, Any], *, fps: int, region: Dict[str, int], detector: str) -> Dict[str, Any]:
+    try:
+        git_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=1.0,
+        ).stdout.strip()
+    except Exception:
+        git_sha = "UNKNOWN"
+
+    versions: Dict[str, str] = {
+        "python": platform.python_version(),
+        "opencv": str(getattr(cv2, "__version__", "UNKNOWN")),
+    }
+    for package in ("numpy", "rich", "mss", "evdev"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "NOT_INSTALLED"
+
+    return {
+        "session_id": uuid.uuid4().hex,
+        "build_git_sha": git_sha,
+        "runtime_versions": versions,
+        "effective_config": {
+            **dict(config),
+            "fps": int(fps),
+            "region": dict(region),
+            "detector": str(detector),
+        },
+    }
 
 
 def _circ(a: float, b: float) -> float:
@@ -98,7 +138,11 @@ def run_genrush_clean(
     observer = OutcomeObserver(seed_lead, base_speed)
     lead = LeadLevelController(seed_lead)
     mouse = MouseTracker(enabled=require_lmb)
-    recorder = FlightRecorder(root / "replays", record_all=record_all)
+    recorder = FlightRecorder(
+        root / "replays",
+        record_all=record_all,
+        session_meta=_session_metadata(root, config, fps=fps, region=region, detector=detector_name),
+    )
     keyboard = HardwareTrigger(
         dry_run=dry_run,
         hold_seconds=float(config.get("space_hold_ms", 35.0)) / 1000.0,
@@ -225,6 +269,7 @@ def run_genrush_clean(
         outcome = str(info.get("outcome", "UNCONFIRMED"))
         info["chain_count"] = chain
         info["frenzy_transition"] = bool(frenzy_transition)
+        info["capture_health"] = grabber.get_diagnostics()
         if last_fire:
             ctx = last_fire.context
             sched_jitter = (
@@ -238,7 +283,10 @@ def run_genrush_clean(
                     "requested_lead_ms": check_lead,
                     "actual_used_delay_ms": ctx.get("effective_dispatch_lead_ms", check_lead),
                     "effective_dispatch_lead_ms": ctx.get("effective_dispatch_lead_ms", check_lead),
+                    # Legacy name kept for existing replay tooling.  This is
+                    # decode-delivery age, not source/render age.
                     "frame_age_ms": ctx.get("frame_age_ms"),
+                    "decode_delivery_age_ms": ctx.get("frame_age_ms"),
                     "speed_at_lock": ctx.get("speed_at_lock"),
                     "speed_at_fire": ctx.get("speed_at_fire"),
                     "fit_telemetry": ctx.get("fit", {}),
@@ -379,6 +427,7 @@ def run_genrush_clean(
                     measured_speed_at_lock=c.get("speed_at_lock"),
                     planned_press_time=ev.desired,
                     frame_age_ms=c.get("frame_age_ms"),
+                    decode_delivery_age_ms=c.get("frame_age_ms"),
                     fit_telemetry=c.get("fit"),
                 )
                 tui.log(
@@ -504,7 +553,7 @@ def run_genrush_clean(
                         frame,
                         det,
                         None,
-                        {"frame_age_ms": frame_age_ms},
+                        {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms},
                     )
                 continue
 
@@ -520,7 +569,7 @@ def run_genrush_clean(
                     frame,
                     det,
                     None,
-                    {"frame_age_ms": frame_age_ms, "stale": True},
+                    {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms, "stale": True},
                 )
                 continue
 
@@ -543,7 +592,7 @@ def run_genrush_clean(
                 else None
             )
             recorder.on_frame(
-                frame_ts, frame, det, pred, {"frame_age_ms": frame_age_ms}
+                frame_ts, frame, det, pred, {"frame_age_ms": frame_age_ms, "decode_delivery_age_ms": frame_age_ms}
             )
             if pred is None:
                 continue
