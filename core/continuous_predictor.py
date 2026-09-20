@@ -338,14 +338,24 @@ class ContinuousAngularPredictor:
         self.fire_state = FIRE_FIRED
 
     def get_actuation_speed(self) -> float:
-        """Return the robust central speed estimate used for GREAT-center timing.
+        """Best currently available speed for scheduling.
 
-        High-speed magic multipliers are intentionally absent.  The previous
-        0.85/0.80 rules introduced a systematic late bias, which is useful for
-        merely avoiding MISS but fights the actual objective: landing near the
-        middle of the white GREAT zone.  Uncertainty is handled explicitly by
-        the landing envelope in predict(), not by changing the measured speed.
+        Scheduling must start before a full 3-5 frame fit exists.  Use the
+        session prior on the first frame, the adjacent-frame segment estimate
+        as soon as a second unique frame arrives, and the robust fit once it is
+        available.  Every later frame may reschedule the same pending keydown.
         """
+        if not self.has_adapted:
+            if self._segment_speeds:
+                chosen = float(statistics.median(list(self._segment_speeds)[-2:]))
+                reason = "SEGMENT_PROVISIONAL"
+            else:
+                chosen = float(self.session_base_speed)
+                reason = "SESSION_PRIOR_PREARM"
+            self._actuation_speed = chosen
+            self._actuation_speed_reason = reason
+            return chosen
+
         raw = float(self.speed_deg_s)
         low = self._speed_uncertainty_low
         high = self._speed_uncertainty_high
@@ -356,9 +366,6 @@ class ContinuousAngularPredictor:
             and math.isfinite(float(high))
         ):
             chosen = 0.5 * (float(low) + float(high))
-            # Normally the envelope is symmetric around the Theil-Sen median,
-            # so this equals raw.  Clipping at physical bounds remains unbiased
-            # with respect to the surviving interval.
             reason = "UNCERTAINTY_MIDPOINT"
         else:
             chosen = raw
@@ -459,7 +466,10 @@ class ContinuousAngularPredictor:
             reactive_safe = (
                 remaining_success_deg > 0.0
                 and expected_delivery_deg + 2.0 <= remaining_success_deg
-                and len(self.history) >= 3
+                and (
+                    len(self.history) >= 3
+                    or (not self.has_adapted and not self.is_chain)
+                )
             )
 
         expected_landing_u = current_u + speed * self.latency_s
@@ -493,8 +503,22 @@ class ContinuousAngularPredictor:
             else:
                 should_press_now = False
 
-        speed_low = float(self._speed_uncertainty_low or speed)
-        speed_high = float(self._speed_uncertainty_high or speed)
+        if self.has_adapted:
+            speed_low = float(self._speed_uncertainty_low or speed)
+            speed_high = float(self._speed_uncertainty_high or speed)
+            speed_source = "MEASURED"
+        elif self._segment_speeds:
+            # One adjacent-frame segment is enough to move a tentative
+            # deadline, but not enough to claim a narrow confidence interval.
+            speed_low = max(20.0, speed * 0.85)
+            speed_high = min(1500.0, speed * 1.15)
+            speed_source = "SEGMENT_PROVISIONAL"
+        else:
+            # Chain-1 normal speed prior.  This is deliberately broad and is
+            # used to pre-arm only; later unique frames replace it.
+            speed_low = max(20.0, speed * 0.88)
+            speed_high = min(1500.0, speed * 1.12)
+            speed_source = "SESSION_PRIOR"
         crossing_earliest_ms = (
             angular_dist / max(speed_high, 20.0) * 1000.0
             if not passed_target else 0.0
@@ -558,6 +582,7 @@ class ContinuousAngularPredictor:
             "speed_deg_s": speed,
             "raw_fit_speed_deg_s": float(self.speed_deg_s),
             "actuation_speed_reason": self._actuation_speed_reason,
+            "speed_source": speed_source,
             "angular_distance_deg": angular_dist,
             "time_to_hit_ms": time_to_hit_s * 1000.0,
             "crossing_earliest_ms": crossing_earliest_ms,
