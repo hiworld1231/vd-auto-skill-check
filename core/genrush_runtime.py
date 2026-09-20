@@ -130,7 +130,12 @@ def run_genrush_clean(
         raise RuntimeError("PRE-FLIGHT FAILED: " + pf.summary())
 
     tui = SkillCheckTUI()
-    grabber = ScreenGrabber(region, fps=fps, framerate_mode="vfr")
+    grabber = ScreenGrabber(
+        region,
+        fps=fps,
+        framerate_mode="vfr",
+        allow_mss_fallback=bool(config.get("allow_mss_fallback", False)),
+    )
     vision = VisionEngine(backend_name=detector_name)
     predictor = ContinuousAngularPredictor(
         seed_lead, target_offset_ratio=0.5, session_base_speed=base_speed, fit_window=10
