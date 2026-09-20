@@ -21,6 +21,17 @@ from core.detectors.base import (
 )
 
 
+def _bounded_local_parabolic_delta(profile: np.ndarray, peak_idx: int) -> float:
+    """Sub-degree interpolation only when both angular neighbours are local."""
+    if peak_idx <= 0 or peak_idx >= len(profile) - 1:
+        return 0.0
+    p_prev = float(profile[peak_idx - 1])
+    p_curr = float(profile[peak_idx])
+    p_next = float(profile[peak_idx + 1])
+    denom = 2.0 * (2.0 * p_curr - p_prev - p_next)
+    return ((p_next - p_prev) / denom) if denom > 1e-5 else 0.0
+
+
 class HybridDetector(BaseDetector):
     name: str = "HYBRID"
 
@@ -175,6 +186,7 @@ class HybridDetector(BaseDetector):
 
         needle_strength = 0.0
         needle_angle = 0.0
+        reacquire_rejected = False
 
         if is_local and cand_indices is not None and len(cand_indices) > 0:
             sub_indices = self.needle_indices_1d[cand_indices]  # (K, 8)
@@ -186,13 +198,7 @@ class HybridDetector(BaseDetector):
 
             if peak_str >= 15.0:
                 peak_angle_int = int(cand_indices[k_peak])
-                idx_prev = (k_peak - 1) % len(sub_prof)
-                idx_next = (k_peak + 1) % len(sub_prof)
-                p_prev = float(sub_prof[idx_prev])
-                p_curr = peak_str
-                p_next = float(sub_prof[idx_next])
-                denom = 2.0 * (2.0 * p_curr - p_prev - p_next)
-                delta = ((p_next - p_prev) / denom) if denom > 1e-5 else 0.0
+                delta = _bounded_local_parabolic_delta(sub_prof, k_peak)
                 needle_angle = float((peak_angle_int + delta) % 360.0)
                 needle_strength = peak_str
                 self.last_angle = needle_angle
@@ -219,25 +225,43 @@ class HybridDetector(BaseDetector):
                 if curr_v >= prev_v and curr_v > next_v and curr_v > 15.0:
                     peaks.append((i, curr_v))
 
-            if expected_angle is not None and peaks:
-                cand = [p for p in peaks if abs((p[0] - expected_angle + 180.0) % 360.0 - 180.0) <= search_window]
+            tracking_ref = expected_angle if expected_angle is not None else self.last_angle
+            if tracking_ref is not None and peaks:
+                reacquire_radius = min(
+                    90.0,
+                    max(
+                        float(search_window),
+                        float(expected_speed) * float(dt) + 25.0
+                        + self.consecutive_losses * 15.0,
+                    ),
+                )
+                cand = [
+                    p for p in peaks
+                    if abs((p[0] - float(tracking_ref) + 180.0) % 360.0 - 180.0)
+                    <= reacquire_radius
+                ]
                 if cand:
                     peak_idx = max(cand, key=lambda x: x[1])[0]
                 else:
                     peak_idx = int(np.argmax(red_prof))
+                    reacquire_rejected = True
             else:
                 peak_idx = int(np.argmax(red_prof))
 
             needle_strength = float(red_prof[peak_idx])
             needle_angle = parabolic_peak(red_prof, peak_idx)
 
-            if needle_strength >= 15.0:
+            if needle_strength >= 15.0 and not reacquire_rejected:
                 self.last_angle = needle_angle
                 self.last_t = now
                 self.consecutive_losses = 0
             else:
                 self.consecutive_losses += 1
-                status = "LOW_CONFIDENCE"
+                status = (
+                    "REACQUIRE_OUTSIDE_CONTINUITY"
+                    if reacquire_rejected
+                    else "LOW_CONFIDENCE"
+                )
 
         # Shadow-validate zones periodically (every 25 frames)
         if self.frame_count_in_check % 25 == 0 and self.locked_white_zone is None:
@@ -250,7 +274,7 @@ class HybridDetector(BaseDetector):
         t1 = time.perf_counter()
         det_time_ms = (t1 - t0) * 1000.0
 
-        is_needle_valid = (needle_strength >= 15.0)
+        is_needle_valid = (needle_strength >= 15.0 and not reacquire_rejected)
         return {
             "confidence": conf,
             "cx": cx,
