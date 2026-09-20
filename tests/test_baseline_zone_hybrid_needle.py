@@ -275,6 +275,81 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
             # Losses reset upon successful recovery
             self.assertEqual(self.vision.consecutive_hybrid_losses, 0)
 
+    def test_hybrid_presence_uses_measured_shifted_center(self):
+        gray, bgr = create_synthetic_check_frame(
+            needle_angle_deg=45.0,
+            cx=168.0,
+            cy=157.0,
+        )
+        h = HybridDetector()
+        h.set_geometry(168.0, 157.0)
+        present, score, cx, cy = h._check_presence(bgr, gray)
+        self.assertTrue(present)
+        self.assertGreaterEqual(score, 0.80)
+        self.assertAlmostEqual(cx, 168.0)
+        self.assertAlmostEqual(cy, 157.0)
+
+    def test_active_tracking_requires_three_dual_presence_misses_to_reset(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+        self.vision.state = STATE_ACTIVE_TRACKING
+        self.vision.locked_white_zone = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        self.vision.locked_black_zone = {
+            "start": 90.0, "end": 130.0, "center": 110.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        self.vision.locked_center = (160.0, 162.5)
+        with patch.object(self.vision.hybrid_detector, "detect", return_value=None), patch.object(
+            self.vision.baseline_detector, "detect", return_value=None
+        ):
+            first = self.vision.detect_frame(gray, frame)
+            second = self.vision.detect_frame(gray, frame)
+            third = self.vision.detect_frame(gray, frame)
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first["detector_name"], "RING_PRESENCE_GRACE")
+        self.assertIsNotNone(second)
+        self.assertEqual(second["detector_name"], "RING_PRESENCE_GRACE")
+        self.assertIsNone(third)
+        self.assertEqual(self.vision.state, STATE_SPAWN_ACQUIRE)
+
+    def test_postfire_tracks_needle_when_prompt_presence_is_lost(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        gray = np.zeros((240, 320), dtype=np.uint8)
+        self.vision.state = STATE_ACTIVE_TRACKING
+        self.vision.locked_white_zone = {
+            "start": 80.0, "end": 90.0, "center": 85.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        self.vision.locked_black_zone = {
+            "start": 90.0, "end": 130.0, "center": 110.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        self.vision.locked_center = (160.0, 162.5)
+        self.vision.notify_pressed()
+
+        with patch.object(self.vision.baseline_detector, "detect", return_value=None), patch.object(
+            self.vision.hybrid_detector,
+            "detect",
+            return_value={
+                "ring_present": True,
+                "needle_valid": True,
+                "needle_angle": 88.4,
+                "needle_strength": 70.0,
+                "needle_confidence": 70.0,
+            },
+        ) as mock_hybrid:
+            det = self.vision.detect_frame(gray, frame, is_pressed=True)
+
+        self.assertIsNotNone(det)
+        self.assertFalse(det["ring_present"])
+        self.assertTrue(det["needle_valid"])
+        self.assertAlmostEqual(det["needle_angle"], 88.4)
+        self.assertTrue(mock_hybrid.call_args.kwargs["skip_presence_check"])
+
     def test_baseline_expected_angle_rejects_unrelated_red_peak(self):
         gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
         det = BaselineDetector().detect(
