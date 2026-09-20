@@ -161,6 +161,25 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertTrue(pred["great_interval_safe"])
         self.assertLess(pred["landing_uncertainty_width_deg"], pred["great_width_deg"])
 
+    def test_lead_uncertainty_expands_great_landing_envelope(self):
+        p, lock = self._run_speed(550.0)
+        self.assertIsNotNone(lock)
+        t = 0.151
+        a = (270.0 + 550.0 * t) % 360.0
+
+        p.set_delivery_lead(122.1, 0.0)
+        tight = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(tight)
+
+        p.set_delivery_lead(122.1, 4.0)
+        wide = p.predict(t, a, target="GREAT")
+        self.assertIsNotNone(wide)
+        self.assertAlmostEqual(wide["lead_uncertainty_ms"], 4.0)
+        self.assertGreater(
+            wide["landing_uncertainty_width_deg"],
+            tight["landing_uncertainty_width_deg"],
+        )
+
     def test_uncertainty_shadow_expands_for_disagreeing_track(self):
         p = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
         w = {"start": 90.0, "end": 100.0, "center": 95.0, "width": 10.0}
