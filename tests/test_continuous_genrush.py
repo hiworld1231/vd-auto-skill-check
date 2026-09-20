@@ -233,6 +233,83 @@ class TestContinuousGenRush(unittest.TestCase):
         p.speed_fits.extend([(1.0, 430.0), (1.1, 520.0), (1.2, 610.0)])
         self.assertFalse(p.has_stable_speed())
 
+    def test_frenzy_ignores_first_doubled_segment_and_holds_prior(self):
+        p = ContinuousAngularPredictor(126.9, session_base_speed=278.0)
+        w = {
+            "start": 210.0, "end": 220.0, "center": 215.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        p.reset(
+            keep_speed=True,
+            default_speed=324.9,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        p.update(0.0000, 10.0, 80.0, w, None)
+        p.update(0.0085, 22.4, 80.0, w, None)  # ~1459 deg/s first segment
+        pred = p.predict(0.0085, 22.4, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "FRENZY_PRIOR")
+        self.assertAlmostEqual(pred["speed_deg_s"], 324.9, delta=0.1)
+        self.assertFalse(p.has_usable_speed())
+
+    def test_real_frenzy_chain2_three_point_fit_blends_to_true_speed(self):
+        # Real replay 2026-09-19 17:46:04 chain=2.
+        # First adjacent segment looked ~548 deg/s while the robust fire speed
+        # was ~309 deg/s. Previous generation was ~264.4 deg/s.
+        p = ContinuousAngularPredictor(126.9, session_base_speed=278.0)
+        w = {
+            "start": 250.0, "end": 260.0, "center": 255.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        p.reset(
+            keep_speed=True,
+            default_speed=264.4338,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        for t, a in [
+            (0.0000, 161.83),
+            (0.0066, 165.46),
+            (0.0233, 170.86),
+        ]:
+            p.update(t, a, 80.0, w, None)
+
+        self.assertTrue(p.has_usable_speed())
+        pred = p.predict(0.0233, 170.86, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "FRENZY_BLEND")
+        self.assertEqual(pred["fit_sample_count"], 3)
+        self.assertAlmostEqual(pred["speed_deg_s"], 308.0, delta=12.0)
+
+    def test_real_frenzy_chain5_short_fit_stays_near_generation_speed(self):
+        # Real replay chain=5: previous generation ~455.1, true chain speed
+        # ~533.9, but the first adjacent segment looked >1000 deg/s.
+        p = ContinuousAngularPredictor(126.9, session_base_speed=278.0)
+        w = {
+            "start": 300.0, "end": 310.0, "center": 305.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        p.reset(
+            keep_speed=True,
+            default_speed=455.0789,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        for t, a in [
+            (0.0000, 191.43),
+            (0.0085, 200.50),
+            (0.0247, 209.64),
+        ]:
+            p.update(t, a, 80.0, w, None)
+
+        self.assertTrue(p.has_usable_speed())
+        pred = p.predict(0.0247, 209.64, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "FRENZY_BLEND")
+        self.assertGreater(pred["speed_deg_s"], 520.0)
+        self.assertLess(pred["speed_deg_s"], 575.0)
+
     def test_first_frame_can_predict_from_session_prior(self):
         p = ContinuousAngularPredictor(
             138.9,
