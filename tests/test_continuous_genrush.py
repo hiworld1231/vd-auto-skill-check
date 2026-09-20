@@ -97,7 +97,7 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertEqual(pred["angular_distance_deg"],0.0)
         self.assertLessEqual(pred["time_to_hit_ms"],0.001)
 
-    def test_replay5_unstable_1k_track_uses_conservative_local_speed(self):
+    def test_replay5_unstable_1k_track_has_no_magic_speed_slowdown(self):
         # Live replay(5), 2026-09-19 15:20:07.  The old urgent path used the
         # unstable 1030.7 deg/s all-pairs fit and landed ~13 deg before GREAT.
         p = ContinuousAngularPredictor(81.92233377980533, session_base_speed=278.0)
@@ -121,16 +121,14 @@ class TestContinuousGenRush(unittest.TestCase):
         used = p.get_actuation_speed()
         telem = p.get_shadow_telemetry()
         self.assertGreater(raw, 1000.0)
-        self.assertLess(used, raw)
-        self.assertGreater(used, 880.0)
-        self.assertLess(used, 980.0)
-        self.assertEqual(telem["actuation_speed_reason"], "HIGH_SPEED_CONSERVATIVE_LOCAL")
+        self.assertAlmostEqual(used, raw, delta=1.0)
+        self.assertEqual(telem["actuation_speed_reason"], "UNCERTAINTY_MIDPOINT")
         pred = p.predict(samples[-1][0], samples[-1][1], target="GREAT")
         self.assertIsNotNone(pred)
-        self.assertGreater(pred["time_to_hit_ms"], 84.0)
-        self.assertLess(pred["time_to_hit_ms"], 90.0)
+        self.assertGreater(pred["landing_uncertainty_width_deg"], 0.0)
+        self.assertIn("great_interval_safe", pred)
 
-    def test_replay6_three_point_1k_track_is_provisionally_slowed(self):
+    def test_replay6_three_point_1k_track_keeps_unbiased_speed(self):
         p = ContinuousAngularPredictor(80.255536, session_base_speed=278.0)
         w = {"start": 78.0, "end": 88.0, "center": 83.0, "width": 10.0}
         b = {"start": 89.0, "end": 131.0, "center": 110.0, "width": 42.0}
@@ -139,10 +137,10 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertTrue(p.has_usable_speed())
         self.assertGreater(p.speed_deg_s, 1000.0)
         used = p.get_actuation_speed()
-        self.assertAlmostEqual(used, p.speed_deg_s * 0.85, delta=1.0)
+        self.assertAlmostEqual(used, p.speed_deg_s, delta=1.0)
         self.assertEqual(
             p.get_shadow_telemetry()["actuation_speed_reason"],
-            "HIGH_SPEED_PROVISIONAL_85PCT",
+            "UNCERTAINTY_MIDPOINT",
         )
 
     def test_uncertainty_shadow_is_tight_on_clean_linear_track(self):
@@ -160,6 +158,8 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertIsNotNone(pred)
         self.assertGreaterEqual(pred["crossing_uncertainty_ms"], 0.0)
         self.assertGreater(pred["white_window_ms"], 0.0)
+        self.assertTrue(pred["great_interval_safe"])
+        self.assertLess(pred["landing_uncertainty_width_deg"], pred["great_width_deg"])
 
     def test_uncertainty_shadow_expands_for_disagreeing_track(self):
         p = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
