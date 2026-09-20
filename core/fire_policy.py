@@ -34,10 +34,22 @@ def decide_great_fire(
     reconstructed_geometry = white_source.startswith("RECONSTRUCTED")
     known_geometry = measured_geometry or reconstructed_geometry
     speed_source = str(pred.get("speed_source") or "MEASURED")
-    provisional_speed = speed_source in {"SESSION_PRIOR", "SEGMENT_PROVISIONAL"}
+    provisional_speed = speed_source in {
+        "SESSION_PRIOR",
+        "SEGMENT_PROVISIONAL",
+        "FRENZY_PRIOR",
+    }
 
     if not known_geometry:
         return GreatFireDecision(False, "GREAT_GEOMETRY_UNTRUSTED")
+
+    is_chain = bool(pred.get("is_chain", False))
+    fit_sample_count = int(pred.get("fit_sample_count") or 0)
+
+    if speed_source == "FRENZY_PRIOR":
+        # Previous-generation speed is useful as a stabilizing prior but is not
+        # sufficient evidence to fire a new Frenzy generation by itself.
+        return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
 
     # First-frame/second-frame pre-arm.  This is intentionally tentative:
     # subsequent unique frames continuously replace the pending deadline with
@@ -89,6 +101,8 @@ def decide_great_fire(
     # If the ideal center deadline has already arrived, an immediate keydown is
     # still worthwhile when delivery remains inside the known success sector.
     if speed_usable and bool(pred.get("should_press_now", False)):
+        if is_chain and fit_sample_count < 3:
+            return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
         return GreatFireDecision(
             True, "IMMEDIATE_SUCCESS_FALLBACK", best_effort=True
         )
