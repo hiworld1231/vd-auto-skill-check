@@ -92,6 +92,9 @@ class ContinuousAngularPredictor:
         self._fit_sample_count = 0
         self._last_fit_speed_spread = 0.0
         self._short_speed_shadow: Optional[float] = None
+        self._slope_mad_deg_s: Optional[float] = None
+        self._speed_uncertainty_low: Optional[float] = None
+        self._speed_uncertainty_high: Optional[float] = None
         self._segment_speeds: Deque[float] = collections.deque(maxlen=7)
         self._actuation_speed: Optional[float] = None
         self._actuation_speed_reason = "ROBUST_LONG_FIT"
@@ -118,6 +121,17 @@ class ContinuousAngularPredictor:
             return None
 
         speed = float(statistics.median(slopes))
+        slope_mad = float(statistics.median(abs(x - speed) for x in slopes))
+        # Theil-Sen pairwise slopes are robust but correlated.  Treat the
+        # MAD-derived standard error as a shadow confidence envelope instead
+        # of pretending the median is exact.  A small 3% floor protects
+        # perfectly quantized synthetic tracks from false zero uncertainty.
+        robust_se = 1.4826 * slope_mad / math.sqrt(max(1.0, float(len(pts))))
+        half_width = max(3.0 * robust_se, 0.03 * abs(speed))
+        self._slope_mad_deg_s = slope_mad
+        self._speed_uncertainty_low = max(20.0, speed - half_width)
+        self._speed_uncertainty_high = min(1500.0, speed + half_width)
+
         intercepts = [ang - speed * t for t, ang in pts]
         intercept = float(statistics.median(intercepts))
         residuals = [abs(ang - (intercept + speed * t)) for t, ang in pts]
@@ -347,6 +361,10 @@ class ContinuousAngularPredictor:
             "fire_state": self.fire_state,
             "live_fit_spread": self._last_fit_speed_spread,
             "fit_residual_mad_deg": self._fit_residual_mad_deg,
+            "slope_mad_deg_s": self._slope_mad_deg_s,
+            "speed_uncertainty_low": self._speed_uncertainty_low,
+            "speed_uncertainty_high": self._speed_uncertainty_high,
+            "speed_uncertainty_reliable": self._fit_sample_count >= 5,
             "fit_span_ms": self._fit_span_s * 1000.0,
             "fit_sample_count": self._fit_sample_count,
             "short_speed_shadow": self._short_speed_shadow,
@@ -446,6 +464,20 @@ class ContinuousAngularPredictor:
             else:
                 should_press_now = False
 
+        speed_low = float(self._speed_uncertainty_low or speed)
+        speed_high = float(self._speed_uncertainty_high or speed)
+        crossing_earliest_ms = (
+            angular_dist / max(speed_high, 20.0) * 1000.0
+            if not passed_target else 0.0
+        )
+        crossing_latest_ms = (
+            angular_dist / max(speed_low, 20.0) * 1000.0
+            if not passed_target else 0.0
+        )
+        white_window_ms = None
+        if white_zone and white_zone.get("width") is not None:
+            white_window_ms = float(white_zone["width"]) / max(speed, 20.0) * 1000.0
+
         return {
             "target": target,
             "target_angle": target_angle,
@@ -454,6 +486,10 @@ class ContinuousAngularPredictor:
             "actuation_speed_reason": self._actuation_speed_reason,
             "angular_distance_deg": angular_dist,
             "time_to_hit_ms": time_to_hit_s * 1000.0,
+            "crossing_earliest_ms": crossing_earliest_ms,
+            "crossing_latest_ms": crossing_latest_ms,
+            "crossing_uncertainty_ms": max(0.0, crossing_latest_ms - crossing_earliest_ms),
+            "white_window_ms": white_window_ms,
             "press_timestamp": press_timestamp,
             "time_until_press_ms": (press_timestamp - current_t) * 1000.0,
             "should_press_now": should_press_now,
