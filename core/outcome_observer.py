@@ -84,6 +84,16 @@ class OutcomeObserver:
             return hit, response_ms
         return None
 
+    def has_recent_motion(self, sample_count: int = 3, min_span_deg: float = 2.0) -> bool:
+        """Return whether recent trusted post-fire samples still show motion."""
+        n = max(2, int(sample_count))
+        if len(self.samples) < n:
+            return False
+        chunk = self.samples[-n:]
+        ref = chunk[0][1]
+        vals = [ref + _signed_delta(x[1], ref) for x in chunk]
+        return (max(vals) - min(vals)) >= float(min_span_deg)
+
     def has_plateau(self) -> bool:
         """Return whether a trustworthy post-fire freeze is already visible."""
         return self._find_plateau() is not None
