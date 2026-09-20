@@ -3,7 +3,12 @@ import time
 import unittest
 from pathlib import Path
 
-from core.continuous_predictor import ContinuousAngularPredictor
+from core.continuous_predictor import (
+    ContinuousAngularPredictor,
+    FIRE_ARMED,
+    FIRE_FIRED,
+    STATE_PROVISIONAL,
+)
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
 from core.outcome_observer import OutcomeObserver
@@ -21,6 +26,33 @@ class CleanV5Tests(unittest.TestCase):
             p.update(t, (30 + 450 * t) % 360, 30, w, None)
         self.assertTrue(p.has_stable_speed())
         self.assertAlmostEqual(p.speed_deg_s, 450, delta=12)
+
+    def test_committed_schedule_does_not_bypass_fit_quality(self):
+        p = ContinuousAngularPredictor(60.0, fit_window=10)
+        w = {"start": 300.0, "end": 310.0, "center": 305.0, "width": 10.0, "source": "MEASURED"}
+        for i in range(8):
+            t = i * .016
+            p.update(t, (30 + 450 * t) % 360, 30, w, None)
+        self.assertTrue(p.has_stable_speed())
+        p.mark_committed()
+        self.assertEqual(p.fire_state, FIRE_ARMED)
+
+        # Degrade the current fit after arming.  The old implementation returned
+        # True solely because state==COMMITTED and allowed a bad reschedule.
+        p.speed_fits.clear()
+        p.speed_fits.append((1.0, 450.0))
+        p.speed_fits.append((1.1, 620.0))
+        self.assertFalse(p.has_stable_speed())
+        self.assertEqual(p.fire_state, FIRE_ARMED)
+        self.assertEqual(p.state, STATE_PROVISIONAL)
+
+    def test_fire_state_is_independent_from_fit_state(self):
+        p = ContinuousAngularPredictor(60.0)
+        self.assertNotEqual(p.fire_state, FIRE_FIRED)
+        p.mark_committed()
+        self.assertEqual(p.fire_state, FIRE_ARMED)
+        p.mark_fired()
+        self.assertEqual(p.fire_state, FIRE_FIRED)
 
     def test_scheduler_typeerror_not_retried(self):
         calls = []
