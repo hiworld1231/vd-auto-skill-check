@@ -122,6 +122,11 @@ class ContinuousAngularPredictor:
         self._segment_speeds: Deque[float] = collections.deque(maxlen=7)
         self._actuation_speed: Optional[float] = None
         self._actuation_speed_reason = "ROBUST_LONG_FIT"
+        # Frenzy handoff can first become visible just after this generation's
+        # GREAT centre. Once that is proven from the trailing success sector,
+        # the target occurrence is permanently the one behind the spawn phase.
+        # Never silently switch to target+360 on the next frame.
+        self._frenzy_target_occurrence_passed = False
         self.fire_state = FIRE_TRACKING
 
     @staticmethod
@@ -516,14 +521,25 @@ class ContinuousAngularPredictor:
             ) % 360.0
             # A relocated Frenzy generation can first become observable only
             # after the GREAT centre has just passed. If the first handoff frame
-            # is still inside the trailing success sector, keep that same
-            # revolution instead of silently adding +360° and waiting a full lap.
+            # is still inside the trailing success sector, latch that occurrence
+            # for the entire generation. The previous implementation fixed only
+            # this one predict() call; the second frame reverted to target+360.
             if (
                 0.25 < target_to_current < target_to_success_end
                 and target_to_success_end < 120.0
             ):
-                target_u = current_u - target_to_current
+                self._frenzy_target_occurrence_passed = True
                 frenzy_handoff_success_tail = True
+
+        if self.is_chain and self._frenzy_target_occurrence_passed:
+            # Choose the last occurrence at/before the generation's first phase.
+            # This target can never become "next revolution" later in the same
+            # one-sweep skillcheck, even if GREAT geometry refines slightly.
+            target_u = float(target_angle)
+            while target_u > start_u + 1e-9:
+                target_u -= 360.0
+            while target_u + 360.0 <= start_u + 1e-9:
+                target_u += 360.0
 
         remaining_to_target = target_u - current_u
         passed_target = remaining_to_target < -0.25
@@ -734,4 +750,7 @@ class ContinuousAngularPredictor:
                 else None
             ),
             "frenzy_handoff_success_tail": bool(frenzy_handoff_success_tail),
+            "frenzy_target_occurrence_latched": bool(
+                self._frenzy_target_occurrence_passed
+            ),
         }

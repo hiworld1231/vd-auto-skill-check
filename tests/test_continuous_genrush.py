@@ -270,6 +270,55 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertTrue(pred["reactive_safe_fallback"])
         self.assertEqual(pred["speed_source"], "FRENZY_PRIOR")
 
+    def test_frenzy_passed_handoff_never_retargets_next_revolution(self):
+        # Regression for the chain4 failure seen after the handoff-tail patch:
+        # frame 1 proves this generation's GREAT centre is already behind us,
+        # but 80ms delivery is too long to salvage the remaining GOOD tail.
+        # Frame 2 must remain target_passed; it must not reinterpret GREAT as
+        # target+360 and schedule a bogus one-lap GREAT_CENTER_BEST_EFFORT.
+        p = ContinuousAngularPredictor(
+            80.0,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 95.0,
+            "end": 105.0,
+            "center": 100.0,
+            "width": 10.0,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0,
+            "end": 150.0,
+            "center": 127.5,
+            "width": 45.0,
+            "source": "MEASURED",
+        }
+        p.reset(
+            keep_speed=True,
+            default_speed=900.0,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+
+        p.update(0.000, 111.0, 80.0, w, b)
+        first = p.predict(0.000, 111.0, target="GREAT")
+        self.assertIsNotNone(first)
+        self.assertTrue(first["frenzy_handoff_success_tail"])
+        self.assertTrue(first["frenzy_target_occurrence_latched"])
+        self.assertTrue(first["target_passed"])
+        self.assertFalse(first["reactive_safe_fallback"])
+        self.assertFalse(first["should_press_now"])
+
+        p.update(0.016, 125.0, 80.0, w, b)
+        second = p.predict(0.016, 125.0, target="GREAT")
+        self.assertIsNotNone(second)
+        self.assertTrue(second["frenzy_target_occurrence_latched"])
+        self.assertTrue(second["target_passed"])
+        self.assertEqual(second["angular_distance_deg"], 0.0)
+        self.assertLessEqual(second["time_until_press_ms"], 0.001)
+        self.assertFalse(second["should_press_now"])
+
     def test_deep_frenzy_sample6_stays_blended_with_prior(self):
         # Current-build chain15 jumped from a 441.8°/s prior to an 820°/s raw
         # fit on sample 6. That boundary must remain blended instead of becoming

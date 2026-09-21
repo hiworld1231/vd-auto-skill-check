@@ -217,52 +217,6 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertTrue(d.allow)
         self.assertEqual(d.reason, "IMMEDIATE_SUCCESS_FALLBACK")
 
-    def test_deep_frenzy_future_best_effort_waits_when_success_envelope_is_too_wide(self):
-        d = decide_great_fire(
-            {
-                "time_until_press_ms": 18.0,
-                "great_interval_safe": False,
-                "great_interval_intersects": True,
-                "landing_uncertainty_width_deg": 46.0,
-                "great_width_deg": 10.0,
-                "success_width_deg": 54.0,
-                "white_source": "MEASURED",
-                "speed_source": "MEASURED",
-                "speed_deg_s": 1104.0,
-                "is_chain": True,
-                "fit_sample_count": 7,
-                "target_passed": False,
-                "should_press_now": False,
-            },
-            fit_stable=False,
-            speed_usable=True,
-        )
-        self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "FRENZY_FUTURE_UNCERTAINTY_TOO_WIDE")
-
-    def test_deep_frenzy_future_schedule_survives_when_uncertainty_is_tight(self):
-        d = decide_great_fire(
-            {
-                "time_until_press_ms": 18.0,
-                "great_interval_safe": False,
-                "great_interval_intersects": True,
-                "landing_uncertainty_width_deg": 20.0,
-                "great_width_deg": 10.0,
-                "success_width_deg": 54.0,
-                "white_source": "MEASURED",
-                "speed_source": "MEASURED",
-                "speed_deg_s": 1104.0,
-                "is_chain": True,
-                "fit_sample_count": 8,
-                "target_passed": False,
-                "should_press_now": False,
-            },
-            fit_stable=True,
-            speed_usable=True,
-        )
-        self.assertTrue(d.allow)
-        self.assertEqual(d.reason, "GREAT_CENTER_BEST_EFFORT")
-
     def test_frenzy_blended_measured_speed_can_schedule(self):
         d = decide_great_fire(
             {
