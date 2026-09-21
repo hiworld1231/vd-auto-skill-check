@@ -593,8 +593,15 @@ class CleanV5Tests(unittest.TestCase):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
-        for t, a in [(1.05, 101.0), (1.07, 101.1), (1.09, 100.9), (1.11, 101.0)]:
+        for t, a in [
+            (1.050, 101.0),
+            (1.062, 101.1),
+            (1.074, 100.9),
+            (1.086, 101.0),
+            (1.098, 101.0),
+        ]:
             o.observe_sample(t, a, 30)
+        self.assertTrue(o.has_plateau())
         self.assertTrue(o.has_plateau())
         self.assertEqual(o.conclude_check()["outcome"], "GREAT")
 
