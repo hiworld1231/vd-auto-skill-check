@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import math
 import platform
 import queue
 import subprocess
