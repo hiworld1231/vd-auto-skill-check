@@ -438,21 +438,122 @@ def run_genrush_clean(
             locked_b=locked_b,
         )
         if handoff_det is not None:
+            handoff_frame_t = float(
+                bootstrap_t if bootstrap_t is not None else now
+            )
+            handoff_angle = float(handoff_det.get("needle_angle") or 0.0)
+            handoff_pred = (
+                predictor.predict(handoff_frame_t, handoff_angle, "GREAT")
+                if _valid_needle(handoff_det)
+                else None
+            )
             recorder.on_frame(
-                float(bootstrap_t if bootstrap_t is not None else now),
+                handoff_frame_t,
                 frame,
                 handoff_det,
-                predictor.predict(
-                    float(bootstrap_t if bootstrap_t is not None else now),
-                    float(handoff_det.get("needle_angle") or 0.0),
-                    "GREAT",
-                ) if _valid_needle(handoff_det) else None,
+                handoff_pred,
                 {
                     "frame_age_ms": frame_age_ms,
                     "decode_delivery_age_ms": frame_age_ms,
                     "frenzy_generation_handoff": True,
                 },
             )
+
+            # The frame that confirms a Frenzy relocation is already the first
+            # frame of the next generation. On a late handoff it can be the only
+            # frame where the trailing GOOD sector is still reachable. Evaluate
+            # that exact frame instead of always discarding it.
+            if handoff_pred is not None and new_chain > 1:
+                handoff_policy = decide_great_fire(
+                    handoff_pred,
+                    fit_stable=predictor.has_stable_speed(),
+                    speed_usable=predictor.has_usable_speed(),
+                )
+                if (
+                    handoff_policy.allow
+                    and handoff_policy.reason
+                    == "FRENZY_HANDOFF_REACTIVE_SUCCESS"
+                ):
+                    fit = predictor.get_shadow_telemetry()
+                    with ctx_lock:
+                        fire_ctx.clear()
+                        fire_ctx.update(
+                            {
+                                "fire_epoch": fire_epoch,
+                                "chain_at_plan": chain,
+                                "target_angle": handoff_pred.get("target_angle"),
+                                "estimated_angle": handoff_angle,
+                                "speed_at_lock": None,
+                                "speed_at_fire": float(
+                                    handoff_pred.get("speed_deg_s")
+                                    or predictor.get_actuation_speed()
+                                ),
+                                "raw_fit_speed_at_fire": float(
+                                    predictor.speed_deg_s
+                                ),
+                                "actuation_speed_reason": handoff_pred.get(
+                                    "actuation_speed_reason"
+                                ),
+                                "speed_source": handoff_pred.get("speed_source"),
+                                "fire_policy_reason": handoff_policy.reason,
+                                "fire_policy_best_effort": True,
+                                "great_interval_safe": bool(
+                                    handoff_pred.get("great_interval_safe", False)
+                                ),
+                                "great_interval_intersects": bool(
+                                    handoff_pred.get(
+                                        "great_interval_intersects", False
+                                    )
+                                ),
+                                "white_source": handoff_pred.get("white_source"),
+                                "great_geometry_refined": bool(
+                                    handoff_pred.get(
+                                        "great_geometry_refined", False
+                                    )
+                                ),
+                                "great_boundary_method": handoff_pred.get(
+                                    "great_boundary_method"
+                                ),
+                                "landing_uncertainty_width_deg": handoff_pred.get(
+                                    "landing_uncertainty_width_deg"
+                                ),
+                                "crossing_uncertainty_ms": handoff_pred.get(
+                                    "crossing_uncertainty_ms"
+                                ),
+                                "lead_uncertainty_ms": handoff_pred.get(
+                                    "lead_uncertainty_ms"
+                                ),
+                                "dispatch_uncertainty_ms": handoff_pred.get(
+                                    "dispatch_uncertainty_ms"
+                                ),
+                                "delivery_uncertainty_ms": handoff_pred.get(
+                                    "delivery_uncertainty_ms"
+                                ),
+                                "dispatch_lag_compensation_ms": (
+                                    dispatch_timing.compensation_ms()
+                                ),
+                                "dispatch_lag_uncertainty_ms": (
+                                    dispatch_timing.uncertainty_ms()
+                                ),
+                                "dispatch_timing": dispatch_timing.telemetry(),
+                                "frame_age_ms": frame_age_ms,
+                                "fit": fit,
+                                "detector_fallback": False,
+                                "planned_time_to_target_ms": 0.0,
+                                "target_passed": True,
+                                "frenzy_handoff_reactive": True,
+                            }
+                        )
+                    scheduler.trigger_now(
+                        "IMMEDIATE_FRENZY_HANDOFF_REACTIVE",
+                        desired_press_time=float(
+                            handoff_pred.get(
+                                "press_timestamp", handoff_frame_t
+                            )
+                        ),
+                        dispatch_token=fire_epoch,
+                    )
+                    predictor.mark_committed()
         tui.set_status(f"CHECK #{chain}")
         tui.log(
             f"▶ check chain={chain} lead={check_lead:.1f}ms"
