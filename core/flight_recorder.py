@@ -31,6 +31,8 @@ class FlightRecorder:
         self._q: queue.Queue = queue.Queue(maxsize=max_queue_size)
         self._stop = object()
         self.dropped = 0
+        self.write_failures = 0
+        self.last_write_error: Optional[str] = None
         self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="FlightRecorder")
         self._worker.start()
 
@@ -123,6 +125,10 @@ class FlightRecorder:
         return obj
 
     def _write(self, ep: Dict[str, Any]) -> None:
+        # The replay directory may be removed/rotated while the runtime is
+        # alive. Recreate it at write time instead of killing the recorder
+        # thread on the first FileNotFoundError.
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         base = self.output_dir / ep["check_id"]
         payload = self._jsonable(ep)
         (base.with_suffix(".json")).write_text(
@@ -139,7 +145,16 @@ class FlightRecorder:
             try:
                 if item is self._stop:
                     return
-                self._write(item)
+                try:
+                    self._write(item)
+                    self.last_write_error = None
+                except Exception as exc:
+                    # Recorder failures are diagnostic failures, not a reason
+                    # to lose the worker forever. Keep consuming later checks.
+                    self.write_failures += 1
+                    self.last_write_error = (
+                        f"{type(exc).__name__}: {exc}"
+                    )
             finally:
                 self._q.task_done()
 
