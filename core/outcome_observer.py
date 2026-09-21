@@ -13,11 +13,7 @@ def _signed_delta(a: float, b: float) -> float:
 class OutcomeObserver:
     """Post-fire landing observer independent from the old adaptive learner."""
 
-    def __init__(
-        self,
-        initial_latency_ms: float,
-        session_base_speed: float = 278.0,
-    ):
+    def __init__(self, initial_latency_ms: float, session_base_speed: float = 278.0):
         self.initial_latency_ms = float(initial_latency_ms)
         self.session_base_speed = float(session_base_speed)
         self.reset()
@@ -30,11 +26,6 @@ class OutcomeObserver:
         self.black_zone: Optional[Dict[str, Any]] = None
         self.used_latency_ms: Optional[float] = None
         self.samples: List[Tuple[float, float, float]] = []
-        self.chain_count: int = 1
-        self.min_plateau_samples: int = 5
-        self.min_plateau_span_s: float = 0.045
-        self.continuity_rejections: int = 0
-        self.last_continuity_rejection: Optional[Dict[str, float]] = None
 
     def on_trigger(
         self,
@@ -44,7 +35,6 @@ class OutcomeObserver:
         white_zone: Optional[Dict[str, Any]],
         black_zone: Optional[Dict[str, Any]],
         used_latency_ms: Optional[float] = None,
-        chain_count: int = 1,
         **_: Any,
     ) -> None:
         self.trigger_t = float(press_time)
@@ -55,21 +45,7 @@ class OutcomeObserver:
         self.used_latency_ms = (
             float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
         )
-        self.chain_count = max(1, int(chain_count))
-        # Normal checks need a longer freeze proof because 120-FPS capture can
-        # duplicate a ~60-Hz rendered needle long enough to fake a 28-36ms
-        # plateau. Archived recent normal GREAT/GOOD checks all retain at least
-        # 45ms / 5 trusted samples, while Frenzy end-of-chain checks can be much
-        # shorter and keep the old 28ms / 3-sample rule.
-        if self.chain_count == 1:
-            self.min_plateau_samples = 5
-            self.min_plateau_span_s = 0.045
-        else:
-            self.min_plateau_samples = 3
-            self.min_plateau_span_s = 0.028
         self.samples.clear()
-        self.continuity_rejections = 0
-        self.last_continuity_rejection = None
 
     def observe_sample(self, t: float, angle: float, strength: float = 30.0) -> None:
         if self.trigger_t is None or t < self.trigger_t - 0.005 or strength < 10.0:
@@ -77,33 +53,6 @@ class OutcomeObserver:
         self.samples.append((float(t), float(angle) % 360.0, float(strength)))
         if len(self.samples) > 40:
             del self.samples[:-40]
-
-    def _implied_delivery_ms(self, hit_angle: float) -> Optional[float]:
-        if (
-            self.target_angle is None
-            or self.speed_deg_s is None
-            or self.used_latency_ms is None
-        ):
-            return None
-        speed = max(20.0, float(self.speed_deg_s))
-        center_error_ms = _signed_delta(hit_angle, self.target_angle) / speed * 1000.0
-        return float(self.used_latency_ms) + center_error_ms
-
-    def note_continuity_rejection(
-        self,
-        *,
-        t: float,
-        angle: float,
-        delta_deg: float,
-        max_forward_deg: float,
-    ) -> None:
-        self.continuity_rejections += 1
-        self.last_continuity_rejection = {
-            "t": float(t),
-            "angle": float(angle) % 360.0,
-            "delta_deg": float(delta_deg),
-            "max_forward_deg": float(max_forward_deg),
-        }
 
     def _find_plateau(self) -> Optional[Tuple[float, float, float, int]]:
         """Return earliest time-supported stable freeze.
@@ -119,8 +68,8 @@ class OutcomeObserver:
         # insufficient, but allow confirmation from three stable samples over
         # at least 28 ms. This is still faster than the old 35 ms gate, while
         # four 120-FPS duplicates spanning only ~25 ms cannot fake a landing.
-        min_samples = int(self.min_plateau_samples)
-        min_span_s = float(self.min_plateau_span_s)
+        min_samples = 3
+        min_span_s = 0.028
         max_adjacent_gap_s = 0.040
         max_spread_deg = 1.6
 
@@ -192,22 +141,11 @@ class OutcomeObserver:
 
         plateau = self._find_plateau()
         if plateau is None:
-            rejected = self.last_continuity_rejection
             return {
                 "outcome": "UNCONFIRMED",
-                "unconfirmed_reason": (
-                    "POSTFIRE_CONTINUITY_LOST"
-                    if self.continuity_rejections > 0
-                    else "NO_TRUSTED_PLATEAU"
-                ),
                 "plateau_found": False,
-                "plateau_trusted": False,
-                "hit_angle": (
-                    rejected.get("angle") if rejected is not None else None
-                ),
+                "hit_angle": None,
                 "target_angle": self.target_angle,
-                "continuity_rejections": int(self.continuity_rejections),
-                "last_continuity_rejection": rejected,
                 "observed_response_ms": None,
             }
 
@@ -241,11 +179,9 @@ class OutcomeObserver:
         err_deg = _signed_delta(hit, target)
         speed = max(20.0, float(self.speed_deg_s or self.session_base_speed))
         err_ms = err_deg / speed * 1000.0
-
         return {
             "outcome": outcome,
             "plateau_found": True,
-            "plateau_trusted": True,
             "hit_angle": hit,
             "target_angle": target,
             "error_deg": err_deg,
@@ -253,8 +189,6 @@ class OutcomeObserver:
             "center_error_deg": err_deg,
             "center_error_ms": err_ms,
             "observed_response_ms": observed_response_ms,
-            "implied_delivery_ms": self._implied_delivery_ms(hit),
-            "continuity_rejections": int(self.continuity_rejections),
             "plateau_span_ms": plateau_span_ms,
             "plateau_sample_count": plateau_sample_count,
             "white_source": white.get("source") if white else None,
