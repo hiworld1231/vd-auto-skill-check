@@ -17,11 +17,15 @@ class OutcomeObserver:
         self,
         initial_latency_ms: float,
         session_base_speed: float = 278.0,
-        phase_outlier_ms: float = 130.0,
+        min_delivery_ms: float = 35.0,
+        max_delivery_ms: float = 180.0,
     ):
         self.initial_latency_ms = float(initial_latency_ms)
         self.session_base_speed = float(session_base_speed)
-        self.phase_outlier_ms = max(50.0, float(phase_outlier_ms))
+        self.min_delivery_ms = max(0.0, float(min_delivery_ms))
+        self.max_delivery_ms = max(
+            self.min_delivery_ms + 1.0, float(max_delivery_ms)
+        )
         self.reset()
 
     def reset(self) -> None:
@@ -32,6 +36,7 @@ class OutcomeObserver:
         self.black_zone: Optional[Dict[str, Any]] = None
         self.used_latency_ms: Optional[float] = None
         self.samples: List[Tuple[float, float, float]] = []
+        self.last_rejected_plateau: Optional[Dict[str, float]] = None
 
     def on_trigger(
         self,
@@ -52,6 +57,7 @@ class OutcomeObserver:
             float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
         )
         self.samples.clear()
+        self.last_rejected_plateau = None
 
     def observe_sample(self, t: float, angle: float, strength: float = 30.0) -> None:
         if self.trigger_t is None or t < self.trigger_t - 0.005 or strength < 10.0:
@@ -59,6 +65,29 @@ class OutcomeObserver:
         self.samples.append((float(t), float(angle) % 360.0, float(strength)))
         if len(self.samples) > 40:
             del self.samples[:-40]
+
+    def _implied_delivery_ms(self, hit_angle: float) -> Optional[float]:
+        if (
+            self.target_angle is None
+            or self.speed_deg_s is None
+            or self.used_latency_ms is None
+        ):
+            return None
+        speed = max(20.0, float(self.speed_deg_s))
+        center_error_ms = _signed_delta(hit_angle, self.target_angle) / speed * 1000.0
+        return float(self.used_latency_ms) + center_error_ms
+
+    def _trusted_plateau(self, hit_angle: float) -> bool:
+        implied = self._implied_delivery_ms(hit_angle)
+        if implied is None:
+            return True
+        if self.min_delivery_ms <= implied <= self.max_delivery_ms:
+            return True
+        self.last_rejected_plateau = {
+            "hit_angle": float(hit_angle) % 360.0,
+            "implied_delivery_ms": float(implied),
+        }
+        return False
 
     def _find_plateau(self) -> Optional[Tuple[float, float, float, int]]:
         """Return earliest time-supported stable freeze.
@@ -99,6 +128,11 @@ class OutcomeObserver:
                 count = j - i + 1
                 if count >= min_samples and span_s >= min_span_s:
                     hit = float(statistics.median(vals) % 360.0)
+                    if not self._trusted_plateau(hit):
+                        # Do not let the first stable red artifact terminate
+                        # the check. Keep scanning for a later plateau whose
+                        # implied keydown->landing delay is physically valid.
+                        continue
                     response_ms = max(
                         0.0, (self.samples[i][0] - self.trigger_t) * 1000.0
                     )
@@ -147,11 +181,23 @@ class OutcomeObserver:
 
         plateau = self._find_plateau()
         if plateau is None:
+            rejected = self.last_rejected_plateau
             return {
                 "outcome": "UNCONFIRMED",
+                "unconfirmed_reason": (
+                    "PHASE_OUTLIER" if rejected is not None else "NO_TRUSTED_PLATEAU"
+                ),
                 "plateau_found": False,
-                "hit_angle": None,
+                "plateau_trusted": False,
+                "hit_angle": (
+                    rejected.get("hit_angle") if rejected is not None else None
+                ),
                 "target_angle": self.target_angle,
+                "implied_delivery_ms": (
+                    rejected.get("implied_delivery_ms")
+                    if rejected is not None
+                    else None
+                ),
                 "observed_response_ms": None,
             }
 
@@ -186,31 +232,6 @@ class OutcomeObserver:
         speed = max(20.0, float(self.speed_deg_s or self.session_base_speed))
         err_ms = err_deg / speed * 1000.0
 
-        # A stable red plateau can still be an unrelated post-hit artifact
-        # after continuity is lost.  For a MISS, a phase error this large is
-        # outside the same physical trust bound already used by lead learning;
-        # report it as unconfirmed instead of manufacturing a real game miss.
-        if outcome == "MISS" and abs(err_ms) > self.phase_outlier_ms:
-            return {
-                "outcome": "UNCONFIRMED",
-                "unconfirmed_reason": "PHASE_OUTLIER",
-                "phase_outlier": True,
-                "plateau_found": True,
-                "plateau_trusted": False,
-                "hit_angle": hit,
-                "target_angle": target,
-                "error_deg": err_deg,
-                "error_ms": err_ms,
-                "center_error_deg": err_deg,
-                "center_error_ms": err_ms,
-                "observed_response_ms": observed_response_ms,
-                "plateau_span_ms": plateau_span_ms,
-                "plateau_sample_count": plateau_sample_count,
-                "white_source": white.get("source") if white else None,
-                "black_source": black.get("source") if black else None,
-                "frenzy_transition": bool(frenzy_transition),
-            }
-
         return {
             "outcome": outcome,
             "plateau_found": True,
@@ -222,6 +243,7 @@ class OutcomeObserver:
             "center_error_deg": err_deg,
             "center_error_ms": err_ms,
             "observed_response_ms": observed_response_ms,
+            "implied_delivery_ms": self._implied_delivery_ms(hit),
             "plateau_span_ms": plateau_span_ms,
             "plateau_sample_count": plateau_sample_count,
             "white_source": white.get("source") if white else None,
