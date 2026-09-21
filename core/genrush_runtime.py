@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import math
 import platform
 import queue
 import subprocess
@@ -117,34 +116,6 @@ def _generation_lead(
     return float(normal_lead_ms), max(0.0, float(normal_uncertainty_ms))
 
 
-def _frenzy_speed_capped_lead(
-    base_lead_ms: float,
-    prior_speed_deg_s: Optional[float],
-    *,
-    threshold_deg_s: float = 1000.0,
-    angular_cap_deg: float = 60.0,
-    min_lead_ms: float = 45.0,
-) -> float:
-    """Keep deep-Frenzy keydown lead from becoming an excessive angle.
-
-    The 80ms Frenzy lead works well through the mid-speed chain, but once the
-    immediately previous generation is already ~1000 deg/s it represents
-    80+ degrees of angular anticipation.  Live chain9 succeeded around a 60ms
-    effective lead at ~1060 deg/s, while the following chain at 80ms landed
-    ~49 degrees early.  Preserve the validated 80ms behavior below the
-    threshold, then cap anticipation to a fixed angular budget.
-    """
-    lead = max(0.0, float(base_lead_ms))
-    try:
-        speed = float(prior_speed_deg_s)
-    except (TypeError, ValueError):
-        return lead
-    if not math.isfinite(speed) or speed < float(threshold_deg_s):
-        return lead
-    angular_lead_ms = 1000.0 * float(angular_cap_deg) / max(speed, 20.0)
-    return max(float(min_lead_ms), min(lead, angular_lead_ms))
-
-
 def _sane_zone(z: Optional[Dict[str, Any]], lo: float, hi: float) -> Optional[Dict[str, Any]]:
     if not isinstance(z, dict):
         return None
@@ -196,15 +167,6 @@ def run_genrush_clean(
     seed_lead = float(config.get("genrush_seed_lead_ms", 60.0))
     frenzy_lead = float(config.get("frenzy_lead_ms", 80.0))
     frenzy_lead_uncertainty = float(config.get("frenzy_lead_uncertainty_ms", 0.0))
-    frenzy_high_speed_threshold = float(
-        config.get("frenzy_high_speed_threshold_deg_s", 1000.0)
-    )
-    frenzy_angular_lead_cap_deg = float(
-        config.get("frenzy_angular_lead_cap_deg", 60.0)
-    )
-    frenzy_min_high_speed_lead_ms = float(
-        config.get("frenzy_min_high_speed_lead_ms", 45.0)
-    )
     prefire_ring_end_absence_s = max(
         0.050,
         float(config.get("prefire_ring_end_absence_ms", 100.0)) / 1000.0,
@@ -435,18 +397,6 @@ def run_genrush_clean(
             frenzy_lead_ms=frenzy_lead,
             frenzy_uncertainty_ms=frenzy_lead_uncertainty,
         )
-        base_generation_lead = check_lead
-        if new_chain > 1:
-            check_lead = _frenzy_speed_capped_lead(
-                check_lead,
-                prior_generation_speed,
-                threshold_deg_s=frenzy_high_speed_threshold,
-                angular_cap_deg=frenzy_angular_lead_cap_deg,
-                min_lead_ms=frenzy_min_high_speed_lead_ms,
-            )
-        high_speed_lead_capped = bool(
-            new_chain > 1 and check_lead < base_generation_lead - 1e-9
-        )
         predictor.set_delivery_lead(
             check_lead,
             generation_lead_uncertainty,
@@ -613,7 +563,6 @@ def run_genrush_clean(
                 else ""
             )
             + (" [HANDOFF]" if handoff_det is not None else "")
-            + (" [HIGHSPEED_LEAD]" if high_speed_lead_capped else "")
         )
 
     def finish(
