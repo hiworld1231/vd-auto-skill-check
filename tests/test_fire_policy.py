@@ -181,6 +181,7 @@ class GreatFirePolicyTests(unittest.TestCase):
                 "landing_uncertainty_width_deg": 53.55,
                 "great_width_deg": 10.83,
                 "success_width_deg": 54.55,
+                "success_interval_safe": False,
                 "white_source": "MEASURED",
                 "speed_source": "FRENZY_BLEND",
                 "is_chain": True,
@@ -192,7 +193,7 @@ class GreatFirePolicyTests(unittest.TestCase):
             speed_usable=True,
         )
         self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "FRENZY_IMMEDIATE_UNCERTAINTY_TOO_WIDE")
+        self.assertEqual(d.reason, "FRENZY_IMMEDIATE_SUCCESS_ENVELOPE_UNSAFE")
 
     def test_successful_frenzy_immediate_with_moderate_uncertainty_stays_allowed(self):
         # Current successful chain6 had ~34.5° uncertainty in a ~54° success arc.
@@ -204,6 +205,7 @@ class GreatFirePolicyTests(unittest.TestCase):
                 "landing_uncertainty_width_deg": 34.5,
                 "great_width_deg": 10.5,
                 "success_width_deg": 54.0,
+                "success_interval_safe": True,
                 "white_source": "MEASURED",
                 "speed_source": "FRENZY_BLEND",
                 "is_chain": True,
@@ -216,6 +218,53 @@ class GreatFirePolicyTests(unittest.TestCase):
         )
         self.assertTrue(d.allow)
         self.assertEqual(d.reason, "IMMEDIATE_SUCCESS_FALLBACK")
+
+    def test_frenzy_future_best_effort_refuses_unsafe_success_envelope(self):
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": 18.0,
+                "great_interval_safe": False,
+                "great_interval_intersects": True,
+                "success_interval_safe": False,
+                "landing_uncertainty_width_deg": 24.0,
+                "great_width_deg": 10.0,
+                "success_width_deg": 54.0,
+                "white_source": "MEASURED",
+                "speed_source": "FRENZY_BLEND",
+                "is_chain": True,
+                "fit_sample_count": 5,
+                "target_passed": False,
+                "should_press_now": False,
+            },
+            fit_stable=False,
+            speed_usable=True,
+        )
+        self.assertFalse(d.allow)
+        self.assertEqual(d.reason, "FRENZY_FUTURE_SUCCESS_ENVELOPE_UNSAFE")
+
+    def test_frenzy_future_best_effort_keeps_safe_success_envelope(self):
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": 18.0,
+                "great_interval_safe": False,
+                "great_interval_intersects": True,
+                "success_interval_safe": True,
+                "landing_uncertainty_width_deg": 24.0,
+                "great_width_deg": 10.0,
+                "success_width_deg": 54.0,
+                "white_source": "MEASURED",
+                "speed_source": "FRENZY_BLEND",
+                "is_chain": True,
+                "fit_sample_count": 5,
+                "target_passed": False,
+                "should_press_now": False,
+            },
+            fit_stable=False,
+            speed_usable=True,
+        )
+        self.assertTrue(d.allow)
+        self.assertTrue(d.best_effort)
+        self.assertEqual(d.reason, "GREAT_CENTER_BEST_EFFORT")
 
     def test_frenzy_blended_measured_speed_can_schedule(self):
         d = decide_great_fire(
