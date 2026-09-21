@@ -584,6 +584,39 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertTrue(det["needle_valid"])
         self.assertAlmostEqual(det["needle_angle"], 88.4)
         self.assertTrue(mock_hybrid.call_args.kwargs["skip_presence_check"])
+        self.assertTrue(mock_hybrid.call_args.kwargs["strict_continuity"])
+
+    def test_strict_postfire_hybrid_never_global_reacquires_distant_red_peak(self):
+        gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
+        h = HybridDetector()
+        h.last_angle = 45.0
+        h.last_t = time.monotonic() - 0.016
+
+        det = h.detect(
+            frame_bgr=bgr,
+            frame_gray=gray,
+            expected_angle=45.0,
+            search_window=14.0,
+            dt_frame=0.016,
+            expected_speed=300.0,
+            skip_presence_check=True,
+            strict_continuity=True,
+        )
+
+        self.assertIsNotNone(det)
+        self.assertFalse(det["needle_valid"])
+        self.assertEqual(det["status"], "STRICT_CONTINUITY_LOSS")
+        # A rejected red object at 200° must never become the next reference.
+        self.assertAlmostEqual(h.last_angle, 45.0)
+
+    def test_reseed_postfire_tracking_restores_last_trusted_phase(self):
+        h = self.vision.hybrid_detector
+        h.last_angle = 210.0
+        h.consecutive_losses = 3
+        self.vision.reseed_postfire_tracking(88.5)
+        self.assertAlmostEqual(h.last_angle, 88.5)
+        self.assertEqual(h.consecutive_losses, 0)
+        self.assertIsNotNone(h.last_t)
 
     def test_baseline_expected_angle_rejects_unrelated_red_peak(self):
         gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
