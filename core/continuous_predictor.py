@@ -304,13 +304,14 @@ class ContinuousAngularPredictor:
         if (
             self.is_chain
             and self.generation_prior_speed is not None
-            and self._fit_sample_count < 6
+            and self._fit_sample_count < 8
         ):
             prior = max(20.0, float(self.generation_prior_speed))
-            # Frenzy can accelerate substantially between generations, but a
-            # 3-5 frame estimate jumping several times the prior generation is
-            # a known capture/render-cadence artifact, not real motion.
-            if not (0.60 * prior <= self.speed_deg_s <= 1.80 * prior):
+            # Keep the previous generation as a sanity reference through the
+            # first seven fit samples. Deep Frenzy replays show that the raw fit
+            # can jump sharply on sample 6 before settling; do not suddenly
+            # remove the prior exactly at that boundary.
+            if not (0.60 * prior <= self.speed_deg_s <= 2.00 * prior):
                 return False
 
         return True
@@ -386,14 +387,21 @@ class ContinuousAngularPredictor:
         if (
             self.is_chain
             and self.generation_prior_speed is not None
-            and self._fit_sample_count < 6
+            and self._fit_sample_count < 8
         ):
             prior = max(20.0, float(self.generation_prior_speed))
             # Short Frenzy fits are noisy but the immediately previous
-            # generation is a strong physical prior.  Shrink only the first
-            # few fits toward it, then hand control fully to measured speed.
+            # generation is a strong physical prior. Keep a diminishing amount
+            # of shrinkage through samples 6-7 instead of jumping to the raw fit
+            # in one frame.
             clamped = max(0.65 * prior, min(1.65 * prior, raw))
-            alpha_by_n = {3: 0.35, 4: 0.55, 5: 0.75}
+            alpha_by_n = {
+                3: 0.35,
+                4: 0.55,
+                5: 0.75,
+                6: 0.85,
+                7: 0.93,
+            }
             alpha = alpha_by_n.get(int(self._fit_sample_count), 1.0)
             chosen = prior + alpha * (clamped - prior)
             self._actuation_speed = float(chosen)
@@ -494,6 +502,29 @@ class ContinuousAngularPredictor:
         target_u = float(target_angle)
         while target_u + 1e-9 < start_u:
             target_u += 360.0
+
+        frenzy_handoff_success_tail = False
+        if (
+            self.is_chain
+            and len(self._unwrapped) <= 1
+            and black_zone
+            and black_zone.get("end") is not None
+        ):
+            target_to_current = (current_angle - target_angle) % 360.0
+            target_to_success_end = (
+                float(black_zone["end"]) - target_angle
+            ) % 360.0
+            # A relocated Frenzy generation can first become observable only
+            # after the GREAT centre has just passed. If the first handoff frame
+            # is still inside the trailing success sector, keep that same
+            # revolution instead of silently adding +360° and waiting a full lap.
+            if (
+                0.25 < target_to_current < target_to_success_end
+                and target_to_success_end < 120.0
+            ):
+                target_u = current_u - target_to_current
+                frenzy_handoff_success_tail = True
+
         remaining_to_target = target_u - current_u
         passed_target = remaining_to_target < -0.25
 
@@ -507,17 +538,32 @@ class ContinuousAngularPredictor:
                 good_end_u += 360.0
             remaining_success_deg = good_end_u - current_u
             expected_delivery_deg = speed * self.latency_s
+            frenzy_prior_tail_safe = (
+                frenzy_handoff_success_tail
+                and not self.has_adapted
+                and self.generation_prior_speed is not None
+                and expected_delivery_deg * 1.25 + 2.0
+                <= remaining_success_deg
+            )
             reactive_safe = (
                 remaining_success_deg > 0.0
                 and expected_delivery_deg + 2.0 <= remaining_success_deg
                 and (
                     len(self.history) >= 3
                     or (not self.has_adapted and not self.is_chain)
+                    or frenzy_prior_tail_safe
                 )
             )
 
         expected_landing_u = current_u + speed * self.latency_s
         success_end_u = None
+        success_start_u = None
+        if white_zone and white_zone.get("start") is not None:
+            success_start_u = float(white_zone["start"])
+            while success_start_u > target_u + 1e-9:
+                success_start_u -= 360.0
+            while success_start_u + 360.0 <= target_u + 1e-9:
+                success_start_u += 360.0
         if black_zone and black_zone.get("end") is not None:
             success_end_u = float(black_zone["end"])
             while success_end_u + 1e-9 < target_u:
@@ -556,8 +602,19 @@ class ContinuousAngularPredictor:
             raw_low = float(self._speed_uncertainty_low or raw)
             raw_high = float(self._speed_uncertainty_high or raw)
             shift = speed - raw
-            speed_low = max(20.0, raw_low + shift)
-            speed_high = min(1500.0, raw_high + shift)
+            prior = max(20.0, float(self.generation_prior_speed or speed))
+            prior_low = 0.65 * prior
+            prior_high = 1.65 * prior
+            shifted_low = raw_low + shift
+            shifted_high = raw_high + shift
+            speed_low = max(20.0, prior_low, min(speed, shifted_low))
+            speed_high = min(
+                1500.0,
+                prior_high,
+                max(speed, shifted_high),
+            )
+            if speed_low > speed_high:
+                speed_low = speed_high = speed
             speed_source = "FRENZY_BLEND"
         elif self.has_adapted:
             speed_low = float(self._speed_uncertainty_low or speed)
@@ -671,4 +728,10 @@ class ContinuousAngularPredictor:
             "target_passed": passed_target,
             "expected_landing_angle": expected_landing_u % 360.0,
             "success_end_angle": (success_end_u % 360.0) if success_end_u is not None else None,
+            "success_width_deg": (
+                max(0.0, success_end_u - success_start_u)
+                if success_end_u is not None and success_start_u is not None
+                else None
+            ),
+            "frenzy_handoff_success_tail": bool(frenzy_handoff_success_tail),
         }
