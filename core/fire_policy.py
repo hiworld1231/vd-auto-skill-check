@@ -47,8 +47,20 @@ def decide_great_fire(
     fit_sample_count = int(pred.get("fit_sample_count") or 0)
 
     if speed_source == "FRENZY_PRIOR":
-        # Previous-generation speed is useful as a stabilizing prior but is not
-        # sufficient evidence to fire a new Frenzy generation by itself.
+        # Previous-generation speed normally cannot fire a new generation by
+        # itself. One narrow exception is a handoff frame that already appears
+        # just after GREAT while the trailing success sector is still safely
+        # reachable even with a 25% faster generation.
+        if (
+            bool(pred.get("frenzy_handoff_success_tail"))
+            and bool(pred.get("target_passed"))
+            and bool(pred.get("reactive_safe_fallback"))
+        ):
+            return GreatFireDecision(
+                True,
+                "FRENZY_HANDOFF_REACTIVE_SUCCESS",
+                best_effort=True,
+            )
         return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
 
     # First-frame/second-frame pre-arm.  This is intentionally tentative:
@@ -103,6 +115,18 @@ def decide_great_fire(
     if speed_usable and bool(pred.get("should_press_now", False)):
         if is_chain and fit_sample_count < 3:
             return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
+        if is_chain:
+            uncertainty_width = pred.get("landing_uncertainty_width_deg")
+            success_width = pred.get("success_width_deg")
+            if (
+                uncertainty_width is not None
+                and success_width is not None
+                and float(success_width) > 0.0
+                and float(uncertainty_width) >= 0.80 * float(success_width)
+            ):
+                return GreatFireDecision(
+                    False, "FRENZY_IMMEDIATE_UNCERTAINTY_TOO_WIDE"
+                )
         return GreatFireDecision(
             True, "IMMEDIATE_SUCCESS_FALLBACK", best_effort=True
         )

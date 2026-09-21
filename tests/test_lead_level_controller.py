@@ -99,7 +99,7 @@ class TestRobustLeadLevelController(unittest.TestCase):
         self.assertTrue(r["updated"])
         self.assertEqual(r["update_reason"], "ROBUST_LEVEL_SHIFT")
         self.assertGreater(r["step_ms"], 0.0)
-        self.assertLessEqual(r["step_ms"], 12.0 + 1e-9)
+        self.assertLessEqual(r["step_ms"], 6.0 + 1e-9)
 
     def test_negative_level_shift_uses_same_rule(self):
         c = LeadLevelController(60)
@@ -113,7 +113,20 @@ class TestRobustLeadLevelController(unittest.TestCase):
         self.assertTrue(r["updated"])
         self.assertEqual(r["update_reason"], "ROBUST_LEVEL_SHIFT")
         self.assertLess(r["step_ms"], 0.0)
-        self.assertGreaterEqual(r["step_ms"], -12.0 - 1e-9)
+        self.assertGreaterEqual(r["step_ms"], -6.0 - 1e-9)
+
+    def test_live_positive_cluster_cannot_jump_121_to_133_in_one_update(self):
+        c = LeadLevelController(109.4)
+        c.initialized = True
+        # Representative coherent high cluster from the long current-build
+        # session that previously caused 121.4 -> 133.1ms in one update.
+        for ideal in (148.8, 125.3, 134.9):
+            r = self.clean(c, 109.4, ideal - 109.4, mode="IMMEDIATE")
+            self.assertFalse(r.get("updated", False))
+        r = self.clean(c, 109.4, 131.4 - 109.4, mode="IMMEDIATE")
+        self.assertTrue(r["updated"])
+        self.assertLessEqual(r["step_ms"], 6.0 + 1e-9)
+        self.assertAlmostEqual(c.current_lead_ms, 115.4, delta=0.01)
 
     def test_lead_uncertainty_has_floor_and_shrinks_on_tight_cluster(self):
         c = LeadLevelController(60)
