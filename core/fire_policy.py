@@ -115,18 +115,10 @@ def decide_great_fire(
     if speed_usable and bool(pred.get("should_press_now", False)):
         if is_chain and fit_sample_count < 3:
             return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
-        if is_chain:
-            uncertainty_width = pred.get("landing_uncertainty_width_deg")
-            success_width = pred.get("success_width_deg")
-            if (
-                uncertainty_width is not None
-                and success_width is not None
-                and float(success_width) > 0.0
-                and float(uncertainty_width) >= 0.80 * float(success_width)
-            ):
-                return GreatFireDecision(
-                    False, "FRENZY_IMMEDIATE_UNCERTAINTY_TOO_WIDE"
-                )
+        if is_chain and not bool(pred.get("success_interval_safe", False)):
+            return GreatFireDecision(
+                False, "FRENZY_IMMEDIATE_SUCCESS_ENVELOPE_UNSAFE"
+            )
         return GreatFireDecision(
             True, "IMMEDIATE_SUCCESS_FALLBACK", best_effort=True
         )
@@ -134,6 +126,10 @@ def decide_great_fire(
     # Before the deadline, keep a center-targeted best-effort schedule alive.
     # Later frames continuously replace it with better estimates.
     if speed_usable and not bool(pred.get("target_passed", False)) and time_until > 0.0:
+        if is_chain and not bool(pred.get("success_interval_safe", False)):
+            return GreatFireDecision(
+                False, "FRENZY_FUTURE_SUCCESS_ENVELOPE_UNSAFE"
+            )
         return GreatFireDecision(
             True, "GREAT_CENTER_BEST_EFFORT", best_effort=True
         )
