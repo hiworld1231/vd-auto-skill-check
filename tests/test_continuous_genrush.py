@@ -233,6 +233,87 @@ class TestContinuousGenRush(unittest.TestCase):
         p.speed_fits.extend([(1.0, 430.0), (1.1, 520.0), (1.2, 610.0)])
         self.assertFalse(p.has_stable_speed())
 
+    def test_live_chain8_handoff_does_not_wait_a_full_revolution(self):
+        # Current-build replay check_20260921_165550_0024:
+        # the first chain8 handoff frame appears 10.4° after GREAT centre, but
+        # the trailing GOOD sector is still reachable with the 348°/s prior.
+        p = ContinuousAngularPredictor(
+            80.0,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 95.53,
+            "end": 106.30,
+            "center": 100.91,
+            "width": 10.77,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 112.98,
+            "end": 149.18,
+            "center": 131.08,
+            "width": 36.20,
+            "source": "MEASURED",
+        }
+        p.reset(
+            keep_speed=True,
+            default_speed=348.0,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        p.update(0.0, 111.31, 80.0, w, b)
+        pred = p.predict(0.0, 111.31, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertTrue(pred["frenzy_handoff_success_tail"])
+        self.assertTrue(pred["target_passed"])
+        self.assertLessEqual(pred["time_to_hit_ms"], 0.001)
+        self.assertTrue(pred["reactive_safe_fallback"])
+        self.assertEqual(pred["speed_source"], "FRENZY_PRIOR")
+
+    def test_deep_frenzy_sample6_stays_blended_with_prior(self):
+        # Current-build chain15 jumped from a 441.8°/s prior to an 820°/s raw
+        # fit on sample 6. That boundary must remain blended instead of becoming
+        # fully trusted in one frame.
+        p = ContinuousAngularPredictor(
+            80.0,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 355.6,
+            "end": 6.4,
+            "center": 1.0,
+            "width": 10.8,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 7.0,
+            "end": 50.2,
+            "center": 28.6,
+            "width": 43.2,
+            "source": "MEASURED",
+        }
+        p.reset(
+            keep_speed=True,
+            default_speed=441.8,
+            is_chain=True,
+            session_base_speed=278.0,
+        )
+        for i in range(6):
+            t = i * 0.016
+            p.update(t, (250.0 + 820.0 * t) % 360.0, 80.0, w, b)
+
+        self.assertEqual(p._fit_sample_count, 6)
+        self.assertTrue(p.has_usable_speed())
+        pred = p.predict(0.080, (250.0 + 820.0 * 0.080) % 360.0, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["speed_source"], "FRENZY_BLEND")
+        self.assertLess(pred["speed_deg_s"], 720.0)
+        self.assertGreater(pred["speed_deg_s"], 600.0)
+        self.assertLessEqual(
+            pred["landing_uncertainty_width_deg"],
+            pred["success_width_deg"],
+        )
+
     def test_frenzy_80ms_lead_keeps_1000dps_success_window_open(self):
         w = {
             "start": 95.0, "end": 105.0, "center": 100.0,
