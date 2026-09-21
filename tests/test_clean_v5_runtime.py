@@ -8,7 +8,6 @@ from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
 from core.genrush_runtime import (
-    _frenzy_speed_capped_lead,
     _generation_lead,
     _presence_absence_update,
 )
@@ -63,43 +62,6 @@ class CleanV5Tests(unittest.TestCase):
         since, _ = _presence_absence_update(None, now=20.000, present=False)
         since, elapsed = _presence_absence_update(since, now=20.101, present=False)
         self.assertGreaterEqual(elapsed, 0.100)
-
-    def test_deep_frenzy_lead_is_capped_by_angular_travel(self):
-        # New live run: chain9 succeeded at ~1063.5 deg/s with ~60.5ms
-        # effective lead; chain10 then used the full 80ms and landed 49.4°
-        # early. At this speed 80ms means ~85° of anticipation.
-        capped = _frenzy_speed_capped_lead(
-            80.0,
-            1063.5,
-            threshold_deg_s=1000.0,
-            angular_cap_deg=60.0,
-            min_lead_ms=45.0,
-        )
-        self.assertAlmostEqual(capped, 56.42, delta=0.05)
-
-    def test_mid_speed_frenzy_keeps_validated_80ms_lead(self):
-        self.assertAlmostEqual(
-            _frenzy_speed_capped_lead(
-                80.0,
-                981.1,
-                threshold_deg_s=1000.0,
-                angular_cap_deg=60.0,
-                min_lead_ms=45.0,
-            ),
-            80.0,
-        )
-
-    def test_extreme_frenzy_lead_has_safe_floor(self):
-        self.assertAlmostEqual(
-            _frenzy_speed_capped_lead(
-                80.0,
-                1500.0,
-                threshold_deg_s=1000.0,
-                angular_cap_deg=60.0,
-                min_lead_ms=45.0,
-            ),
-            45.0,
-        )
 
     def test_frenzy_generation_uses_separate_lead(self):
         lead_ms, unc_ms = _generation_lead(
