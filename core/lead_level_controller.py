@@ -30,7 +30,7 @@ class LeadLevelController:
         recent_shift_samples: int = 4,
         recent_shift_max_mad_ms: float = 10.0,
         deadband_ms: float = 5.0,
-        max_shift_step_ms: float = 12.0,
+        max_shift_step_ms: float = 6.0,
         uncertainty_floor_ms: float = 2.0,
         uncertainty_default_ms: float = 12.0,
     ):
