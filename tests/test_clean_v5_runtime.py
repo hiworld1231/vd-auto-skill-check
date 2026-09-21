@@ -384,7 +384,7 @@ class CleanV5Tests(unittest.TestCase):
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GOOD")
 
-    def test_extreme_phase_miss_is_reported_unconfirmed(self):
+    def test_extreme_phase_plateau_is_rejected_before_lifecycle_completion(self):
         o = OutcomeObserver(120)
         w = {
             "start": 95.0, "end": 105.0, "center": 100.0,
@@ -401,11 +401,70 @@ class CleanV5Tests(unittest.TestCase):
             (1.092, 219.9),
         ]:
             o.observe_sample(t, a, 40.0)
+        self.assertFalse(o.has_plateau())
         result = o.conclude_check()
         self.assertEqual(result["outcome"], "UNCONFIRMED")
         self.assertEqual(result["unconfirmed_reason"], "PHASE_OUTLIER")
-        self.assertTrue(result["phase_outlier"])
+        self.assertFalse(result["plateau_found"])
         self.assertFalse(result["plateau_trusted"])
+        self.assertGreater(result["implied_delivery_ms"], 180.0)
+
+    def test_impossible_early_plateau_is_skipped_for_later_valid_freeze(self):
+        o = OutcomeObserver(80)
+        w = {
+            "start": 95.0, "end": 105.0, "center": 100.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0, "end": 145.0, "center": 125.0,
+            "width": 40.0, "source": "MEASURED",
+        }
+        o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=65.0)
+
+        # First stable red object implies 265ms keydown->landing and must not
+        # stop lifecycle. A later freeze at 102° implies ~72ms and is valid.
+        for t, a in [
+            (1.030, 160.0),
+            (1.046, 160.2),
+            (1.062, 159.9),
+            (1.082, 102.0),
+            (1.098, 102.1),
+            (1.114, 101.9),
+        ]:
+            o.observe_sample(t, a, 40.0)
+
+        self.assertTrue(o.has_plateau())
+        result = o.conclude_check()
+        self.assertEqual(result["outcome"], "GREAT")
+        self.assertAlmostEqual(result["hit_angle"], 102.0, delta=0.2)
+        self.assertGreaterEqual(result["implied_delivery_ms"], 35.0)
+        self.assertLessEqual(result["implied_delivery_ms"], 180.0)
+
+    def test_live_bad_sample_245ms_is_not_a_plateau(self):
+        o = OutcomeObserver(80)
+        w = {
+            "start": 46.0, "end": 56.0, "center": 51.0,
+            "width": 10.0, "source": "MEASURED",
+        }
+        o.on_trigger(
+            1.0,
+            51.1,
+            306.1,
+            w,
+            None,
+            used_latency_ms=65.6,
+        )
+        for t, a in [
+            (1.060, 106.0),
+            (1.076, 106.1),
+            (1.092, 105.9),
+        ]:
+            o.observe_sample(t, a, 40.0)
+
+        self.assertFalse(o.has_plateau())
+        result = o.conclude_check()
+        self.assertEqual(result["unconfirmed_reason"], "PHASE_OUTLIER")
+        self.assertAlmostEqual(result["implied_delivery_ms"], 245.0, delta=1.5)
 
     def test_plausible_near_sector_miss_remains_miss(self):
         o = OutcomeObserver(120)
