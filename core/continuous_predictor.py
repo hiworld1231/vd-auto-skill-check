@@ -119,11 +119,6 @@ class ContinuousAngularPredictor:
         self._slope_mad_deg_s: Optional[float] = None
         self._speed_uncertainty_low: Optional[float] = None
         self._speed_uncertainty_high: Optional[float] = None
-        # Robust trajectory phase, expressed as an unwrapped angle at a nearby
-        # reference timestamp.  Keeping the reference near the sample window
-        # avoids precision loss from a huge monotonic-clock intercept.
-        self._fit_phase_ref_t: Optional[float] = None
-        self._fit_phase_ref_deg: Optional[float] = None
         self._segment_speeds: Deque[float] = collections.deque(maxlen=7)
         self._actuation_speed: Optional[float] = None
         self._actuation_speed_reason = "ROBUST_LONG_FIT"
@@ -166,24 +161,11 @@ class ContinuousAngularPredictor:
         self._speed_uncertainty_low = max(20.0, speed - half_width)
         self._speed_uncertainty_high = min(1500.0, speed + half_width)
 
-        # Estimate phase from the same robust trajectory as speed.  The old
-        # predictor used the robust slope but the last raw needle angle as phase,
-        # so one accepted visual jump could move the deadline by tens of ms even
-        # while the speed fit itself remained correct.
-        phase_ref_t = float(pts[-1][0])
-        phase_estimates = [
-            ang + speed * (phase_ref_t - t)
-            for t, ang in pts
-        ]
-        phase_ref_deg = float(statistics.median(phase_estimates))
-        residuals = [
-            abs(ang - (phase_ref_deg + speed * (t - phase_ref_t)))
-            for t, ang in pts
-        ]
+        intercepts = [ang - speed * t for t, ang in pts]
+        intercept = float(statistics.median(intercepts))
+        residuals = [abs(ang - (intercept + speed * t)) for t, ang in pts]
         residual_mad = float(statistics.median(residuals)) if residuals else 0.0
 
-        self._fit_phase_ref_t = phase_ref_t
-        self._fit_phase_ref_deg = phase_ref_deg
         self._fit_residual_mad_deg = residual_mad
         self._fit_span_s = pts[-1][0] - pts[0][0]
         self._fit_sample_count = len(pts)
@@ -517,30 +499,11 @@ class ContinuousAngularPredictor:
         # "negative" even though it has not been passed.  Pick the first target
         # occurrence at/after this check's first measured phase instead.
         if self._unwrapped:
-            raw_current_u = float(self._unwrapped[-1][1])
+            current_u = float(self._unwrapped[-1][1])
             start_u = float(self._unwrapped[0][1])
         else:
-            raw_current_u = current_angle
+            current_u = current_angle
             start_u = current_angle
-
-        phase_source = "RAW_SAMPLE"
-        current_u = raw_current_u
-        if (
-            self.has_adapted
-            and self._fit_phase_ref_t is not None
-            and self._fit_phase_ref_deg is not None
-            and math.isfinite(float(self._fit_phase_ref_t))
-            and math.isfinite(float(self._fit_phase_ref_deg))
-        ):
-            fitted_current_u = (
-                float(self._fit_phase_ref_deg)
-                + float(self.speed_deg_s)
-                * (current_t - float(self._fit_phase_ref_t))
-            )
-            if math.isfinite(fitted_current_u):
-                current_u = fitted_current_u
-                phase_source = "ROBUST_FIT"
-
         target_u = float(target_angle)
         while target_u + 1e-9 < start_u:
             target_u += 360.0
@@ -747,10 +710,6 @@ class ContinuousAngularPredictor:
             "raw_fit_speed_deg_s": float(self.speed_deg_s),
             "actuation_speed_reason": self._actuation_speed_reason,
             "speed_source": speed_source,
-            "phase_source": phase_source,
-            "phase_angle_deg": current_u % 360.0,
-            "raw_phase_angle_deg": raw_current_u % 360.0,
-            "phase_correction_deg": current_u - raw_current_u,
             "is_chain": bool(self.is_chain),
             "fit_sample_count": int(self._fit_sample_count),
             "generation_prior_speed": self.generation_prior_speed,
