@@ -499,58 +499,6 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertAlmostEqual(nxt["needle_angle"], 320.0)
         self.assertEqual(nxt["white_zone"]["center"], 25.0)
 
-    def test_postfire_fixed_center_scan_finds_next_generation_when_baseline_misses(self):
-        gray, frame = create_synthetic_check_frame(
-            needle_angle_deg=42.0,
-            white_start=200.0,
-            white_width=10.0,
-            black_start=210.0,
-            black_width=40.0,
-        )
-        self.vision.state = STATE_ACTIVE_TRACKING
-        self.vision.locked_white_zone = {
-            "start": 80.0, "end": 90.0, "center": 85.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        self.vision.locked_black_zone = {
-            "start": 90.0, "end": 130.0, "center": 110.0,
-            "width": 40.0, "source": "MEASURED",
-        }
-        self.vision.locked_center = (160.0, 162.5)
-        self.vision.hybrid_detector.set_geometry(160.0, 162.5)
-        self.vision.notify_pressed()
-
-        # Simulate exactly the live failure mode: the SPACE-template BASELINE
-        # path misses, but the ring pixels and the new generation needle are
-        # still visible at the calibrated center.
-        with patch.object(
-            self.vision.baseline_detector, "detect", return_value=None
-        ), patch.object(
-            self.vision.hybrid_detector,
-            "detect",
-            return_value={
-                "ring_present": True,
-                "needle_valid": True,
-                "needle_angle": 312.0,  # previous-generation landing needle
-                "needle_strength": 80.0,
-                "needle_confidence": 80.0,
-            },
-        ):
-            det = self.vision.detect_frame(gray, frame, is_pressed=True)
-
-        self.assertIsNotNone(det)
-        self.assertTrue(det["ring_present"])
-        self.assertFalse(det["baseline_prompt_present"])
-        self.assertEqual(
-            det["generation_detector"],
-            "HYBRID_FIXED_CENTER_GENERATION_SCAN",
-        )
-        self.assertTrue(det["generation_needle_valid"])
-        self.assertAlmostEqual(det["generation_needle_angle"], 42.0, delta=3.0)
-        self.assertAlmostEqual(det["white_zone"]["center"], 205.0, delta=4.0)
-        # Landing observer still gets the previous generation, not the new one.
-        self.assertAlmostEqual(det["needle_angle"], 312.0)
-
     def test_postfire_tracks_needle_when_prompt_presence_is_lost(self):
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         gray = np.zeros((240, 320), dtype=np.uint8)
@@ -584,39 +532,6 @@ class TestBaselineZoneHybridNeedle(unittest.TestCase):
         self.assertTrue(det["needle_valid"])
         self.assertAlmostEqual(det["needle_angle"], 88.4)
         self.assertTrue(mock_hybrid.call_args.kwargs["skip_presence_check"])
-        self.assertTrue(mock_hybrid.call_args.kwargs["strict_continuity"])
-
-    def test_strict_postfire_hybrid_never_global_reacquires_distant_red_peak(self):
-        gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)
-        h = HybridDetector()
-        h.last_angle = 45.0
-        h.last_t = time.monotonic() - 0.016
-
-        det = h.detect(
-            frame_bgr=bgr,
-            frame_gray=gray,
-            expected_angle=45.0,
-            search_window=14.0,
-            dt_frame=0.016,
-            expected_speed=300.0,
-            skip_presence_check=True,
-            strict_continuity=True,
-        )
-
-        self.assertIsNotNone(det)
-        self.assertFalse(det["needle_valid"])
-        self.assertEqual(det["status"], "STRICT_CONTINUITY_LOSS")
-        # A rejected red object at 200° must never become the next reference.
-        self.assertAlmostEqual(h.last_angle, 45.0)
-
-    def test_reseed_postfire_tracking_restores_last_trusted_phase(self):
-        h = self.vision.hybrid_detector
-        h.last_angle = 210.0
-        h.consecutive_losses = 3
-        self.vision.reseed_postfire_tracking(88.5)
-        self.assertAlmostEqual(h.last_angle, 88.5)
-        self.assertEqual(h.consecutive_losses, 0)
-        self.assertIsNotNone(h.last_t)
 
     def test_baseline_expected_angle_rejects_unrelated_red_peak(self):
         gray, bgr = create_synthetic_check_frame(needle_angle_deg=200.0)

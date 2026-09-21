@@ -170,72 +170,6 @@ class HybridDetector(BaseDetector):
         )
         return w_d, b_d, white_mask, black_mask, r66_val
 
-    def scan_generation_candidate(
-        self,
-        frame_bgr: np.ndarray,
-    ) -> Optional[Dict[str, Any]]:
-        """Scan the known ring center for a fresh Frenzy generation.
-
-        This path deliberately does not use the SPACE prompt template and does
-        not mutate continuity tracking state.  Post-fire HYBRID can therefore
-        keep following the previous generation for landing evidence while this
-        independent full-ring scan looks for relocated GREAT/GOOD geometry and
-        the next generation's red needle at the already calibrated center.
-        """
-        if frame_bgr is None:
-            return None
-        frame_flat = frame_bgr.reshape(-1, 3)
-        w_fresh, b_fresh, _wm, _bm, _r66 = self._extract_fresh_zones(frame_flat)
-
-        w_valid = bool(
-            w_fresh is not None
-            and 5.0 <= float(w_fresh.get("width", 0.0)) <= 16.0
-        )
-        b_valid = bool(
-            b_fresh is not None
-            and 18.0 <= float(b_fresh.get("width", 0.0)) <= 65.0
-        )
-        if not (w_valid or b_valid):
-            return None
-
-        if w_valid:
-            w_fresh = dict(w_fresh)
-            w_fresh.setdefault("source", "MEASURED_FIXED_CENTER")
-        else:
-            w_fresh = None
-        if b_valid:
-            b_fresh = dict(b_fresh)
-            b_fresh.setdefault("source", "MEASURED_FIXED_CENTER")
-        else:
-            b_fresh = None
-
-        samples = frame_flat[self.needle_indices_1d].astype(np.float32)
-        redness = np.maximum(
-            0.0,
-            samples[:, :, 2] - np.maximum(samples[:, :, 1], samples[:, :, 0]),
-        )
-        red_prof = np.mean(redness, axis=1)
-        peak_idx = int(np.argmax(red_prof))
-        needle_strength = float(red_prof[peak_idx])
-        needle_angle = float(parabolic_peak(red_prof, peak_idx) % 360.0)
-        needle_valid = needle_strength >= 15.0
-
-        return {
-            "confidence": 1.0,
-            "cx": float(self.cx),
-            "cy": float(self.cy),
-            "center": (float(self.cx), float(self.cy)),
-            "needle_angle": needle_angle,
-            "needle_strength": needle_strength,
-            "needle_confidence": needle_strength,
-            "needle_valid": needle_valid,
-            "white_zone": w_fresh,
-            "black_zone": b_fresh,
-            "ring_present": True,
-            "detector_name": "HYBRID_FIXED_CENTER_GENERATION_SCAN",
-            "status": "OK" if needle_valid else "ZONE_ONLY",
-        }
-
     def detect(
         self,
         frame_bgr: np.ndarray,
@@ -246,7 +180,6 @@ class HybridDetector(BaseDetector):
         expected_speed: float = 278.0,
         locked_zones: Optional[Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]] = None,
         skip_presence_check: bool = False,
-        strict_continuity: bool = False,
     ) -> Optional[Dict[str, Any]]:
         t0 = time.perf_counter()
 
@@ -288,30 +221,9 @@ class HybridDetector(BaseDetector):
 
         # Determine reference angle for prediction
         ref_angle = expected_angle if expected_angle is not None else self.last_angle
-        if (
-            ref_angle is not None
-            and (strict_continuity or self.consecutive_losses < 2)
-            and dt <= (0.060 if strict_continuity else 0.045)
-        ):
-            pred_ang = (
-                ref_angle
-                + (expected_speed * dt if expected_angle is None else 0.0)
-            ) % 360.0
-            if strict_continuity and expected_angle is not None:
-                # The caller supplies the last trusted post-fire phase.  The
-                # real needle can advance or freeze, but a +/-22° generic
-                # window is wide enough to acquire red scene geometry.  Use a
-                # speed-scaled corridor instead; the runtime applies a second
-                # asymmetric continuity check before accepting the sample.
-                win_radius = max(
-                    8.0,
-                    min(48.0, abs(float(expected_speed)) * float(dt) * 2.0 + 4.0),
-                )
-            else:
-                win_radius = max(
-                    22.0,
-                    expected_speed * dt + 18.0 + self.consecutive_losses * 15.0,
-                )
+        if ref_angle is not None and self.consecutive_losses < 2 and dt <= 0.045:
+            pred_ang = (ref_angle + (expected_speed * dt if expected_angle is None else 0.0)) % 360.0
+            win_radius = max(22.0, expected_speed * dt + 18.0 + self.consecutive_losses * 15.0)
             low_a = int(np.floor((pred_ang - win_radius) % 360.0))
             high_a = int(np.ceil((pred_ang + win_radius) % 360.0))
             if low_a <= high_a:
@@ -341,22 +253,11 @@ class HybridDetector(BaseDetector):
                 self.last_t = now
                 self.consecutive_losses = 0
             else:
+                # Local window failed to observe valid needle, trigger full reacquire
                 self.consecutive_losses += 1
-                if strict_continuity:
-                    # Post-fire identity is more important than reacquisition:
-                    # a full 360 scan can jump from the real needle to a static
-                    # red background object and then manufacture a freeze.
-                    status = "STRICT_CONTINUITY_LOSS"
-                    cand_indices = np.array([], dtype=np.int32)
-                else:
-                    # Normal active tracking may still reacquire globally.
-                    status = "REACQUIRE"
-                    self.reacquire_count += 1
-                    cand_indices = None
-
-        if strict_continuity and cand_indices is None:
-            status = "STRICT_CONTINUITY_LOSS"
-            cand_indices = np.array([], dtype=np.int32)
+                status = "REACQUIRE"
+                self.reacquire_count += 1
+                cand_indices = None
 
         if cand_indices is None:
             # Full 360 scan fallback / initial acquire

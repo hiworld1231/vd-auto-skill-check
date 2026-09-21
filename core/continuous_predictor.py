@@ -372,21 +372,8 @@ class ContinuousAngularPredictor:
                 chosen = float(self.generation_prior_speed)
                 reason = "FRENZY_PRIOR_HOLD"
             elif self._segment_speeds:
-                provisional = float(statistics.median(list(self._segment_speeds)[-2:]))
-                # Normal checks can also expose a doubled/skipped-source first
-                # segment.  A single extreme segment must not be allowed to
-                # turn directly into PROVISIONAL_IMMEDIATE_SUCCESS.  Keep the
-                # first-frame session prior armed until a 3-point robust fit
-                # confirms the high speed.  Genuine 700-1100 deg/s checks are
-                # therefore delayed by at most one unique source frame, not
-                # flattened permanently.
-                spike_limit = max(700.0, 2.5 * float(self.session_base_speed))
-                if len(self._segment_speeds) == 1 and provisional > spike_limit:
-                    chosen = float(self.session_base_speed)
-                    reason = "SESSION_PRIOR_SPIKE_GUARD"
-                else:
-                    chosen = provisional
-                    reason = "SEGMENT_PROVISIONAL"
+                chosen = float(statistics.median(list(self._segment_speeds)[-2:]))
+                reason = "SEGMENT_PROVISIONAL"
             else:
                 chosen = float(self.session_base_speed)
                 reason = "SESSION_PRIOR_PREARM"
@@ -576,14 +563,9 @@ class ContinuousAngularPredictor:
             speed_low = float(self._speed_uncertainty_low or speed)
             speed_high = float(self._speed_uncertainty_high or speed)
             speed_source = "MEASURED"
-        elif self._actuation_speed_reason == "SESSION_PRIOR_SPIKE_GUARD":
-            speed_low = max(20.0, speed * 0.88)
-            speed_high = min(1500.0, speed * 1.12)
-            speed_source = "SESSION_PRIOR_GUARD"
         elif self._segment_speeds:
             # One adjacent-frame segment is enough to move a tentative
-            # deadline on normal checks unless the spike guard above has
-            # intentionally held the prior for one more unique frame.
+            # deadline on normal checks, but not in Frenzy.
             speed_low = max(20.0, speed * 0.85)
             speed_high = min(1500.0, speed * 1.15)
             speed_source = "SEGMENT_PROVISIONAL"

@@ -103,155 +103,6 @@ def _presence_absence_update(
     return absent_since, max(0.0, float(now) - float(absent_since))
 
 
-def _generation_motion_update(
-    samples,
-    *,
-    t: float,
-    angle: Optional[float],
-    valid: bool,
-    max_samples: int = 6,
-    min_span_deg: float = 2.0,
-) -> bool:
-    """Track motion of the *next* Frenzy generation independently.
-
-    Post-fire landing continuity follows the previous generation. Frenzy
-    confirmation must also accept motion measured on the freshly relocated
-    generation, otherwise a correctly frozen old needle can suppress the next
-    chain and end as UNCONFIRMED.
-    """
-    if not valid or angle is None:
-        return False
-    samples.append((float(t), float(angle) % 360.0))
-    keep = max(3, int(max_samples))
-    if len(samples) > keep:
-        del samples[:-keep]
-    if len(samples) < 3:
-        return False
-    recent = samples[-3:]
-    ref = recent[0][1]
-    vals = [
-        ref + ((a - ref + 180.0) % 360.0 - 180.0)
-        for _t, a in recent
-    ]
-    return (max(vals) - min(vals)) >= float(min_span_deg)
-
-
-def _frenzy_relocation_evidence(
-    new_white: Optional[Dict[str, Any]],
-    new_black: Optional[Dict[str, Any]],
-    locked_white: Optional[Dict[str, Any]],
-    *,
-    generation_needle_valid: bool,
-    min_move_deg: float = 90.0,
-    max_white_black_gap_deg: float = 10.0,
-) -> Dict[str, Any]:
-    """Return strict geometry evidence for a Frenzy relocation.
-
-    Real recorded Frenzy transitions relocate the GREAT sector by well over
-    100 degrees and keep the white GREAT arc adjacent to the following black
-    GOOD arc. Post-hit visual artifacts often violate one or both properties.
-    """
-    out = {
-        "qualifies": False,
-        "zone_center": None,
-        "relocation_delta_deg": None,
-        "white_black_gap_deg": None,
-    }
-    if (
-        not generation_needle_valid
-        or not _is_measured_zone(new_white)
-        or not _is_measured_zone(new_black)
-        or not isinstance(locked_white, dict)
-    ):
-        return out
-    try:
-        center = float(new_white["center"]) % 360.0
-        old_center = float(locked_white["center"]) % 360.0
-        delta = _circ(center, old_center)
-        gap = (float(new_black["start"]) - float(new_white["end"])) % 360.0
-    except (KeyError, TypeError, ValueError):
-        return out
-    out.update(
-        {
-            "zone_center": center,
-            "relocation_delta_deg": delta,
-            "white_black_gap_deg": gap,
-            "qualifies": bool(
-                delta >= float(min_move_deg)
-                and gap <= float(max_white_black_gap_deg)
-            ),
-        }
-    )
-    return out
-
-
-def _trusted_postfire_landing_sample(det: Optional[Dict[str, Any]]) -> bool:
-    """Only feed landing observer while ring geometry itself is still trusted."""
-    return bool(
-        isinstance(det, dict)
-        and det.get("ring_present")
-        and _valid_needle(det)
-    )
-
-
-def _postfire_continuity_check(
-    previous_angle: Optional[float],
-    previous_t: Optional[float],
-    *,
-    t: float,
-    angle: float,
-    speed_deg_s: float,
-    backward_tolerance_deg: float = 2.5,
-    forward_speed_factor: float = 2.0,
-    forward_slack_deg: float = 4.0,
-    max_gap_s: float = 0.060,
-) -> Dict[str, Any]:
-    """Validate old-generation needle identity after keydown.
-
-    The real needle may keep moving forward or freeze. It must not teleport
-    backwards or jump far ahead to a static red scene element.  The generous
-    2x speed envelope preserves acceleration and source-frame cadence while
-    still rejecting the historical 8° -> 292° red-decoy jump.
-    """
-    out = {
-        "accepted": False,
-        "delta_deg": None,
-        "max_forward_deg": None,
-        "dt_ms": None,
-        "reason": None,
-    }
-    if previous_angle is None or previous_t is None:
-        out.update({"accepted": True, "reason": "NO_ANCHOR"})
-        return out
-    dt = float(t) - float(previous_t)
-    delta = (float(angle) - float(previous_angle) + 180.0) % 360.0 - 180.0
-    max_forward = (
-        max(4.0, abs(float(speed_deg_s)) * max(0.0, dt) * float(forward_speed_factor)
-            + float(forward_slack_deg))
-    )
-    out.update(
-        {
-            "delta_deg": float(delta),
-            "max_forward_deg": float(max_forward),
-            "dt_ms": float(dt) * 1000.0,
-        }
-    )
-    if dt < -0.002:
-        out["reason"] = "PRE_KEYDOWN_FRAME"
-        return out
-    if dt > float(max_gap_s):
-        out["reason"] = "CONTINUITY_GAP"
-        return out
-    if delta < -float(backward_tolerance_deg):
-        out["reason"] = "BACKWARD_JUMP"
-        return out
-    if delta > max_forward:
-        out["reason"] = "FORWARD_JUMP"
-        return out
-    out.update({"accepted": True, "reason": "CONTINUOUS"})
-    return out
-
-
 def _generation_lead(
     chain_count: int,
     *,
@@ -313,15 +164,9 @@ def run_genrush_clean(
     show_hud = bool(config.get("show_hud", False) if show_hud is None else show_hud)
     require_lmb = bool(config.get("require_lmb", True) if require_lmb is None else require_lmb)
     detector_name = str(detector_name or config.get("detector", "hybrid"))
-    seed_lead = float(config.get("genrush_seed_lead_ms", 120.0))
+    seed_lead = float(config.get("genrush_seed_lead_ms", 60.0))
     frenzy_lead = float(config.get("frenzy_lead_ms", 80.0))
     frenzy_lead_uncertainty = float(config.get("frenzy_lead_uncertainty_ms", 0.0))
-    frenzy_relocation_min_deg = float(
-        config.get("frenzy_relocation_min_deg", 90.0)
-    )
-    frenzy_white_black_gap_max_deg = float(
-        config.get("frenzy_white_black_gap_max_deg", 10.0)
-    )
     prefire_ring_end_absence_s = max(
         0.050,
         float(config.get("prefire_ring_end_absence_ms", 100.0)) / 1000.0,
@@ -363,12 +208,7 @@ def run_genrush_clean(
 
     calibration_store = None
     calibration_load = None
-    if not bool(config.get("persist_lead_calibration", False)):
-        tui.log(
-            f"🧭 session-local lead seed={lead.current_lead_ms:.1f}ms "
-            f"(persistent restore disabled)"
-        )
-    if bool(config.get("persist_lead_calibration", False)) and not dry_run:
+    if bool(config.get("persist_lead_calibration", True)) and not dry_run:
         capture_backend = "GSR_VFR" if grabber.use_gsr else "MSS"
         fingerprint = make_calibration_fingerprint(
             fps=fps,
@@ -466,17 +306,13 @@ def run_genrush_clean(
     last_id = None
     last_unique_ts = None
     last_post_angle = None
-    last_post_t = None
-    postfire_continuity_rejections = 0
-    post_generation_samples = []
     pre_fire_absent_since: Optional[float] = None
     last_fire: Optional[FireEvent] = None
 
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
-        nonlocal planned_press, no_fire_reason, last_fire, last_post_angle, last_post_t
-        nonlocal postfire_continuity_rejections
-        nonlocal pre_fire_absent_since, post_generation_samples
+        nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
+        nonlocal pre_fire_absent_since
         advance_fire_epoch()
         scheduler.cancel_pending()
         scheduler.rearm()
@@ -495,9 +331,6 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
-        last_post_t = None
-        postfire_continuity_rejections = 0
-        post_generation_samples.clear()
         pre_fire_absent_since = None
 
     def start_generation(
@@ -511,9 +344,8 @@ def run_genrush_clean(
         bootstrap_t: Optional[float] = None,
     ) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
-        nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle, last_post_t
-        nonlocal postfire_continuity_rejections
-        nonlocal pre_fire_absent_since, post_generation_samples
+        nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
+        nonlocal pre_fire_absent_since
         previous_fire = last_fire
         advance_fire_epoch()
         scheduler.cancel_pending()
@@ -589,9 +421,6 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
-        last_post_t = None
-        postfire_continuity_rejections = 0
-        post_generation_samples.clear()
         pre_fire_absent_since = None
         recorder.start_check(
             now,
@@ -800,7 +629,6 @@ def run_genrush_clean(
             reason=(
                 info.get("no_fire_reason")
                 or info.get("post_fire_reason")
-                or info.get("unconfirmed_reason")
             ),
         )
         in_check = False
@@ -878,39 +706,13 @@ def run_genrush_clean(
                 c["dispatch_lag_observed_ms"] = observed_dispatch_lag_ms
                 c["dispatch_timing"] = dispatch_timing.telemetry()
                 post_fire.begin(physical_press_t)
-                post_generation_samples.clear()
-                postfire_continuity_rejections = 0
-
-                anchor_speed = float(
-                    c.get("speed_at_fire") or predictor.speed_deg_s or base_speed
-                )
-                source_angle = float(
-                    c.get("estimated_angle")
-                    or c.get("target_angle")
-                    or 0.0
-                )
-                source_t = float(c.get("source_frame_t") or physical_press_t)
-                source_to_keydown_s = max(
-                    0.0, min(0.100, physical_press_t - source_t)
-                )
-                last_post_angle = (
-                    source_angle + anchor_speed * source_to_keydown_s
-                ) % 360.0
-                last_post_t = physical_press_t
-                c["postfire_anchor_angle"] = last_post_angle
-                c["postfire_anchor_time"] = last_post_t
-                c["postfire_anchor_source_t"] = source_t
-
                 observer.on_trigger(
                     physical_press_t,
                     float(c.get("target_angle") or 0.0),
-                    anchor_speed,
+                    float(c.get("speed_at_fire") or predictor.speed_deg_s),
                     locked_w,
                     locked_b,
-                    used_latency_ms=float(
-                        c.get("effective_dispatch_lead_ms", check_lead)
-                    ),
-                    chain_count=chain,
+                    used_latency_ms=check_lead,
                 )
                 recorder.on_trigger(
                     physical_press_t,
@@ -1008,8 +810,8 @@ def run_genrush_clean(
                 det = vision.detect_frame(
                     gray,
                     frame,
-                    expected_angle=(last_post_angle if pressed else None),
-                    search_window=(14.0 if pressed else 35.0),
+                    expected_angle=None,
+                    search_window=35.0,
                     dt_frame=max(0.001, dt_frame),
                     expected_speed=predictor.speed_deg_s,
                     locked_zones=(locked_w, locked_b) if locked_w else None,
@@ -1027,105 +829,42 @@ def run_genrush_clean(
 
                 rollback = False
                 zone_move = False
-                # Fixed-center generation scanning now makes ring_present
-                # independent from the SPACE prompt.  Therefore a valid red
-                # peak with ring_present=False is no longer trustworthy landing
-                # evidence; feeding it can create a stable plateau on unrelated
-                # post-hit pixels and manufacture ±100° phase MISSes.
-                continuity_diag = {
-                    "accepted": False,
-                    "reason": "NO_SAMPLE",
-                    "delta_deg": None,
-                    "max_forward_deg": None,
-                    "dt_ms": None,
-                }
-                if _trusted_postfire_landing_sample(det):
+                # Landing motion can remain trackable after the SPACE prompt
+                # disappears.  Do not couple outcome observation to BASELINE's
+                # lifecycle presence bit.
+                if _valid_needle(det):
+                    observer.observe_sample(
+                        frame_ts,
+                        float(det["needle_angle"]),
+                        float(det.get("needle_strength", 30.0)),
+                    )
                     cur = float(det["needle_angle"])
-                    fire_speed = float(
-                        (last_fire.context or {}).get("speed_at_fire")
-                        if last_fire is not None
-                        else predictor.speed_deg_s
+                    rollback = (
+                        last_post_angle is not None
+                        and ((cur - last_post_angle + 180.0) % 360.0 - 180.0) < -25.0
                     )
-                    continuity_diag = _postfire_continuity_check(
-                        last_post_angle,
-                        last_post_t,
-                        t=frame_ts,
-                        angle=cur,
-                        speed_deg_s=fire_speed,
-                    )
-                    if continuity_diag["accepted"]:
-                        observer.observe_sample(
-                            frame_ts,
-                            cur,
-                            float(det.get("needle_strength", 30.0)),
-                        )
-                        rollback = (
-                            last_post_angle is not None
-                            and ((cur - last_post_angle + 180.0) % 360.0 - 180.0) < -25.0
-                        )
-                        last_post_angle = cur
-                        last_post_t = frame_ts
-                    else:
-                        postfire_continuity_rejections += 1
-                        observer.note_continuity_rejection(
-                            t=frame_ts,
-                            angle=cur,
-                            delta_deg=float(
-                                continuity_diag.get("delta_deg") or 0.0
-                            ),
-                            max_forward_deg=float(
-                                continuity_diag.get("max_forward_deg") or 0.0
-                            ),
-                        )
-                        vision.reseed_postfire_tracking(last_post_angle)
+                    last_post_angle = cur
 
-                generation_motion = _generation_motion_update(
-                    post_generation_samples,
-                    t=frame_ts,
-                    angle=(
-                        det.get("generation_needle_angle")
-                        if isinstance(det, dict)
-                        else None
-                    ),
-                    valid=bool(
-                        isinstance(det, dict)
-                        and det.get("generation_needle_valid")
-                    ),
-                )
-
-                relocation = {
-                    "qualifies": False,
-                    "zone_center": None,
-                    "relocation_delta_deg": None,
-                    "white_black_gap_deg": None,
-                }
                 if ring_present:
                     nw, nb = vision.extract_zones(det)
                     nw = _sane_zone(nw, 5.0, 16.0)
                     nb = _sane_zone(nb, 18.0, 65.0)
-                    relocation = _frenzy_relocation_evidence(
-                        nw,
-                        nb,
-                        locked_w,
-                        generation_needle_valid=bool(
-                            isinstance(det, dict)
-                            and det.get("generation_needle_valid")
-                        ),
-                        min_move_deg=frenzy_relocation_min_deg,
-                        max_white_black_gap_deg=frenzy_white_black_gap_max_deg,
+                    zone_move = bool(
+                        nw
+                        and locked_w
+                        and _circ(
+                            float(nw.get("center", 0)), float(locked_w.get("center", 0))
+                        )
+                        > 15.0
                     )
-                    zone_move = bool(relocation["qualifies"])
 
-                old_generation_motion = observer.has_recent_motion()
                 decision = post_fire.update(
                     now,
                     ring_present=ring_present,
                     plateau_found=observer.has_plateau(),
                     zone_moved=zone_move,
-                    zone_center=relocation.get("zone_center"),
-                    reappearance_proof=zone_move,
                     rollback=rollback,
-                    fresh_motion=generation_motion,
+                    fresh_motion=observer.has_recent_motion(),
                 )
 
                 recorder.on_frame(
@@ -1140,34 +879,6 @@ def run_genrush_clean(
                         "post_fire_reason": decision.reason,
                         "post_fire_absence_ms": decision.absence_ms,
                         "post_fire_relocated_streak": decision.relocated_streak,
-                        "old_generation_motion": old_generation_motion,
-                        "next_generation_motion": generation_motion,
-                        "postfire_continuity": dict(continuity_diag),
-                        "postfire_continuity_rejections": int(
-                            postfire_continuity_rejections
-                        ),
-                        "frenzy_relocation_qualified": bool(
-                            relocation.get("qualifies")
-                        ),
-                        "frenzy_relocation_delta_deg": relocation.get(
-                            "relocation_delta_deg"
-                        ),
-                        "frenzy_white_black_gap_deg": relocation.get(
-                            "white_black_gap_deg"
-                        ),
-                        "frenzy_relocation_center": relocation.get(
-                            "zone_center"
-                        ),
-                        "generation_detector": (
-                            det.get("generation_detector")
-                            if isinstance(det, dict)
-                            else None
-                        ),
-                        "baseline_prompt_present": (
-                            det.get("baseline_prompt_present")
-                            if isinstance(det, dict)
-                            else None
-                        ),
                     },
                 )
 
@@ -1327,7 +1038,6 @@ def run_genrush_clean(
                         "chain_at_plan": chain,
                         "target_angle": pred.get("target_angle"),
                         "estimated_angle": angle,
-                        "source_frame_t": float(frame_ts),
                         "speed_at_lock": speed_at_lock,
                         "speed_at_fire": float(pred.get("speed_deg_s") or predictor.speed_deg_s),
                         "raw_fit_speed_at_fire": float(predictor.speed_deg_s),
