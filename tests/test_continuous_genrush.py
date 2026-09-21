@@ -159,6 +159,7 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertGreaterEqual(pred["crossing_uncertainty_ms"], 0.0)
         self.assertGreater(pred["white_window_ms"], 0.0)
         self.assertTrue(pred["great_interval_safe"])
+        self.assertTrue(pred["success_interval_safe"])
         self.assertLess(pred["landing_uncertainty_width_deg"], pred["great_width_deg"])
 
     def test_lead_uncertainty_expands_great_landing_envelope(self):
