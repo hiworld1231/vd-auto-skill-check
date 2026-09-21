@@ -194,6 +194,64 @@ def _trusted_postfire_landing_sample(det: Optional[Dict[str, Any]]) -> bool:
     )
 
 
+def _postfire_continuity_check(
+    previous_angle: Optional[float],
+    previous_t: Optional[float],
+    *,
+    t: float,
+    angle: float,
+    speed_deg_s: float,
+    backward_tolerance_deg: float = 2.5,
+    forward_speed_factor: float = 2.0,
+    forward_slack_deg: float = 4.0,
+    max_gap_s: float = 0.060,
+) -> Dict[str, Any]:
+    """Validate old-generation needle identity after keydown.
+
+    The real needle may keep moving forward or freeze. It must not teleport
+    backwards or jump far ahead to a static red scene element.  The generous
+    2x speed envelope preserves acceleration and source-frame cadence while
+    still rejecting the historical 8° -> 292° red-decoy jump.
+    """
+    out = {
+        "accepted": False,
+        "delta_deg": None,
+        "max_forward_deg": None,
+        "dt_ms": None,
+        "reason": None,
+    }
+    if previous_angle is None or previous_t is None:
+        out.update({"accepted": True, "reason": "NO_ANCHOR"})
+        return out
+    dt = float(t) - float(previous_t)
+    delta = (float(angle) - float(previous_angle) + 180.0) % 360.0 - 180.0
+    max_forward = (
+        max(4.0, abs(float(speed_deg_s)) * max(0.0, dt) * float(forward_speed_factor)
+            + float(forward_slack_deg))
+    )
+    out.update(
+        {
+            "delta_deg": float(delta),
+            "max_forward_deg": float(max_forward),
+            "dt_ms": float(dt) * 1000.0,
+        }
+    )
+    if dt < -0.002:
+        out["reason"] = "PRE_KEYDOWN_FRAME"
+        return out
+    if dt > float(max_gap_s):
+        out["reason"] = "CONTINUITY_GAP"
+        return out
+    if delta < -float(backward_tolerance_deg):
+        out["reason"] = "BACKWARD_JUMP"
+        return out
+    if delta > max_forward:
+        out["reason"] = "FORWARD_JUMP"
+        return out
+    out.update({"accepted": True, "reason": "CONTINUOUS"})
+    return out
+
+
 def _generation_lead(
     chain_count: int,
     *,
@@ -408,13 +466,16 @@ def run_genrush_clean(
     last_id = None
     last_unique_ts = None
     last_post_angle = None
+    last_post_t = None
+    postfire_continuity_rejections = 0
     post_generation_samples = []
     pre_fire_absent_since: Optional[float] = None
     last_fire: Optional[FireEvent] = None
 
     def reset_all() -> None:
         nonlocal in_check, pressed, chain, check_start, locked_w, locked_b, speed_at_lock
-        nonlocal planned_press, no_fire_reason, last_fire, last_post_angle
+        nonlocal planned_press, no_fire_reason, last_fire, last_post_angle, last_post_t
+        nonlocal postfire_continuity_rejections
         nonlocal pre_fire_absent_since, post_generation_samples
         advance_fire_epoch()
         scheduler.cancel_pending()
@@ -434,6 +495,8 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
+        last_post_t = None
+        postfire_continuity_rejections = 0
         post_generation_samples.clear()
         pre_fire_absent_since = None
 
@@ -448,7 +511,8 @@ def run_genrush_clean(
         bootstrap_t: Optional[float] = None,
     ) -> None:
         nonlocal in_check, pressed, chain, check_start, check_lead, locked_w, locked_b
-        nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle
+        nonlocal speed_at_lock, planned_press, no_fire_reason, last_fire, last_post_angle, last_post_t
+        nonlocal postfire_continuity_rejections
         nonlocal pre_fire_absent_since, post_generation_samples
         previous_fire = last_fire
         advance_fire_epoch()
@@ -525,6 +589,8 @@ def run_genrush_clean(
         no_fire_reason = None
         last_fire = None
         last_post_angle = None
+        last_post_t = None
+        postfire_continuity_rejections = 0
         post_generation_samples.clear()
         pre_fire_absent_since = None
         recorder.start_check(
@@ -813,15 +879,38 @@ def run_genrush_clean(
                 c["dispatch_timing"] = dispatch_timing.telemetry()
                 post_fire.begin(physical_press_t)
                 post_generation_samples.clear()
+                postfire_continuity_rejections = 0
+
+                anchor_speed = float(
+                    c.get("speed_at_fire") or predictor.speed_deg_s or base_speed
+                )
+                source_angle = float(
+                    c.get("estimated_angle")
+                    or c.get("target_angle")
+                    or 0.0
+                )
+                source_t = float(c.get("source_frame_t") or physical_press_t)
+                source_to_keydown_s = max(
+                    0.0, min(0.100, physical_press_t - source_t)
+                )
+                last_post_angle = (
+                    source_angle + anchor_speed * source_to_keydown_s
+                ) % 360.0
+                last_post_t = physical_press_t
+                c["postfire_anchor_angle"] = last_post_angle
+                c["postfire_anchor_time"] = last_post_t
+                c["postfire_anchor_source_t"] = source_t
+
                 observer.on_trigger(
                     physical_press_t,
                     float(c.get("target_angle") or 0.0),
-                    float(c.get("speed_at_fire") or predictor.speed_deg_s),
+                    anchor_speed,
                     locked_w,
                     locked_b,
                     used_latency_ms=float(
                         c.get("effective_dispatch_lead_ms", check_lead)
                     ),
+                    chain_count=chain,
                 )
                 recorder.on_trigger(
                     physical_press_t,
@@ -919,8 +1008,8 @@ def run_genrush_clean(
                 det = vision.detect_frame(
                     gray,
                     frame,
-                    expected_angle=None,
-                    search_window=35.0,
+                    expected_angle=(last_post_angle if pressed else None),
+                    search_window=(14.0 if pressed else 35.0),
                     dt_frame=max(0.001, dt_frame),
                     expected_speed=predictor.speed_deg_s,
                     locked_zones=(locked_w, locked_b) if locked_w else None,
@@ -943,18 +1032,52 @@ def run_genrush_clean(
                 # peak with ring_present=False is no longer trustworthy landing
                 # evidence; feeding it can create a stable plateau on unrelated
                 # post-hit pixels and manufacture ±100° phase MISSes.
+                continuity_diag = {
+                    "accepted": False,
+                    "reason": "NO_SAMPLE",
+                    "delta_deg": None,
+                    "max_forward_deg": None,
+                    "dt_ms": None,
+                }
                 if _trusted_postfire_landing_sample(det):
-                    observer.observe_sample(
-                        frame_ts,
-                        float(det["needle_angle"]),
-                        float(det.get("needle_strength", 30.0)),
-                    )
                     cur = float(det["needle_angle"])
-                    rollback = (
-                        last_post_angle is not None
-                        and ((cur - last_post_angle + 180.0) % 360.0 - 180.0) < -25.0
+                    fire_speed = float(
+                        (last_fire.context or {}).get("speed_at_fire")
+                        if last_fire is not None
+                        else predictor.speed_deg_s
                     )
-                    last_post_angle = cur
+                    continuity_diag = _postfire_continuity_check(
+                        last_post_angle,
+                        last_post_t,
+                        t=frame_ts,
+                        angle=cur,
+                        speed_deg_s=fire_speed,
+                    )
+                    if continuity_diag["accepted"]:
+                        observer.observe_sample(
+                            frame_ts,
+                            cur,
+                            float(det.get("needle_strength", 30.0)),
+                        )
+                        rollback = (
+                            last_post_angle is not None
+                            and ((cur - last_post_angle + 180.0) % 360.0 - 180.0) < -25.0
+                        )
+                        last_post_angle = cur
+                        last_post_t = frame_ts
+                    else:
+                        postfire_continuity_rejections += 1
+                        observer.note_continuity_rejection(
+                            t=frame_ts,
+                            angle=cur,
+                            delta_deg=float(
+                                continuity_diag.get("delta_deg") or 0.0
+                            ),
+                            max_forward_deg=float(
+                                continuity_diag.get("max_forward_deg") or 0.0
+                            ),
+                        )
+                        vision.reseed_postfire_tracking(last_post_angle)
 
                 generation_motion = _generation_motion_update(
                     post_generation_samples,
@@ -1019,6 +1142,10 @@ def run_genrush_clean(
                         "post_fire_relocated_streak": decision.relocated_streak,
                         "old_generation_motion": old_generation_motion,
                         "next_generation_motion": generation_motion,
+                        "postfire_continuity": dict(continuity_diag),
+                        "postfire_continuity_rejections": int(
+                            postfire_continuity_rejections
+                        ),
                         "frenzy_relocation_qualified": bool(
                             relocation.get("qualifies")
                         ),
@@ -1200,6 +1327,7 @@ def run_genrush_clean(
                         "chain_at_plan": chain,
                         "target_angle": pred.get("target_angle"),
                         "estimated_angle": angle,
+                        "source_frame_t": float(frame_ts),
                         "speed_at_lock": speed_at_lock,
                         "speed_at_fire": float(pred.get("speed_deg_s") or predictor.speed_deg_s),
                         "raw_fit_speed_at_fire": float(predictor.speed_deg_s),
