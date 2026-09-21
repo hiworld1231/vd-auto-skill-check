@@ -132,8 +132,23 @@ def decide_great_fire(
         )
 
     # Before the deadline, keep a center-targeted best-effort schedule alive.
-    # Later frames continuously replace it with better estimates.
+    # Later frames continuously replace it with better estimates.  Deep Frenzy
+    # is different: at ~1000+ deg/s a wide speed interval can span almost the
+    # whole success sector, so committing that uncertain future deadline is
+    # worse than waiting one more unique frame for the fit to tighten.
     if speed_usable and not bool(pred.get("target_passed", False)) and time_until > 0.0:
+        if is_chain and float(pred.get("speed_deg_s") or 0.0) >= 1000.0:
+            uncertainty_width = pred.get("landing_uncertainty_width_deg")
+            success_width = pred.get("success_width_deg")
+            if (
+                uncertainty_width is not None
+                and success_width is not None
+                and float(success_width) > 0.0
+                and float(uncertainty_width) >= 0.80 * float(success_width)
+            ):
+                return GreatFireDecision(
+                    False, "FRENZY_FUTURE_UNCERTAINTY_TOO_WIDE"
+                )
         return GreatFireDecision(
             True, "GREAT_CENTER_BEST_EFFORT", best_effort=True
         )

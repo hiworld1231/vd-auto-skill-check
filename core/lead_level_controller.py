@@ -31,6 +31,7 @@ class LeadLevelController:
         recent_shift_max_mad_ms: float = 10.0,
         deadband_ms: float = 5.0,
         max_shift_step_ms: float = 6.0,
+        max_training_center_error_ms: float = 60.0,
         uncertainty_floor_ms: float = 2.0,
         uncertainty_default_ms: float = 12.0,
     ):
@@ -45,6 +46,9 @@ class LeadLevelController:
         self.recent_shift_max_mad_ms = float(recent_shift_max_mad_ms)
         self.deadband_ms = float(deadband_ms)
         self.max_shift_step_ms = float(max_shift_step_ms)
+        self.max_training_center_error_ms = max(
+            10.0, float(max_training_center_error_ms)
+        )
         self.uncertainty_floor_ms = max(0.5, float(uncertainty_floor_ms))
         self.uncertainty_default_ms = max(
             self.uncertainty_floor_ms, float(uncertainty_default_ms)
@@ -222,6 +226,11 @@ class LeadLevelController:
             return self._reject("UNSTABLE_SPEED_FIT")
         if abs(float(center_error_ms)) > 130.0:
             return self._reject("PHASE_OUTLIER")
+        if abs(float(center_error_ms)) > self.max_training_center_error_ms:
+            return self._reject(
+                "OFF_CENTER_TRAINING_OUTLIER",
+                center_error_ms=float(center_error_ms),
+            )
         if white_source and not str(white_source).startswith("MEASURED"):
             return self._reject("RECONSTRUCTED_GREAT_GEOMETRY")
         if (

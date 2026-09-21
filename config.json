@@ -18,5 +18,8 @@
   "lead_calibration_max_age_days": 7,
   "frenzy_lead_ms": 80,
   "frenzy_lead_uncertainty_ms": 0,
-  "prefire_ring_end_absence_ms": 100
+  "prefire_ring_end_absence_ms": 100,
+  "frenzy_high_speed_threshold_deg_s": 1000,
+  "frenzy_angular_lead_cap_deg": 60,
+  "frenzy_min_high_speed_lead_ms": 45
 }

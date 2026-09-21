@@ -69,21 +69,30 @@ class TestRobustLeadLevelController(unittest.TestCase):
         self.assertAlmostEqual(r["ideal_lead_ms"], 105.0)
         self.assertAlmostEqual(r["response_disagreement_ms"], 50.0)
 
-    def test_noisy_cold_start_recovers_when_recent_cluster_becomes_coherent(self):
+    def test_noisy_cold_start_rejects_far_sector_hits_then_recovers(self):
         c = LeadLevelController(60)
         samples = [
-            (54.4, 49.8),   # ideal 104.2
-            (60.0, 98.3),   # 158.3
-            (32.3, 72.5),   # 104.8
-            (48.4, 105.1),  # 153.5 -> first four too noisy
-            (46.3, 52.2),   # 98.5
-            (58.4, 43.8),   # 102.2 -> last four coherent enough
+            (54.4, 49.8),   # accepted, ideal 104.2
+            (60.0, 98.3),   # reject: far-off success
+            (32.3, 72.5),   # reject: far-off success
+            (48.4, 105.1),  # reject: far-off success
+            (46.3, 52.2),   # accepted, ideal 98.5
+            (58.4, 43.8),   # accepted, ideal 102.2
+            (60.0, 42.0),   # accepted, ideal 102.0 -> coherent cold cluster
         ]
         results = [self.clean(c, u, e, outcome="GOOD") for u, e in samples]
-        self.assertFalse(results[3].get("updated", False))
+        self.assertEqual(
+            results[1]["reject_reason"], "OFF_CENTER_TRAINING_OUTLIER"
+        )
+        self.assertEqual(
+            results[2]["reject_reason"], "OFF_CENTER_TRAINING_OUTLIER"
+        )
+        self.assertEqual(
+            results[3]["reject_reason"], "OFF_CENTER_TRAINING_OUTLIER"
+        )
         self.assertTrue(c.initialized)
         self.assertEqual(results[-1]["update_reason"], "COLD_ROBUST_MEDIAN")
-        self.assertAlmostEqual(c.current_lead_ms, 103.5, delta=0.3)
+        self.assertAlmostEqual(c.current_lead_ms, 102.1, delta=0.3)
 
     def test_positive_level_shift_is_symmetric_and_bounded(self):
         c = LeadLevelController(60)
@@ -189,6 +198,34 @@ class TestRobustLeadLevelController(unittest.TestCase):
         )
         self.assertTrue(r["accepted"])
         self.assertAlmostEqual(r["ideal_lead_ms"], 173.2, delta=0.01)
+
+    def test_far_off_good_cannot_pull_persistent_lead_upward(self):
+        c = LeadLevelController(109.4)
+        c.initialized = True
+        r = self.clean(
+            c,
+            62.6,
+            103.0,
+            mode="IMMEDIATE",
+            outcome="GOOD",
+        )
+        self.assertFalse(r["accepted"])
+        self.assertEqual(
+            r["reject_reason"], "OFF_CENTER_TRAINING_OUTLIER"
+        )
+        self.assertAlmostEqual(c.current_lead_ms, 109.4)
+
+    def test_moderate_center_error_still_trains(self):
+        c = LeadLevelController(109.4)
+        r = self.clean(
+            c,
+            97.9,
+            30.0,
+            mode="IMMEDIATE",
+            outcome="GOOD",
+        )
+        self.assertTrue(r["accepted"])
+        self.assertAlmostEqual(r["ideal_lead_ms"], 127.9)
 
     def test_unstable_fit_cannot_train(self):
         c = LeadLevelController(60)
