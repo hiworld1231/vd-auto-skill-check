@@ -657,6 +657,7 @@ class ContinuousAngularPredictor:
         white_window_ms = None
         great_interval_safe = False
         great_interval_intersects = False
+        success_interval_safe = False
         landing_low_u = expected_landing_u
         landing_high_u = expected_landing_u
         great_start_u = None
@@ -703,6 +704,17 @@ class ContinuousAngularPredictor:
                 and landing_low_u <= great_end_u
             )
 
+            # GREAT is the preferred target, but Frenzy best-effort scheduling
+            # must at least keep the entire delivery envelope inside the full
+            # success sector.  A center point inside GOOD is not enough when
+            # speed uncertainty can move one edge outside the sector.
+            if success_start_u is not None and success_end_u is not None:
+                success_margin = 1.0
+                success_interval_safe = (
+                    landing_low_u >= success_start_u + success_margin
+                    and landing_high_u <= success_end_u - success_margin
+                )
+
         return {
             "target": target,
             "target_angle": target_angle,
@@ -728,6 +740,7 @@ class ContinuousAngularPredictor:
             "landing_uncertainty_width_deg": max(0.0, landing_high_u - landing_low_u),
             "great_interval_safe": bool(great_interval_safe),
             "great_interval_intersects": bool(great_interval_intersects),
+            "success_interval_safe": bool(success_interval_safe),
             "speed_uncertainty_reliable": self._fit_sample_count >= 5,
             "lead_uncertainty_ms": self.lead_uncertainty_s * 1000.0,
             "dispatch_uncertainty_ms": self.dispatch_uncertainty_s * 1000.0,
