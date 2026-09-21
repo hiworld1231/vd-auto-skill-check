@@ -562,5 +562,49 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertNotAlmostEqual(p.speed_deg_s, 278.0, delta=30.0)
 
 
+    def test_robust_phase_ignores_single_forward_angle_jump(self):
+        p = ContinuousAngularPredictor(80.0, session_base_speed=278.0)
+        w = {
+            "start": 95.0,
+            "end": 105.0,
+            "center": 100.0,
+            "width": 10.0,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 105.0,
+            "end": 145.0,
+            "center": 125.0,
+            "width": 40.0,
+            "source": "MEASURED",
+        }
+
+        # Clean motion is 500 deg/s and should be at 60 deg on the final frame.
+        # The detector instead reports one accepted +10 deg forward jump.  The
+        # robust slope is still exactly 500 deg/s; prediction phase must come
+        # from that same fitted trajectory, not from the raw 70 deg sample.
+        for t, a in [
+            (0.000, 20.0),
+            (0.016, 28.0),
+            (0.032, 36.0),
+            (0.048, 44.0),
+            (0.064, 52.0),
+            (0.080, 70.0),
+        ]:
+            p.update(t, a, 80.0, w, b)
+
+        self.assertTrue(p.has_usable_speed())
+        self.assertAlmostEqual(p.speed_deg_s, 500.0, delta=1.0)
+
+        pred = p.predict(0.080, 70.0, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertEqual(pred["phase_source"], "ROBUST_FIT")
+        self.assertAlmostEqual(pred["raw_phase_angle_deg"], 70.0, delta=0.1)
+        self.assertAlmostEqual(pred["phase_angle_deg"], 60.0, delta=0.5)
+        self.assertAlmostEqual(pred["phase_correction_deg"], -10.0, delta=0.5)
+        self.assertAlmostEqual(pred["time_to_hit_ms"], 80.0, delta=2.0)
+
+
+
 if __name__ == "__main__":
     unittest.main()
