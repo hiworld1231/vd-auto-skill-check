@@ -135,6 +135,22 @@ class VisionEngine:
         """Signals that the current skill check has been fired."""
         self.is_pressed = True
 
+    def reseed_postfire_tracking(self, angle: Optional[float]) -> None:
+        """Restore HYBRID to the last trusted old-generation phase.
+
+        A rejected post-fire red candidate must not become the detector's new
+        reference on the next frame.
+        """
+        if (
+            angle is None
+            or not self.is_orchestrated
+            or self.hybrid_detector is None
+        ):
+            return
+        self.hybrid_detector.last_angle = float(angle) % 360.0
+        self.hybrid_detector.last_t = time.monotonic()
+        self.hybrid_detector.consecutive_losses = 0
+
     def bootstrap_generation(
         self,
         det: Dict[str, Any],
@@ -283,6 +299,7 @@ class VisionEngine:
                 expected_speed=expected_speed,
                 locked_zones=(self.locked_white_zone, self.locked_black_zone),
                 skip_presence_check=True,
+                strict_continuity=True,
             )
 
             # Lifecycle/new-generation evidence must not depend only on
