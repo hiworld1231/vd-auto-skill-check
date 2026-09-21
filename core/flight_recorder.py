@@ -61,21 +61,6 @@ class FlightRecorder:
             "t": float(now),
             "needle_angle": det.get("needle_angle") if isinstance(det, dict) else None,
             "needle_strength": det.get("needle_strength") if isinstance(det, dict) else None,
-            "generation_needle_angle": (
-                det.get("generation_needle_angle") if isinstance(det, dict) else None
-            ),
-            "generation_needle_strength": (
-                det.get("generation_needle_strength") if isinstance(det, dict) else None
-            ),
-            "generation_needle_valid": (
-                det.get("generation_needle_valid") if isinstance(det, dict) else None
-            ),
-            "generation_detector": (
-                det.get("generation_detector") if isinstance(det, dict) else None
-            ),
-            "baseline_prompt_present": (
-                det.get("baseline_prompt_present") if isinstance(det, dict) else None
-            ),
             "detector": det.get("detector_name") if isinstance(det, dict) else None,
             "ring_present": det.get("ring_present") if isinstance(det, dict) else None,
             "white_zone": dict(det.get("white_zone")) if isinstance(det, dict) and isinstance(det.get("white_zone"), dict) else None,
