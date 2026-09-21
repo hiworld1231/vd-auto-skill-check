@@ -1,6 +1,6 @@
 {
   "fps": 120,
-  "genrush_seed_lead_ms": 80,
+  "genrush_seed_lead_ms": 120,
   "session_base_speed": 278,
   "space_hold_ms": 35,
   "detector": "hybrid",
