@@ -1,3 +1,4 @@
+import json
 import tempfile
 import time
 import unittest
@@ -22,6 +23,13 @@ from core.detectors.hybrid import HybridDetector
 
 
 class CleanV5Tests(unittest.TestCase):
+    def test_default_normal_cold_seed_matches_live_session_level(self):
+        config_path = Path(__file__).resolve().parents[1] / "config.json"
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        self.assertEqual(float(cfg["genrush_seed_lead_ms"]), 120.0)
+        # Frenzy keeps its independently validated 80ms seed.
+        self.assertEqual(float(cfg["frenzy_lead_ms"]), 80.0)
+
     def test_predictor_450(self):
         p = ContinuousAngularPredictor(60.0, fit_window=10)
         w = {"start": 300.0, "end": 310.0, "center": 305.0, "width": 10.0, "source": "MEASURED"}
