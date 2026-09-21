@@ -313,7 +313,7 @@ def run_genrush_clean(
     show_hud = bool(config.get("show_hud", False) if show_hud is None else show_hud)
     require_lmb = bool(config.get("require_lmb", True) if require_lmb is None else require_lmb)
     detector_name = str(detector_name or config.get("detector", "hybrid"))
-    seed_lead = float(config.get("genrush_seed_lead_ms", 60.0))
+    seed_lead = float(config.get("genrush_seed_lead_ms", 120.0))
     frenzy_lead = float(config.get("frenzy_lead_ms", 80.0))
     frenzy_lead_uncertainty = float(config.get("frenzy_lead_uncertainty_ms", 0.0))
     frenzy_relocation_min_deg = float(
