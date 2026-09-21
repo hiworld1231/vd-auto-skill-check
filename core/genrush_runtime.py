@@ -819,7 +819,9 @@ def run_genrush_clean(
                     float(c.get("speed_at_fire") or predictor.speed_deg_s),
                     locked_w,
                     locked_b,
-                    used_latency_ms=check_lead,
+                    used_latency_ms=float(
+                        c.get("effective_dispatch_lead_ms", check_lead)
+                    ),
                 )
                 recorder.on_trigger(
                     physical_press_t,
