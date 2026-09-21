@@ -246,6 +246,7 @@ class HybridDetector(BaseDetector):
         expected_speed: float = 278.0,
         locked_zones: Optional[Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]] = None,
         skip_presence_check: bool = False,
+        strict_continuity: bool = False,
     ) -> Optional[Dict[str, Any]]:
         t0 = time.perf_counter()
 
@@ -287,9 +288,30 @@ class HybridDetector(BaseDetector):
 
         # Determine reference angle for prediction
         ref_angle = expected_angle if expected_angle is not None else self.last_angle
-        if ref_angle is not None and self.consecutive_losses < 2 and dt <= 0.045:
-            pred_ang = (ref_angle + (expected_speed * dt if expected_angle is None else 0.0)) % 360.0
-            win_radius = max(22.0, expected_speed * dt + 18.0 + self.consecutive_losses * 15.0)
+        if (
+            ref_angle is not None
+            and (strict_continuity or self.consecutive_losses < 2)
+            and dt <= (0.060 if strict_continuity else 0.045)
+        ):
+            pred_ang = (
+                ref_angle
+                + (expected_speed * dt if expected_angle is None else 0.0)
+            ) % 360.0
+            if strict_continuity and expected_angle is not None:
+                # The caller supplies the last trusted post-fire phase.  The
+                # real needle can advance or freeze, but a +/-22° generic
+                # window is wide enough to acquire red scene geometry.  Use a
+                # speed-scaled corridor instead; the runtime applies a second
+                # asymmetric continuity check before accepting the sample.
+                win_radius = max(
+                    8.0,
+                    min(48.0, abs(float(expected_speed)) * float(dt) * 2.0 + 4.0),
+                )
+            else:
+                win_radius = max(
+                    22.0,
+                    expected_speed * dt + 18.0 + self.consecutive_losses * 15.0,
+                )
             low_a = int(np.floor((pred_ang - win_radius) % 360.0))
             high_a = int(np.ceil((pred_ang + win_radius) % 360.0))
             if low_a <= high_a:
@@ -319,11 +341,22 @@ class HybridDetector(BaseDetector):
                 self.last_t = now
                 self.consecutive_losses = 0
             else:
-                # Local window failed to observe valid needle, trigger full reacquire
                 self.consecutive_losses += 1
-                status = "REACQUIRE"
-                self.reacquire_count += 1
-                cand_indices = None
+                if strict_continuity:
+                    # Post-fire identity is more important than reacquisition:
+                    # a full 360 scan can jump from the real needle to a static
+                    # red background object and then manufacture a freeze.
+                    status = "STRICT_CONTINUITY_LOSS"
+                    cand_indices = np.array([], dtype=np.int32)
+                else:
+                    # Normal active tracking may still reacquire globally.
+                    status = "REACQUIRE"
+                    self.reacquire_count += 1
+                    cand_indices = None
+
+        if strict_continuity and cand_indices is None:
+            status = "STRICT_CONTINUITY_LOSS"
+            cand_indices = np.array([], dtype=np.int32)
 
         if cand_indices is None:
             # Full 360 scan fallback / initial acquire

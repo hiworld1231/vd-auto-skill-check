@@ -11,6 +11,7 @@ from core.genrush_runtime import (
     _frenzy_relocation_evidence,
     _generation_lead,
     _generation_motion_update,
+    _postfire_continuity_check,
     _presence_absence_update,
     _trusted_postfire_landing_sample,
 )
@@ -319,27 +320,34 @@ class CleanV5Tests(unittest.TestCase):
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         b = {"start": 105.0, "end": 145.0, "center": 125.0, "width": 40.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=60)
-        for t, a in [(1.05, 101.0), (1.07, 101.2), (1.09, 100.9), (1.11, 101.1)]:
+        for t, a in [
+            (1.050, 101.0),
+            (1.062, 101.2),
+            (1.074, 100.9),
+            (1.086, 101.1),
+            (1.098, 101.0),
+        ]:
             o.observe_sample(t, a, 30)
         result = o.conclude_check()
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GREAT")
         self.assertAlmostEqual(result["observed_response_ms"], 50.0, delta=0.01)
+        self.assertGreaterEqual(result["plateau_span_ms"], 45.0)
+        self.assertGreaterEqual(result["plateau_sample_count"], 5)
 
     def test_decoded_duplicates_do_not_fake_a_landing_plateau(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60)
-        # Four 120-FPS decoded samples span only ~25 ms and can represent just
-        # two unique 60-Hz render frames.
-        for t in (1.050, 1.0583, 1.0666, 1.0749):
+        # A short duplicated render stall is not enough for normal chain1.
+        for t in (1.050, 1.0583, 1.0666, 1.0749, 1.0832):
             o.observe_sample(t, 100.0, 30)
         self.assertFalse(o.has_plateau())
 
-    def test_time_supported_freeze_confirms_landing(self):
+    def test_normal_chain_requires_45ms_freeze_proof(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
-        o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60)
+        o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60, chain_count=1)
         for t, a in [
             (1.050, 100.2),
             (1.058, 100.0),
@@ -349,16 +357,21 @@ class CleanV5Tests(unittest.TestCase):
             (1.092, 100.0),
         ]:
             o.observe_sample(t, a, 30)
+        self.assertFalse(o.has_plateau())
+        o.observe_sample(1.100, 100.1, 30)
         self.assertTrue(o.has_plateau())
         result = o.conclude_check()
         self.assertEqual(result["outcome"], "GREAT")
-        self.assertGreaterEqual(result["plateau_span_ms"], 28.0)
-        self.assertGreaterEqual(result["plateau_sample_count"], 3)
+        self.assertGreaterEqual(result["plateau_span_ms"], 45.0)
+        self.assertGreaterEqual(result["plateau_sample_count"], 5)
 
-    def test_three_samples_over_render_time_confirm_landing(self):
+    def test_frenzy_chain_keeps_fast_28ms_freeze_rule(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
-        o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
+        o.on_trigger(
+            1.0, 100.0, 700.0, w, None,
+            used_latency_ms=60, chain_count=2,
+        )
         for t, a in [(1.050, 100.2), (1.066, 100.0), (1.082, 100.1)]:
             o.observe_sample(t, a, 30)
         self.assertTrue(o.has_plateau())
@@ -368,103 +381,123 @@ class CleanV5Tests(unittest.TestCase):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
-        for t in (1.050, 1.058, 1.066, 1.120, 1.128, 1.136):
+        for t in (1.050, 1.058, 1.066, 1.120, 1.128, 1.136, 1.144, 1.152):
             o.observe_sample(t, 100.0, 30)
         self.assertFalse(o.has_plateau())
 
     def test_mask_gap_after_great_is_good_not_miss(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
-        # Deliberate 2 degree CV segmentation gap.
         b = {"start": 107.0, "end": 149.0, "center": 128.0, "width": 42.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=60)
-        for t, a in [(1.05, 106.0), (1.07, 106.1), (1.09, 105.9), (1.11, 106.0)]:
+        for t, a in [
+            (1.050, 106.0),
+            (1.062, 106.1),
+            (1.074, 105.9),
+            (1.086, 106.0),
+            (1.098, 106.0),
+        ]:
             o.observe_sample(t, a, 30)
         result = o.conclude_check()
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GOOD")
 
-    def test_extreme_phase_plateau_is_rejected_before_lifecycle_completion(self):
-        o = OutcomeObserver(120)
-        w = {
-            "start": 95.0, "end": 105.0, "center": 100.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        b = {
-            "start": 105.0, "end": 145.0, "center": 125.0,
-            "width": 40.0, "source": "MEASURED",
-        }
-        o.on_trigger(1.0, 100.0, 280.0, w, b, used_latency_ms=120.0)
-        for t, a in [
-            (1.060, 220.0),
-            (1.076, 220.2),
-            (1.092, 219.9),
-        ]:
-            o.observe_sample(t, a, 40.0)
-        self.assertFalse(o.has_plateau())
-        result = o.conclude_check()
-        self.assertEqual(result["outcome"], "UNCONFIRMED")
-        self.assertEqual(result["unconfirmed_reason"], "PHASE_OUTLIER")
-        self.assertFalse(result["plateau_found"])
-        self.assertFalse(result["plateau_trusted"])
-        self.assertGreater(result["implied_delivery_ms"], 180.0)
-
-    def test_impossible_early_plateau_is_skipped_for_later_valid_freeze(self):
+    def test_implied_delivery_above_180ms_is_telemetry_not_truth_gate(self):
         o = OutcomeObserver(80)
         w = {
-            "start": 95.0, "end": 105.0, "center": 100.0,
+            "start": 139.0, "end": 149.0, "center": 144.0,
             "width": 10.0, "source": "MEASURED",
         }
         b = {
-            "start": 105.0, "end": 145.0, "center": 125.0,
-            "width": 40.0, "source": "MEASURED",
+            "start": 149.0, "end": 205.0, "center": 177.0,
+            "width": 56.0, "source": "MEASURED",
         }
-        o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=65.0)
-
-        # First stable red object implies 265ms keydown->landing and must not
-        # stop lifecycle. A later freeze at 102° implies ~72ms and is valid.
+        o.on_trigger(
+            1.0,
+            143.9,
+            314.9,
+            w,
+            b,
+            used_latency_ms=74.3,
+            chain_count=1,
+        )
         for t, a in [
-            (1.030, 160.0),
-            (1.046, 160.2),
-            (1.062, 159.9),
-            (1.082, 102.0),
-            (1.098, 102.1),
-            (1.114, 101.9),
+            (1.100, 187.8),
+            (1.112, 187.9),
+            (1.124, 187.7),
+            (1.136, 187.8),
+            (1.148, 187.8),
         ]:
             o.observe_sample(t, a, 40.0)
-
         self.assertTrue(o.has_plateau())
         result = o.conclude_check()
-        self.assertEqual(result["outcome"], "GREAT")
-        self.assertAlmostEqual(result["hit_angle"], 102.0, delta=0.2)
-        self.assertGreaterEqual(result["implied_delivery_ms"], 35.0)
-        self.assertLessEqual(result["implied_delivery_ms"], 180.0)
+        self.assertEqual(result["outcome"], "GOOD")
+        self.assertGreater(result["implied_delivery_ms"], 180.0)
 
-    def test_live_bad_sample_245ms_is_not_a_plateau(self):
+    def test_postfire_continuity_accepts_forward_motion_freeze_and_wrap(self):
+        a = _postfire_continuity_check(
+            350.0, 1.000,
+            t=1.016, angle=355.0, speed_deg_s=300.0,
+        )
+        self.assertTrue(a["accepted"])
+
+        b = _postfire_continuity_check(
+            355.0, 1.016,
+            t=1.032, angle=0.5, speed_deg_s=300.0,
+        )
+        self.assertTrue(b["accepted"])
+
+        freeze = _postfire_continuity_check(
+            0.5, 1.032,
+            t=1.048, angle=0.6, speed_deg_s=300.0,
+        )
+        self.assertTrue(freeze["accepted"])
+
+    def test_archived_8deg_to_292deg_red_decoy_is_rejected(self):
+        d = _postfire_continuity_check(
+            8.130792,
+            1.000000,
+            t=1.008780,
+            angle=291.913636,
+            speed_deg_s=307.664,
+        )
+        self.assertFalse(d["accepted"])
+        self.assertEqual(d["reason"], "BACKWARD_JUMP")
+        self.assertLess(d["delta_deg"], -70.0)
+
+    def test_large_forward_red_decoy_is_rejected(self):
+        d = _postfire_continuity_check(
+            100.0,
+            1.000,
+            t=1.008,
+            angle=122.0,
+            speed_deg_s=300.0,
+        )
+        self.assertFalse(d["accepted"])
+        self.assertEqual(d["reason"], "FORWARD_JUMP")
+        self.assertGreater(d["delta_deg"], d["max_forward_deg"])
+
+    def test_continuity_loss_is_reported_without_fake_phase_miss(self):
         o = OutcomeObserver(80)
         w = {
             "start": 46.0, "end": 56.0, "center": 51.0,
             "width": 10.0, "source": "MEASURED",
         }
         o.on_trigger(
-            1.0,
-            51.1,
-            306.1,
-            w,
-            None,
-            used_latency_ms=65.6,
+            1.0, 51.1, 306.1, w, None,
+            used_latency_ms=65.6, chain_count=1,
         )
-        for t, a in [
-            (1.060, 106.0),
-            (1.076, 106.1),
-            (1.092, 105.9),
-        ]:
-            o.observe_sample(t, a, 40.0)
-
-        self.assertFalse(o.has_plateau())
+        o.note_continuity_rejection(
+            t=1.060,
+            angle=106.0,
+            delta_deg=54.9,
+            max_forward_deg=12.0,
+        )
         result = o.conclude_check()
-        self.assertEqual(result["unconfirmed_reason"], "PHASE_OUTLIER")
-        self.assertAlmostEqual(result["implied_delivery_ms"], 245.0, delta=1.5)
+        self.assertEqual(result["outcome"], "UNCONFIRMED")
+        self.assertEqual(result["unconfirmed_reason"], "POSTFIRE_CONTINUITY_LOST")
+        self.assertFalse(result["plateau_found"])
+        self.assertEqual(result["continuity_rejections"], 1)
 
     def test_plausible_near_sector_miss_remains_miss(self):
         o = OutcomeObserver(120)
@@ -479,8 +512,10 @@ class CleanV5Tests(unittest.TestCase):
         o.on_trigger(1.0, 100.0, 280.0, w, b, used_latency_ms=120.0)
         for t, a in [
             (1.060, 82.0),
-            (1.076, 82.2),
-            (1.092, 81.9),
+            (1.072, 82.2),
+            (1.084, 81.9),
+            (1.096, 82.1),
+            (1.108, 82.0),
         ]:
             o.observe_sample(t, a, 40.0)
         result = o.conclude_check()
@@ -558,8 +593,15 @@ class CleanV5Tests(unittest.TestCase):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
-        for t, a in [(1.05, 101.0), (1.07, 101.1), (1.09, 100.9), (1.11, 101.0)]:
+        for t, a in [
+            (1.050, 101.0),
+            (1.062, 101.1),
+            (1.074, 100.9),
+            (1.086, 101.0),
+            (1.098, 101.0),
+        ]:
             o.observe_sample(t, a, 30)
+        self.assertTrue(o.has_plateau())
         self.assertTrue(o.has_plateau())
         self.assertEqual(o.conclude_check()["outcome"], "GREAT")
 

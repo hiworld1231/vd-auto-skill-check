@@ -17,15 +17,9 @@ class OutcomeObserver:
         self,
         initial_latency_ms: float,
         session_base_speed: float = 278.0,
-        min_delivery_ms: float = 35.0,
-        max_delivery_ms: float = 180.0,
     ):
         self.initial_latency_ms = float(initial_latency_ms)
         self.session_base_speed = float(session_base_speed)
-        self.min_delivery_ms = max(0.0, float(min_delivery_ms))
-        self.max_delivery_ms = max(
-            self.min_delivery_ms + 1.0, float(max_delivery_ms)
-        )
         self.reset()
 
     def reset(self) -> None:
@@ -36,7 +30,11 @@ class OutcomeObserver:
         self.black_zone: Optional[Dict[str, Any]] = None
         self.used_latency_ms: Optional[float] = None
         self.samples: List[Tuple[float, float, float]] = []
-        self.last_rejected_plateau: Optional[Dict[str, float]] = None
+        self.chain_count: int = 1
+        self.min_plateau_samples: int = 5
+        self.min_plateau_span_s: float = 0.045
+        self.continuity_rejections: int = 0
+        self.last_continuity_rejection: Optional[Dict[str, float]] = None
 
     def on_trigger(
         self,
@@ -46,6 +44,7 @@ class OutcomeObserver:
         white_zone: Optional[Dict[str, Any]],
         black_zone: Optional[Dict[str, Any]],
         used_latency_ms: Optional[float] = None,
+        chain_count: int = 1,
         **_: Any,
     ) -> None:
         self.trigger_t = float(press_time)
@@ -56,8 +55,21 @@ class OutcomeObserver:
         self.used_latency_ms = (
             float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
         )
+        self.chain_count = max(1, int(chain_count))
+        # Normal checks need a longer freeze proof because 120-FPS capture can
+        # duplicate a ~60-Hz rendered needle long enough to fake a 28-36ms
+        # plateau. Archived recent normal GREAT/GOOD checks all retain at least
+        # 45ms / 5 trusted samples, while Frenzy end-of-chain checks can be much
+        # shorter and keep the old 28ms / 3-sample rule.
+        if self.chain_count == 1:
+            self.min_plateau_samples = 5
+            self.min_plateau_span_s = 0.045
+        else:
+            self.min_plateau_samples = 3
+            self.min_plateau_span_s = 0.028
         self.samples.clear()
-        self.last_rejected_plateau = None
+        self.continuity_rejections = 0
+        self.last_continuity_rejection = None
 
     def observe_sample(self, t: float, angle: float, strength: float = 30.0) -> None:
         if self.trigger_t is None or t < self.trigger_t - 0.005 or strength < 10.0:
@@ -77,17 +89,21 @@ class OutcomeObserver:
         center_error_ms = _signed_delta(hit_angle, self.target_angle) / speed * 1000.0
         return float(self.used_latency_ms) + center_error_ms
 
-    def _trusted_plateau(self, hit_angle: float) -> bool:
-        implied = self._implied_delivery_ms(hit_angle)
-        if implied is None:
-            return True
-        if self.min_delivery_ms <= implied <= self.max_delivery_ms:
-            return True
-        self.last_rejected_plateau = {
-            "hit_angle": float(hit_angle) % 360.0,
-            "implied_delivery_ms": float(implied),
+    def note_continuity_rejection(
+        self,
+        *,
+        t: float,
+        angle: float,
+        delta_deg: float,
+        max_forward_deg: float,
+    ) -> None:
+        self.continuity_rejections += 1
+        self.last_continuity_rejection = {
+            "t": float(t),
+            "angle": float(angle) % 360.0,
+            "delta_deg": float(delta_deg),
+            "max_forward_deg": float(max_forward_deg),
         }
-        return False
 
     def _find_plateau(self) -> Optional[Tuple[float, float, float, int]]:
         """Return earliest time-supported stable freeze.
@@ -103,8 +119,8 @@ class OutcomeObserver:
         # insufficient, but allow confirmation from three stable samples over
         # at least 28 ms. This is still faster than the old 35 ms gate, while
         # four 120-FPS duplicates spanning only ~25 ms cannot fake a landing.
-        min_samples = 3
-        min_span_s = 0.028
+        min_samples = int(self.min_plateau_samples)
+        min_span_s = float(self.min_plateau_span_s)
         max_adjacent_gap_s = 0.040
         max_spread_deg = 1.6
 
@@ -128,11 +144,6 @@ class OutcomeObserver:
                 count = j - i + 1
                 if count >= min_samples and span_s >= min_span_s:
                     hit = float(statistics.median(vals) % 360.0)
-                    if not self._trusted_plateau(hit):
-                        # Do not let the first stable red artifact terminate
-                        # the check. Keep scanning for a later plateau whose
-                        # implied keydown->landing delay is physically valid.
-                        continue
                     response_ms = max(
                         0.0, (self.samples[i][0] - self.trigger_t) * 1000.0
                     )
@@ -181,23 +192,22 @@ class OutcomeObserver:
 
         plateau = self._find_plateau()
         if plateau is None:
-            rejected = self.last_rejected_plateau
+            rejected = self.last_continuity_rejection
             return {
                 "outcome": "UNCONFIRMED",
                 "unconfirmed_reason": (
-                    "PHASE_OUTLIER" if rejected is not None else "NO_TRUSTED_PLATEAU"
+                    "POSTFIRE_CONTINUITY_LOST"
+                    if self.continuity_rejections > 0
+                    else "NO_TRUSTED_PLATEAU"
                 ),
                 "plateau_found": False,
                 "plateau_trusted": False,
                 "hit_angle": (
-                    rejected.get("hit_angle") if rejected is not None else None
+                    rejected.get("angle") if rejected is not None else None
                 ),
                 "target_angle": self.target_angle,
-                "implied_delivery_ms": (
-                    rejected.get("implied_delivery_ms")
-                    if rejected is not None
-                    else None
-                ),
+                "continuity_rejections": int(self.continuity_rejections),
+                "last_continuity_rejection": rejected,
                 "observed_response_ms": None,
             }
 
@@ -244,6 +254,7 @@ class OutcomeObserver:
             "center_error_ms": err_ms,
             "observed_response_ms": observed_response_ms,
             "implied_delivery_ms": self._implied_delivery_ms(hit),
+            "continuity_rejections": int(self.continuity_rejections),
             "plateau_span_ms": plateau_span_ms,
             "plateau_sample_count": plateau_sample_count,
             "white_source": white.get("source") if white else None,
