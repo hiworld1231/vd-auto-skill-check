@@ -7,7 +7,11 @@ from pathlib import Path
 from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
-from core.genrush_runtime import _generation_lead, _presence_absence_update
+from core.genrush_runtime import (
+    _frenzy_speed_capped_lead,
+    _generation_lead,
+    _presence_absence_update,
+)
 from core.outcome_observer import OutcomeObserver
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.detectors.base import extract_zones_from_masks
