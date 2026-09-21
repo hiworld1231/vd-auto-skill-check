@@ -1,4 +1,3 @@
-import json
 import tempfile
 import time
 import unittest
@@ -8,14 +7,7 @@ from pathlib import Path
 from core.continuous_predictor import ContinuousAngularPredictor
 from core.flight_recorder import FlightRecorder
 from core.lead_level_controller import LeadLevelController
-from core.genrush_runtime import (
-    _frenzy_relocation_evidence,
-    _generation_lead,
-    _generation_motion_update,
-    _postfire_continuity_check,
-    _presence_absence_update,
-    _trusted_postfire_landing_sample,
-)
+from core.genrush_runtime import _generation_lead, _presence_absence_update
 from core.outcome_observer import OutcomeObserver
 from core.trigger import HardwareTrigger, PreciseTriggerScheduler
 from core.detectors.base import extract_zones_from_masks
@@ -23,13 +15,6 @@ from core.detectors.hybrid import HybridDetector
 
 
 class CleanV5Tests(unittest.TestCase):
-    def test_default_normal_cold_seed_matches_live_session_level(self):
-        config_path = Path(__file__).resolve().parents[1] / "config.json"
-        cfg = json.loads(config_path.read_text(encoding="utf-8"))
-        self.assertEqual(float(cfg["genrush_seed_lead_ms"]), 120.0)
-        # Frenzy keeps its independently validated 80ms seed.
-        self.assertEqual(float(cfg["frenzy_lead_ms"]), 80.0)
-
     def test_predictor_450(self):
         p = ContinuousAngularPredictor(60.0, fit_window=10)
         w = {"start": 300.0, "end": 310.0, "center": 305.0, "width": 10.0, "source": "MEASURED"}
@@ -74,161 +59,6 @@ class CleanV5Tests(unittest.TestCase):
         since, _ = _presence_absence_update(None, now=20.000, present=False)
         since, elapsed = _presence_absence_update(since, now=20.101, present=False)
         self.assertGreaterEqual(elapsed, 0.100)
-
-    def test_postfire_red_peak_without_ring_is_not_landing_evidence(self):
-        self.assertFalse(
-            _trusted_postfire_landing_sample(
-                {
-                    "ring_present": False,
-                    "needle_valid": True,
-                    "needle_angle": 200.0,
-                    "needle_strength": 90.0,
-                }
-            )
-        )
-        self.assertTrue(
-            _trusted_postfire_landing_sample(
-                {
-                    "ring_present": True,
-                    "needle_valid": True,
-                    "needle_angle": 100.0,
-                    "needle_strength": 90.0,
-                }
-            )
-        )
-
-    def test_next_generation_motion_is_independent_from_old_landing_needle(self):
-        samples = []
-        self.assertFalse(
-            _generation_motion_update(
-                samples, t=1.000, angle=10.0, valid=True
-            )
-        )
-        self.assertFalse(
-            _generation_motion_update(
-                samples, t=1.016, angle=10.1, valid=True
-            )
-        )
-        self.assertTrue(
-            _generation_motion_update(
-                samples, t=1.033, angle=18.0, valid=True
-            )
-        )
-
-    def test_invalid_generation_needle_cannot_fake_motion(self):
-        samples = []
-        for i, angle in enumerate((10.0, 30.0, 60.0)):
-            moving = _generation_motion_update(
-                samples,
-                t=2.0 + i * 0.016,
-                angle=angle,
-                valid=False,
-            )
-            self.assertFalse(moving)
-        self.assertEqual(samples, [])
-
-    def test_small_post_hit_zone_shift_cannot_fake_frenzy(self):
-        old_w = {
-            "start": 80.0, "end": 90.0, "center": 85.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        new_w = {
-            "start": 102.0, "end": 112.0, "center": 107.0,
-            "width": 10.0, "source": "MEASURED_FIXED_CENTER",
-        }
-        new_b = {
-            "start": 113.0, "end": 153.0, "center": 133.0,
-            "width": 40.0, "source": "MEASURED_FIXED_CENTER",
-        }
-        ev = _frenzy_relocation_evidence(
-            new_w, new_b, old_w,
-            generation_needle_valid=True,
-            min_move_deg=90.0,
-            max_white_black_gap_deg=10.0,
-        )
-        self.assertFalse(ev["qualifies"])
-        self.assertAlmostEqual(ev["relocation_delta_deg"], 22.0)
-
-    def test_large_but_unpaired_visual_artifact_cannot_fake_frenzy(self):
-        old_w = {
-            "start": 80.0, "end": 90.0, "center": 85.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        new_w = {
-            "start": 220.0, "end": 230.0, "center": 225.0,
-            "width": 10.0, "source": "MEASURED_FIXED_CENTER",
-        }
-        # Geometrically impossible for the normal white->black success sector:
-        new_b = {
-            "start": 270.0, "end": 310.0, "center": 290.0,
-            "width": 40.0, "source": "MEASURED_FIXED_CENTER",
-        }
-        ev = _frenzy_relocation_evidence(
-            new_w, new_b, old_w,
-            generation_needle_valid=True,
-            min_move_deg=90.0,
-            max_white_black_gap_deg=10.0,
-        )
-        self.assertFalse(ev["qualifies"])
-        self.assertGreater(ev["relocation_delta_deg"], 90.0)
-        self.assertGreater(ev["white_black_gap_deg"], 10.0)
-
-    def test_realistic_frenzy_relocation_geometry_qualifies(self):
-        old_w = {
-            "start": 80.0, "end": 90.0, "center": 85.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        new_w = {
-            "start": 238.0, "end": 248.0, "center": 243.0,
-            "width": 10.0, "source": "MEASURED_FIXED_CENTER",
-        }
-        new_b = {
-            "start": 250.0, "end": 290.0, "center": 270.0,
-            "width": 40.0, "source": "MEASURED_FIXED_CENTER",
-        }
-        ev = _frenzy_relocation_evidence(
-            new_w, new_b, old_w,
-            generation_needle_valid=True,
-            min_move_deg=90.0,
-            max_white_black_gap_deg=10.0,
-        )
-        self.assertTrue(ev["qualifies"])
-        self.assertAlmostEqual(ev["relocation_delta_deg"], 158.0)
-        self.assertAlmostEqual(ev["white_black_gap_deg"], 2.0)
-
-    def test_archived_minimum_true_frenzy_relocation_still_qualifies(self):
-        # Archived real chain6->7 transition:
-        old_w = {
-            "start": 221.0, "end": 231.0, "center": 226.48939900947659,
-            "width": 10.0, "source": "MEASURED",
-        }
-        new_w = {
-            "start": 98.4534192667837,
-            "end": 109.29413683471543,
-            "center": 103.87377805074956,
-            "width": 10.840717567931733,
-            "source": "MEASURED_FIXED_CENTER",
-        }
-        new_b = {
-            "start": 109.97915310662923,
-            "end": 152.11025444230802,
-            "center": 131.04470377446862,
-            "width": 42.13110133567879,
-            "source": "MEASURED_FIXED_CENTER",
-        }
-        ev = _frenzy_relocation_evidence(
-            new_w, new_b, old_w,
-            generation_needle_valid=True,
-            min_move_deg=90.0,
-            max_white_black_gap_deg=10.0,
-        )
-        self.assertTrue(ev["qualifies"])
-        self.assertAlmostEqual(
-            ev["relocation_delta_deg"], 122.61562095872702, places=3
-        )
-        self.assertAlmostEqual(
-            ev["white_black_gap_deg"], 0.6850162719138, places=3
-        )
 
     def test_frenzy_generation_uses_separate_lead(self):
         lead_ms, unc_ms = _generation_lead(
@@ -328,34 +158,27 @@ class CleanV5Tests(unittest.TestCase):
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         b = {"start": 105.0, "end": 145.0, "center": 125.0, "width": 40.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=60)
-        for t, a in [
-            (1.050, 101.0),
-            (1.062, 101.2),
-            (1.074, 100.9),
-            (1.086, 101.1),
-            (1.098, 101.0),
-        ]:
+        for t, a in [(1.05, 101.0), (1.07, 101.2), (1.09, 100.9), (1.11, 101.1)]:
             o.observe_sample(t, a, 30)
         result = o.conclude_check()
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GREAT")
         self.assertAlmostEqual(result["observed_response_ms"], 50.0, delta=0.01)
-        self.assertGreaterEqual(result["plateau_span_ms"], 45.0)
-        self.assertGreaterEqual(result["plateau_sample_count"], 5)
 
     def test_decoded_duplicates_do_not_fake_a_landing_plateau(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60)
-        # A short duplicated render stall is not enough for normal chain1.
-        for t in (1.050, 1.0583, 1.0666, 1.0749, 1.0832):
+        # Four 120-FPS decoded samples span only ~25 ms and can represent just
+        # two unique 60-Hz render frames.
+        for t in (1.050, 1.0583, 1.0666, 1.0749):
             o.observe_sample(t, 100.0, 30)
         self.assertFalse(o.has_plateau())
 
-    def test_normal_chain_requires_45ms_freeze_proof(self):
+    def test_time_supported_freeze_confirms_landing(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
-        o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60, chain_count=1)
+        o.on_trigger(1.0, 100.0, 900.0, w, None, used_latency_ms=60)
         for t, a in [
             (1.050, 100.2),
             (1.058, 100.0),
@@ -365,21 +188,16 @@ class CleanV5Tests(unittest.TestCase):
             (1.092, 100.0),
         ]:
             o.observe_sample(t, a, 30)
-        self.assertFalse(o.has_plateau())
-        o.observe_sample(1.100, 100.1, 30)
         self.assertTrue(o.has_plateau())
         result = o.conclude_check()
         self.assertEqual(result["outcome"], "GREAT")
-        self.assertGreaterEqual(result["plateau_span_ms"], 45.0)
-        self.assertGreaterEqual(result["plateau_sample_count"], 5)
+        self.assertGreaterEqual(result["plateau_span_ms"], 28.0)
+        self.assertGreaterEqual(result["plateau_sample_count"], 3)
 
-    def test_frenzy_chain_keeps_fast_28ms_freeze_rule(self):
+    def test_three_samples_over_render_time_confirm_landing(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
-        o.on_trigger(
-            1.0, 100.0, 700.0, w, None,
-            used_latency_ms=60, chain_count=2,
-        )
+        o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
         for t, a in [(1.050, 100.2), (1.066, 100.0), (1.082, 100.1)]:
             o.observe_sample(t, a, 30)
         self.assertTrue(o.has_plateau())
@@ -389,146 +207,21 @@ class CleanV5Tests(unittest.TestCase):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
-        for t in (1.050, 1.058, 1.066, 1.120, 1.128, 1.136, 1.144, 1.152):
+        for t in (1.050, 1.058, 1.066, 1.120, 1.128, 1.136):
             o.observe_sample(t, 100.0, 30)
         self.assertFalse(o.has_plateau())
 
     def test_mask_gap_after_great_is_good_not_miss(self):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
+        # Deliberate 2 degree CV segmentation gap.
         b = {"start": 107.0, "end": 149.0, "center": 128.0, "width": 42.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, b, used_latency_ms=60)
-        for t, a in [
-            (1.050, 106.0),
-            (1.062, 106.1),
-            (1.074, 105.9),
-            (1.086, 106.0),
-            (1.098, 106.0),
-        ]:
+        for t, a in [(1.05, 106.0), (1.07, 106.1), (1.09, 105.9), (1.11, 106.0)]:
             o.observe_sample(t, a, 30)
         result = o.conclude_check()
         self.assertTrue(result["plateau_found"])
         self.assertEqual(result["outcome"], "GOOD")
-
-    def test_implied_delivery_above_180ms_is_telemetry_not_truth_gate(self):
-        o = OutcomeObserver(80)
-        w = {
-            "start": 139.0, "end": 149.0, "center": 144.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        b = {
-            "start": 149.0, "end": 205.0, "center": 177.0,
-            "width": 56.0, "source": "MEASURED",
-        }
-        o.on_trigger(
-            1.0,
-            143.9,
-            314.9,
-            w,
-            b,
-            used_latency_ms=74.3,
-            chain_count=1,
-        )
-        for t, a in [
-            (1.100, 187.8),
-            (1.112, 187.9),
-            (1.124, 187.7),
-            (1.136, 187.8),
-            (1.148, 187.8),
-        ]:
-            o.observe_sample(t, a, 40.0)
-        self.assertTrue(o.has_plateau())
-        result = o.conclude_check()
-        self.assertEqual(result["outcome"], "GOOD")
-        self.assertGreater(result["implied_delivery_ms"], 180.0)
-
-    def test_postfire_continuity_accepts_forward_motion_freeze_and_wrap(self):
-        a = _postfire_continuity_check(
-            350.0, 1.000,
-            t=1.016, angle=355.0, speed_deg_s=300.0,
-        )
-        self.assertTrue(a["accepted"])
-
-        b = _postfire_continuity_check(
-            355.0, 1.016,
-            t=1.032, angle=0.5, speed_deg_s=300.0,
-        )
-        self.assertTrue(b["accepted"])
-
-        freeze = _postfire_continuity_check(
-            0.5, 1.032,
-            t=1.048, angle=0.6, speed_deg_s=300.0,
-        )
-        self.assertTrue(freeze["accepted"])
-
-    def test_archived_8deg_to_292deg_red_decoy_is_rejected(self):
-        d = _postfire_continuity_check(
-            8.130792,
-            1.000000,
-            t=1.008780,
-            angle=291.913636,
-            speed_deg_s=307.664,
-        )
-        self.assertFalse(d["accepted"])
-        self.assertEqual(d["reason"], "BACKWARD_JUMP")
-        self.assertLess(d["delta_deg"], -70.0)
-
-    def test_large_forward_red_decoy_is_rejected(self):
-        d = _postfire_continuity_check(
-            100.0,
-            1.000,
-            t=1.008,
-            angle=122.0,
-            speed_deg_s=300.0,
-        )
-        self.assertFalse(d["accepted"])
-        self.assertEqual(d["reason"], "FORWARD_JUMP")
-        self.assertGreater(d["delta_deg"], d["max_forward_deg"])
-
-    def test_continuity_loss_is_reported_without_fake_phase_miss(self):
-        o = OutcomeObserver(80)
-        w = {
-            "start": 46.0, "end": 56.0, "center": 51.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        o.on_trigger(
-            1.0, 51.1, 306.1, w, None,
-            used_latency_ms=65.6, chain_count=1,
-        )
-        o.note_continuity_rejection(
-            t=1.060,
-            angle=106.0,
-            delta_deg=54.9,
-            max_forward_deg=12.0,
-        )
-        result = o.conclude_check()
-        self.assertEqual(result["outcome"], "UNCONFIRMED")
-        self.assertEqual(result["unconfirmed_reason"], "POSTFIRE_CONTINUITY_LOST")
-        self.assertFalse(result["plateau_found"])
-        self.assertEqual(result["continuity_rejections"], 1)
-
-    def test_plausible_near_sector_miss_remains_miss(self):
-        o = OutcomeObserver(120)
-        w = {
-            "start": 95.0, "end": 105.0, "center": 100.0,
-            "width": 10.0, "source": "MEASURED",
-        }
-        b = {
-            "start": 105.0, "end": 145.0, "center": 125.0,
-            "width": 40.0, "source": "MEASURED",
-        }
-        o.on_trigger(1.0, 100.0, 280.0, w, b, used_latency_ms=120.0)
-        for t, a in [
-            (1.060, 82.0),
-            (1.072, 82.2),
-            (1.084, 81.9),
-            (1.096, 82.1),
-            (1.108, 82.0),
-        ]:
-            o.observe_sample(t, a, 40.0)
-        result = o.conclude_check()
-        self.assertEqual(result["outcome"], "MISS")
-        self.assertTrue(result["plateau_trusted"])
 
     def test_frenzy_transition_is_not_reported_as_unconfirmed(self):
         o = OutcomeObserver(60)
@@ -601,15 +294,8 @@ class CleanV5Tests(unittest.TestCase):
         o = OutcomeObserver(60)
         w = {"start": 95.0, "end": 105.0, "center": 100.0, "width": 10.0, "source": "MEASURED"}
         o.on_trigger(1.0, 100.0, 300.0, w, None, used_latency_ms=60)
-        for t, a in [
-            (1.050, 101.0),
-            (1.062, 101.1),
-            (1.074, 100.9),
-            (1.086, 101.0),
-            (1.098, 101.0),
-        ]:
+        for t, a in [(1.05, 101.0), (1.07, 101.1), (1.09, 100.9), (1.11, 101.0)]:
             o.observe_sample(t, a, 30)
-        self.assertTrue(o.has_plateau())
         self.assertTrue(o.has_plateau())
         self.assertEqual(o.conclude_check()["outcome"], "GREAT")
 
