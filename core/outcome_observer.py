@@ -16,6 +16,16 @@ Plateau = Tuple[float, float, float, int]
 class OutcomeObserver:
     """Post-fire landing observer independent from the old adaptive learner."""
 
+    # A 28 ms stable tail is useful immediate evidence for lifecycle decisions,
+    # but live replays contain render pauses around 28-30 ms that later resume
+    # motion. A plateau that remains stable for 60 ms is strong enough to keep
+    # as the terminal landing candidate even if ring loss later makes the red
+    # needle detector jump onto unrelated pixels.
+    CANDIDATE_SPAN_S = 0.028
+    CONFIRMED_SPAN_S = 0.060
+    MAX_ADJACENT_GAP_S = 0.040
+    MAX_SPREAD_DEG = 1.6
+
     def __init__(self, initial_latency_ms: float, session_base_speed: float = 278.0):
         self.initial_latency_ms = float(initial_latency_ms)
         self.session_base_speed = float(session_base_speed)
@@ -29,14 +39,7 @@ class OutcomeObserver:
         self.black_zone: Optional[Dict[str, Any]] = None
         self.used_latency_ms: Optional[float] = None
         self.samples: List[Tuple[float, float, float]] = []
-        # A current plateau may later be invalidated by plausible continued
-        # clockwise motion. Keep the most recent real plateau only as a fallback
-        # across a large backwards post-hit detector discontinuity (the same
-        # rollback shape the lifecycle already treats as a generation/artifact
-        # signal). This prevents ring-absent red decoys from erasing a landing.
-        self._last_plateau: Optional[Plateau] = None
-        self._plateau_fallback_valid = False
-        self._tracking_discontinuity = False
+        self._confirmed_plateau: Optional[Plateau] = None
 
     def on_trigger(
         self,
@@ -57,60 +60,29 @@ class OutcomeObserver:
             float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
         )
         self.samples.clear()
-        self._last_plateau = None
-        self._plateau_fallback_valid = False
-        self._tracking_discontinuity = False
+        self._confirmed_plateau = None
 
     def observe_sample(self, t: float, angle: float, strength: float = 30.0) -> None:
         if self.trigger_t is None or t < self.trigger_t - 0.005 or strength < 10.0:
             return
-
-        t = float(t)
-        angle = float(angle) % 360.0
-
-        if self._last_plateau is not None and self.samples and not self._tracking_discontinuity:
-            _last_t, last_angle, _last_strength = self.samples[-1]
-            step = _signed_delta(angle, last_angle)
-            if step < -25.0:
-                # Normal landed replays often lose the ring and the post-hit
-                # detector then jumps backwards onto a red artifact. Do not let
-                # that discontinuity rewrite an already observed landing. At
-                # the same time has_plateau() becomes false, so a real Frenzy
-                # rollback can still be recognized by PostFireLifecycle.
-                self._tracking_discontinuity = True
-            else:
-                plateau_angle = self._last_plateau[0]
-                if abs(_signed_delta(angle, plateau_angle)) > 1.6:
-                    # Plausible forward motion resumed: the earlier stable chunk
-                    # was only a render pause, not the final landing.
-                    self._last_plateau = None
-                    self._plateau_fallback_valid = False
-
-        self.samples.append((t, angle, float(strength)))
+        self.samples.append((float(t), float(angle) % 360.0, float(strength)))
         if len(self.samples) > 40:
             del self.samples[:-40]
 
-    def _find_plateau(self) -> Optional[Plateau]:
-        """Return the current time-supported stable freeze, if any.
+    def _find_tail_plateau(self, min_span_s: float) -> Optional[Plateau]:
+        """Return a stable suffix of the observations available right now.
 
-        A landing plateau must be a stable suffix of the observations available
-        right now. A short pause in the middle of continued needle motion is not
-        a landing and stops counting as soon as fresh motion appears.
-
-        Capture can decode near 120 FPS while Roblox changes the rendered needle
-        at a lower/variable cadence, so decoded duplicates alone are not enough:
-        require both angular stability and real monotonic time support.
+        The old implementation scanned from the beginning and returned the
+        first stable chunk it ever saw. That made a short mid-motion render
+        pause remain a permanent landing even after the needle moved again.
+        Only the current tail can represent the current freeze state.
         """
         min_samples = 3
-        min_span_s = 0.028
-        max_adjacent_gap_s = 0.040
-        max_spread_deg = 1.6
-
         if len(self.samples) < min_samples or self.trigger_t is None:
             return None
 
         end = len(self.samples) - 1
-        end_t, end_angle, _end_strength = self.samples[end]
+        end_t, end_angle, _ = self.samples[end]
         ref = end_angle
         vals = [ref]
         start = end
@@ -118,20 +90,18 @@ class OutcomeObserver:
         for i in range(end - 1, -1, -1):
             t, angle, _strength = self.samples[i]
             next_t = self.samples[i + 1][0]
-            if next_t - t > max_adjacent_gap_s:
+            if next_t - t > self.MAX_ADJACENT_GAP_S:
                 break
-
             value = ref + _signed_delta(angle, ref)
             candidate = vals + [value]
-            if max(candidate) - min(candidate) > max_spread_deg:
+            if max(candidate) - min(candidate) > self.MAX_SPREAD_DEG:
                 break
-
             vals = candidate
             start = i
 
         count = end - start + 1
         span_s = end_t - self.samples[start][0]
-        if count < min_samples or span_s < min_span_s:
+        if count < min_samples or span_s < float(min_span_s):
             return None
 
         hit = float(statistics.median(vals) % 360.0)
@@ -139,6 +109,13 @@ class OutcomeObserver:
             0.0, (self.samples[start][0] - self.trigger_t) * 1000.0
         )
         return hit, response_ms, span_s * 1000.0, count
+
+    def _refresh_confirmed_plateau(self) -> None:
+        if self._confirmed_plateau is not None:
+            return
+        confirmed = self._find_tail_plateau(self.CONFIRMED_SPAN_S)
+        if confirmed is not None:
+            self._confirmed_plateau = confirmed
 
     def has_recent_motion(self, sample_count: int = 3, min_span_deg: float = 2.0) -> bool:
         """Return whether recent trusted post-fire samples still show motion."""
@@ -151,15 +128,9 @@ class OutcomeObserver:
         return (max(vals) - min(vals)) >= float(min_span_deg)
 
     def has_plateau(self) -> bool:
-        """Return whether a trustworthy post-fire freeze is currently visible."""
-        if self._tracking_discontinuity:
-            return False
-        plateau = self._find_plateau()
-        if plateau is None:
-            return False
-        self._last_plateau = plateau
-        self._plateau_fallback_valid = True
-        return True
+        """Return whether a trustworthy post-fire freeze is visible *now*."""
+        self._refresh_confirmed_plateau()
+        return self._find_tail_plateau(self.CANDIDATE_SPAN_S) is not None
 
     def conclude_check(
         self,
@@ -177,8 +148,7 @@ class OutcomeObserver:
             }
 
         if frenzy_transition:
-            # Frenzy transitions do not provide the same terminal freeze as a
-            # normal check. Never reuse a pre-transition plateau candidate.
+            # Frenzy transitions do not provide a normal terminal freeze.
             return {
                 "outcome": "FRENZY_TRANSITION",
                 "plateau_found": False,
@@ -188,9 +158,13 @@ class OutcomeObserver:
                 "observed_response_ms": None,
             }
 
-        plateau = None if self._tracking_discontinuity else self._find_plateau()
-        if plateau is None and self._plateau_fallback_valid:
-            plateau = self._last_plateau
+        self._refresh_confirmed_plateau()
+        plateau = self._confirmed_plateau
+        if plateau is None:
+            # At terminal ring end, a still-current 28 ms candidate is useful
+            # fallback evidence even if it did not live long enough to become a
+            # cached 60 ms plateau. Historical candidates are never reused.
+            plateau = self._find_tail_plateau(self.CANDIDATE_SPAN_S)
         if plateau is None:
             return {
                 "outcome": "UNCONFIRMED",
