@@ -10,6 +10,9 @@ def _signed_delta(a: float, b: float) -> float:
     return (float(a) - float(b) + 180.0) % 360.0 - 180.0
 
 
+Plateau = Tuple[float, float, float, int]
+
+
 class OutcomeObserver:
     """Post-fire landing observer independent from the old adaptive learner."""
 
@@ -26,6 +29,14 @@ class OutcomeObserver:
         self.black_zone: Optional[Dict[str, Any]] = None
         self.used_latency_ms: Optional[float] = None
         self.samples: List[Tuple[float, float, float]] = []
+        # A current plateau may later be invalidated by plausible continued
+        # clockwise motion. Keep the most recent real plateau only as a fallback
+        # across a large backwards post-hit detector discontinuity (the same
+        # rollback shape the lifecycle already treats as a generation/artifact
+        # signal). This prevents ring-absent red decoys from erasing a landing.
+        self._last_plateau: Optional[Plateau] = None
+        self._plateau_fallback_valid = False
+        self._tracking_discontinuity = False
 
     def on_trigger(
         self,
@@ -46,20 +57,45 @@ class OutcomeObserver:
             float(used_latency_ms) if used_latency_ms is not None else self.initial_latency_ms
         )
         self.samples.clear()
+        self._last_plateau = None
+        self._plateau_fallback_valid = False
+        self._tracking_discontinuity = False
 
     def observe_sample(self, t: float, angle: float, strength: float = 30.0) -> None:
         if self.trigger_t is None or t < self.trigger_t - 0.005 or strength < 10.0:
             return
-        self.samples.append((float(t), float(angle) % 360.0, float(strength)))
+
+        t = float(t)
+        angle = float(angle) % 360.0
+
+        if self._last_plateau is not None and self.samples and not self._tracking_discontinuity:
+            _last_t, last_angle, _last_strength = self.samples[-1]
+            step = _signed_delta(angle, last_angle)
+            if step < -25.0:
+                # Normal landed replays often lose the ring and the post-hit
+                # detector then jumps backwards onto a red artifact. Do not let
+                # that discontinuity rewrite an already observed landing. At
+                # the same time has_plateau() becomes false, so a real Frenzy
+                # rollback can still be recognized by PostFireLifecycle.
+                self._tracking_discontinuity = True
+            else:
+                plateau_angle = self._last_plateau[0]
+                if abs(_signed_delta(angle, plateau_angle)) > 1.6:
+                    # Plausible forward motion resumed: the earlier stable chunk
+                    # was only a render pause, not the final landing.
+                    self._last_plateau = None
+                    self._plateau_fallback_valid = False
+
+        self.samples.append((t, angle, float(strength)))
         if len(self.samples) > 40:
             del self.samples[:-40]
 
-    def _find_plateau(self) -> Optional[Tuple[float, float, float, int]]:
+    def _find_plateau(self) -> Optional[Plateau]:
         """Return the current time-supported stable freeze, if any.
 
         A landing plateau must be a stable suffix of the observations available
-        right now.  A short pause in the middle of continued needle motion is
-        not a landing and must stop counting as soon as fresh motion appears.
+        right now. A short pause in the middle of continued needle motion is not
+        a landing and stops counting as soon as fresh motion appears.
 
         Capture can decode near 120 FPS while Roblox changes the rendered needle
         at a lower/variable cadence, so decoded duplicates alone are not enough:
@@ -79,9 +115,6 @@ class OutcomeObserver:
         vals = [ref]
         start = end
 
-        # Walk backward through the current stable suffix only.  Older stable
-        # chunks are deliberately ignored: if motion resumed after them, they
-        # were render pauses, not the final landing freeze.
         for i in range(end - 1, -1, -1):
             t, angle, _strength = self.samples[i]
             next_t = self.samples[i + 1][0]
@@ -119,7 +152,14 @@ class OutcomeObserver:
 
     def has_plateau(self) -> bool:
         """Return whether a trustworthy post-fire freeze is currently visible."""
-        return self._find_plateau() is not None
+        if self._tracking_discontinuity:
+            return False
+        plateau = self._find_plateau()
+        if plateau is None:
+            return False
+        self._last_plateau = plateau
+        self._plateau_fallback_valid = True
+        return True
 
     def conclude_check(
         self,
@@ -137,7 +177,8 @@ class OutcomeObserver:
             }
 
         if frenzy_transition:
-            # Frenzy transitions do not provide a normal freeze plateau.
+            # Frenzy transitions do not provide the same terminal freeze as a
+            # normal check. Never reuse a pre-transition plateau candidate.
             return {
                 "outcome": "FRENZY_TRANSITION",
                 "plateau_found": False,
@@ -147,7 +188,9 @@ class OutcomeObserver:
                 "observed_response_ms": None,
             }
 
-        plateau = self._find_plateau()
+        plateau = None if self._tracking_discontinuity else self._find_plateau()
+        if plateau is None and self._plateau_fallback_valid:
+            plateau = self._last_plateau
         if plateau is None:
             return {
                 "outcome": "UNCONFIRMED",
@@ -168,7 +211,7 @@ class OutcomeObserver:
             hit, float(white["end"]), float(black["end"]), 0.0, 0.0
         ):
             # CV masks leave a 1-7 degree segmentation gap between the visible
-            # white GREAT arc and the following black GOOD arc.  Physically this
+            # white GREAT arc and the following black GOOD arc. Physically this
             # is one continuous success sector, so do not manufacture MISSes in
             # the mask gap.
             outcome = "GOOD"
