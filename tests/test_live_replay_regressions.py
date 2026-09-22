@@ -38,10 +38,11 @@ class LiveReplayRegressionTests(unittest.TestCase):
             (0.0686, 54.861111111111114),
         ]:
             o.observe_sample(t, angle, 30.0)
+        # A short candidate is visible now, but is not cached as terminal.
         self.assertTrue(o.has_plateau())
         self.assertEqual(o.conclude_check()["outcome"], "MISS")
 
-        # Fresh motion invalidates the historical pause immediately.
+        # Fresh motion invalidates that historical pause immediately.
         for t, angle in [
             (0.0735, 57.08163265306123),
             (0.1080, 62.567669172932334),
@@ -59,6 +60,7 @@ class LiveReplayRegressionTests(unittest.TestCase):
             (0.2361, 94.41025641025641),
             (0.2430, 94.41025641025641),
             (0.2666, 94.36440677966101),
+            (0.2900, 94.36440677966101),
         ]:
             o.observe_sample(t, angle, 30.0)
         self.assertTrue(o.has_plateau())
@@ -66,8 +68,8 @@ class LiveReplayRegressionTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "GOOD")
         self.assertAlmostEqual(result["hit_angle"], 94.41025641025641, delta=0.1)
 
-    def test_20260921_220330_real_landing_survives_backward_red_decoy(self):
-        """A post-ring backwards detector jump must not rewrite a real freeze."""
+    def test_20260921_220330_confirmed_landing_survives_red_decoy(self):
+        """A long real freeze survives the detector junk seen after ring loss."""
         white = {
             "start": 40.76439789634816,
             "end": 51.442444792699376,
@@ -85,6 +87,8 @@ class LiveReplayRegressionTests(unittest.TestCase):
         o = OutcomeObserver(107.8)
         o.on_trigger(0.0, white["center"], 276.4, white, black)
 
+        # The live replay stayed frozen near 48.31° for >100 ms before the ring
+        # disappeared. Passing 60 ms caches this as the terminal landing.
         for t, angle in [
             (0.0990, 48.33018867924528),
             (0.1078, 48.31481481481482),
@@ -92,13 +96,14 @@ class LiveReplayRegressionTests(unittest.TestCase):
             (0.1242, 48.31481481481482),
             (0.1323, 48.31481481481482),
             (0.1430, 48.31481481481482),
+            (0.1641, 48.31481481481482),
+            (0.1725, 48.31481481481482),
         ]:
             o.observe_sample(t, angle, 30.0)
         self.assertTrue(o.has_plateau())
 
-        # Live replay then lost the ring and HYBRID jumped backwards onto red
-        # artifacts (~48° -> ~10° -> ~2° -> 342°). Lifecycle treats this as a
-        # discontinuity; it must not erase the already observed landing.
+        # HYBRID then jumped onto unrelated red pixels. The current tail is no
+        # longer a freeze, but conclude_check must keep the confirmed landing.
         for t, angle in [
             (0.2328, 10.53225806451613),
             (0.2405, 2.25),
