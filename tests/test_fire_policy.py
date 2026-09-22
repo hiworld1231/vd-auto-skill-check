@@ -193,7 +193,7 @@ class GreatFirePolicyTests(unittest.TestCase):
             speed_usable=True,
         )
         self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "FRENZY_IMMEDIATE_SUCCESS_ENVELOPE_UNSAFE")
+        self.assertEqual(d.reason, "FRENZY_IMMEDIATE_UNCERTAINTY_TOO_WIDE")
 
     def test_successful_frenzy_immediate_with_moderate_uncertainty_stays_allowed(self):
         # Current successful chain6 had ~34.5° uncertainty in a ~54° success arc.
@@ -205,7 +205,7 @@ class GreatFirePolicyTests(unittest.TestCase):
                 "landing_uncertainty_width_deg": 34.5,
                 "great_width_deg": 10.5,
                 "success_width_deg": 54.0,
-                "success_interval_safe": True,
+                "success_interval_safe": False,
                 "white_source": "MEASURED",
                 "speed_source": "FRENZY_BLEND",
                 "is_chain": True,
@@ -219,7 +219,9 @@ class GreatFirePolicyTests(unittest.TestCase):
         self.assertTrue(d.allow)
         self.assertEqual(d.reason, "IMMEDIATE_SUCCESS_FALLBACK")
 
-    def test_frenzy_future_best_effort_refuses_unsafe_success_envelope(self):
+    def test_frenzy_future_best_effort_does_not_hard_reject_unsafe_envelope(self):
+        # Fresh replay data shows success_interval_safe=False can still land,
+        # while success_interval_safe=True is not sufficient to prevent MISS.
         d = decide_great_fire(
             {
                 "time_until_press_ms": 18.0,
@@ -239,8 +241,9 @@ class GreatFirePolicyTests(unittest.TestCase):
             fit_stable=False,
             speed_usable=True,
         )
-        self.assertFalse(d.allow)
-        self.assertEqual(d.reason, "FRENZY_FUTURE_SUCCESS_ENVELOPE_UNSAFE")
+        self.assertTrue(d.allow)
+        self.assertTrue(d.best_effort)
+        self.assertEqual(d.reason, "GREAT_CENTER_BEST_EFFORT")
 
     def test_frenzy_future_best_effort_keeps_safe_success_envelope(self):
         d = decide_great_fire(
@@ -325,6 +328,27 @@ class GreatFirePolicyTests(unittest.TestCase):
         )
         self.assertTrue(d.allow)
         self.assertEqual(d.reason, "SEGMENT_PROVISIONAL_PREARM")
+
+    def test_second_frame_segment_speed_cannot_fire_immediately(self):
+        # Replay 20260922-180327 produced a false 1221.6°/s adjacent segment
+        # before any robust fit existed. It must wait for another measured frame.
+        d = decide_great_fire(
+            {
+                "time_until_press_ms": -12.0,
+                "great_interval_safe": False,
+                "great_interval_intersects": True,
+                "landing_uncertainty_width_deg": 0.0,
+                "great_width_deg": 10.0,
+                "white_source": "MEASURED",
+                "speed_source": "SEGMENT_PROVISIONAL",
+                "target_passed": False,
+                "should_press_now": True,
+            },
+            fit_stable=False,
+            speed_usable=False,
+        )
+        self.assertFalse(d.allow)
+        self.assertEqual(d.reason, "SEGMENT_PROVISIONAL_WAIT_MEASURED_SPEED")
 
     def test_unknown_geometry_fails_closed(self):
         d = decide_great_fire(
