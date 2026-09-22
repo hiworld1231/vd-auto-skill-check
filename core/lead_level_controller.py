@@ -274,27 +274,50 @@ class LeadLevelController:
                 update_reason = "COLD_ROBUST_MEDIAN"
 
         elif self.initialized:
-            fresh = self.accepted_total - self.accepted_at_last_update
-            if fresh >= self.recent_shift_samples:
-                recent = vals[-self.recent_shift_samples:]
-                recent_med = float(statistics.median(recent))
-                recent_mad = self._mad(recent, recent_med)
+            reanchored = False
+            if self.restored_from_disk and self.accepted_total >= 3:
+                # A persisted level is only a warm-start prior.  If the first
+                # three trusted live checks form a tight cluster far away from
+                # that prior, keeping the old 6 ms / four-check slew would make
+                # the controller spend dozens of checks knowingly off-center.
+                # Three samples are the smallest robust-median cluster; the
+                # tight MAD + 15 ms separation keeps ordinary live jitter on the
+                # slow, bounded path below.
+                restored_recent = vals[-3:]
+                recent_med = float(statistics.median(restored_recent))
+                recent_mad = self._mad(restored_recent, recent_med)
                 delta = recent_med - self.current_lead_ms
-                coherent = recent_mad <= self.recent_shift_max_mad_ms
-                if coherent and self.restored_from_disk:
-                    # Four fresh trusted samples validate the persisted prior.
-                    # From here uncertainty is derived only from live samples.
+                if recent_mad <= 6.0 and abs(delta) >= 15.0:
+                    self.current_lead_ms = self._clip(recent_med)
                     self.restored_from_disk = False
                     self._restored_uncertainty_ms = None
-                if coherent and abs(delta) >= self.deadband_ms:
-                    step = max(
-                        -self.max_shift_step_ms,
-                        min(self.max_shift_step_ms, delta),
-                    )
-                    self.current_lead_ms = self._clip(self.current_lead_ms + step)
                     updated = abs(self.current_lead_ms - before) > 1e-9
                     self.accepted_at_last_update = self.accepted_total
-                    update_reason = "ROBUST_LEVEL_SHIFT"
+                    update_reason = "RESTORED_CALIBRATION_REANCHOR"
+                    reanchored = True
+
+            if not reanchored:
+                fresh = self.accepted_total - self.accepted_at_last_update
+                if fresh >= self.recent_shift_samples:
+                    recent = vals[-self.recent_shift_samples:]
+                    recent_med = float(statistics.median(recent))
+                    recent_mad = self._mad(recent, recent_med)
+                    delta = recent_med - self.current_lead_ms
+                    coherent = recent_mad <= self.recent_shift_max_mad_ms
+                    if coherent and self.restored_from_disk:
+                        # Four fresh trusted samples validate the persisted prior.
+                        # From here uncertainty is derived only from live samples.
+                        self.restored_from_disk = False
+                        self._restored_uncertainty_ms = None
+                    if coherent and abs(delta) >= self.deadband_ms:
+                        step = max(
+                            -self.max_shift_step_ms,
+                            min(self.max_shift_step_ms, delta),
+                        )
+                        self.current_lead_ms = self._clip(self.current_lead_ms + step)
+                        updated = abs(self.current_lead_ms - before) > 1e-9
+                        self.accepted_at_last_update = self.accepted_total
+                        update_reason = "ROBUST_LEVEL_SHIFT"
 
         if updated:
             self.updates_total += 1
