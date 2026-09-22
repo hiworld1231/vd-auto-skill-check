@@ -55,19 +55,16 @@ class OutcomeObserver:
             del self.samples[:-40]
 
     def _find_plateau(self) -> Optional[Tuple[float, float, float, int]]:
-        """Return earliest time-supported stable freeze.
+        """Return the current time-supported stable freeze, if any.
 
-        Capture can decode near 120 FPS while Roblox only changes the rendered
-        needle near 60 Hz.  Counting four equal decoded frames is therefore not
-        enough evidence: two duplicated source frames can look like a freeze.
-        Require both angular stability and a real monotonic time span.
+        A landing plateau must be a stable suffix of the observations available
+        right now.  A short pause in the middle of continued needle motion is
+        not a landing and must stop counting as soon as fresh motion appears.
+
+        Capture can decode near 120 FPS while Roblox changes the rendered needle
+        at a lower/variable cadence, so decoded duplicates alone are not enough:
+        require both angular stability and real monotonic time support.
         """
-        # Live checks can remove the ring quickly after a hit.  Four samples
-        # over 35 ms was too slow and produced UNCONFIRMED even on real hits.
-        # Keep the time-supported guard so duplicate decoded frames alone are
-        # insufficient, but allow confirmation from three stable samples over
-        # at least 28 ms. This is still faster than the old 35 ms gate, while
-        # four 120-FPS duplicates spanning only ~25 ms cannot fake a landing.
         min_samples = 3
         min_span_s = 0.028
         max_adjacent_gap_s = 0.040
@@ -76,28 +73,39 @@ class OutcomeObserver:
         if len(self.samples) < min_samples or self.trigger_t is None:
             return None
 
-        for i in range(len(self.samples) - min_samples + 1):
-            ref = self.samples[i][1]
-            vals = []
-            previous_t = None
-            for j in range(i, len(self.samples)):
-                t, angle, _strength = self.samples[j]
-                if previous_t is not None and t - previous_t > max_adjacent_gap_s:
-                    break
-                previous_t = t
-                vals.append(ref + _signed_delta(angle, ref))
-                if max(vals) - min(vals) > max_spread_deg:
-                    break
+        end = len(self.samples) - 1
+        end_t, end_angle, _end_strength = self.samples[end]
+        ref = end_angle
+        vals = [ref]
+        start = end
 
-                span_s = t - self.samples[i][0]
-                count = j - i + 1
-                if count >= min_samples and span_s >= min_span_s:
-                    hit = float(statistics.median(vals) % 360.0)
-                    response_ms = max(
-                        0.0, (self.samples[i][0] - self.trigger_t) * 1000.0
-                    )
-                    return hit, response_ms, span_s * 1000.0, count
-        return None
+        # Walk backward through the current stable suffix only.  Older stable
+        # chunks are deliberately ignored: if motion resumed after them, they
+        # were render pauses, not the final landing freeze.
+        for i in range(end - 1, -1, -1):
+            t, angle, _strength = self.samples[i]
+            next_t = self.samples[i + 1][0]
+            if next_t - t > max_adjacent_gap_s:
+                break
+
+            value = ref + _signed_delta(angle, ref)
+            candidate = vals + [value]
+            if max(candidate) - min(candidate) > max_spread_deg:
+                break
+
+            vals = candidate
+            start = i
+
+        count = end - start + 1
+        span_s = end_t - self.samples[start][0]
+        if count < min_samples or span_s < min_span_s:
+            return None
+
+        hit = float(statistics.median(vals) % 360.0)
+        response_ms = max(
+            0.0, (self.samples[start][0] - self.trigger_t) * 1000.0
+        )
+        return hit, response_ms, span_s * 1000.0, count
 
     def has_recent_motion(self, sample_count: int = 3, min_span_deg: float = 2.0) -> bool:
         """Return whether recent trusted post-fire samples still show motion."""
@@ -110,7 +118,7 @@ class OutcomeObserver:
         return (max(vals) - min(vals)) >= float(min_span_deg)
 
     def has_plateau(self) -> bool:
-        """Return whether a trustworthy post-fire freeze is already visible."""
+        """Return whether a trustworthy post-fire freeze is currently visible."""
         return self._find_plateau() is not None
 
     def conclude_check(
