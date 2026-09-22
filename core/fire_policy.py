@@ -23,7 +23,7 @@ def decide_great_fire(
 
     First frame pre-arms from the normal-speed session prior; the second unique
     frame may replace that deadline from its adjacent-segment speed; robust
-    measured fits then keep refining it.  Full GREAT-envelope containment is
+    measured fits then keep refining it. Full GREAT-envelope containment is
     preferred, but an uncertain center estimate remains scheduled rather than
     being cancelled into a guaranteed NO_FIRE.
     """
@@ -63,10 +63,12 @@ def decide_great_fire(
             )
         return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
 
-    # First-frame/second-frame pre-arm.  This is intentionally tentative:
+    # First-frame/second-frame pre-arm. This is intentionally tentative:
     # subsequent unique frames continuously replace the pending deadline with
-    # better measured-speed estimates.  Waiting for a 3-5 frame fit can make a
-    # high-lead calibration physically impossible on short checks.
+    # better measured-speed estimates. A single adjacent segment may pre-arm a
+    # future deadline, but it must never cause an irreversible immediate press:
+    # live replay 20260922-180327 produced a false 1221.6 deg/s segment and a
+    # -90.6 ms MISS before any robust fit existed.
     if provisional_speed:
         if bool(pred.get("target_passed", False)):
             if bool(pred.get("reactive_safe_fallback", False)):
@@ -75,6 +77,10 @@ def decide_great_fire(
                 )
             return GreatFireDecision(False, "TOO_LATE_PROVISIONAL")
         if bool(pred.get("should_press_now", False)):
+            if speed_source == "SEGMENT_PROVISIONAL":
+                return GreatFireDecision(
+                    False, "SEGMENT_PROVISIONAL_WAIT_MEASURED_SPEED"
+                )
             return GreatFireDecision(
                 True, "PROVISIONAL_IMMEDIATE_SUCCESS", best_effort=True
             )
@@ -85,7 +91,7 @@ def decide_great_fire(
         return GreatFireDecision(False, "TOO_LATE_PROVISIONAL")
 
     # A full uncertainty interval inside GREAT is already a stronger condition
-    # than the old separate 5-sample "stable" gate.  Do not wait twice.
+    # than the old separate 5-sample "stable" gate. Do not wait twice.
     if speed_usable and bool(pred.get("great_interval_safe", False)):
         return GreatFireDecision(
             True,
@@ -111,25 +117,33 @@ def decide_great_fire(
         )
 
     # If the ideal center deadline has already arrived, an immediate keydown is
-    # still worthwhile when delivery remains inside the known success sector.
+    # still worthwhile when there is measured speed. In Frenzy keep only the
+    # older broad-uncertainty sanity guard: the full-envelope hard gate from
+    # #45 produced live NO_FIRE regressions and was neither necessary nor
+    # sufficient for successful landings.
     if speed_usable and bool(pred.get("should_press_now", False)):
         if is_chain and fit_sample_count < 3:
             return GreatFireDecision(False, "FRENZY_WAIT_MEASURED_SPEED")
-        if is_chain and not bool(pred.get("success_interval_safe", False)):
-            return GreatFireDecision(
-                False, "FRENZY_IMMEDIATE_SUCCESS_ENVELOPE_UNSAFE"
-            )
+        if is_chain:
+            uncertainty_width = pred.get("landing_uncertainty_width_deg")
+            success_width = pred.get("success_width_deg")
+            if (
+                uncertainty_width is not None
+                and success_width is not None
+                and float(success_width) > 0.0
+                and float(uncertainty_width) >= 0.80 * float(success_width)
+            ):
+                return GreatFireDecision(
+                    False, "FRENZY_IMMEDIATE_UNCERTAINTY_TOO_WIDE"
+                )
         return GreatFireDecision(
             True, "IMMEDIATE_SUCCESS_FALLBACK", best_effort=True
         )
 
     # Before the deadline, keep a center-targeted best-effort schedule alive.
-    # Later frames continuously replace it with better estimates.
+    # Later frames continuously replace it with better estimates. Do not turn a
+    # merely imperfect success envelope into a guaranteed Frenzy NO_FIRE.
     if speed_usable and not bool(pred.get("target_passed", False)) and time_until > 0.0:
-        if is_chain and not bool(pred.get("success_interval_safe", False)):
-            return GreatFireDecision(
-                False, "FRENZY_FUTURE_SUCCESS_ENVELOPE_UNSAFE"
-            )
         return GreatFireDecision(
             True, "GREAT_CENTER_BEST_EFFORT", best_effort=True
         )
