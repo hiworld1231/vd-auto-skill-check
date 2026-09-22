@@ -66,6 +66,51 @@ class LiveReplayRegressionTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "GOOD")
         self.assertAlmostEqual(result["hit_angle"], 94.41025641025641, delta=0.1)
 
+    def test_20260921_220330_real_landing_survives_backward_red_decoy(self):
+        """A post-ring backwards detector jump must not rewrite a real freeze."""
+        white = {
+            "start": 40.76439789634816,
+            "end": 51.442444792699376,
+            "center": 46.10342134452377,
+            "width": 10.67804689635122,
+            "source": "MEASURED",
+        }
+        black = {
+            "start": 52.36325150178261,
+            "end": 94.70190027917603,
+            "center": 73.53257589047932,
+            "width": 42.33864877739342,
+            "source": "MEASURED",
+        }
+        o = OutcomeObserver(107.8)
+        o.on_trigger(0.0, white["center"], 276.4, white, black)
+
+        for t, angle in [
+            (0.0990, 48.33018867924528),
+            (0.1078, 48.31481481481482),
+            (0.1154, 48.31481481481482),
+            (0.1242, 48.31481481481482),
+            (0.1323, 48.31481481481482),
+            (0.1430, 48.31481481481482),
+        ]:
+            o.observe_sample(t, angle, 30.0)
+        self.assertTrue(o.has_plateau())
+
+        # Live replay then lost the ring and HYBRID jumped backwards onto red
+        # artifacts (~48° -> ~10° -> ~2° -> 342°). Lifecycle treats this as a
+        # discontinuity; it must not erase the already observed landing.
+        for t, angle in [
+            (0.2328, 10.53225806451613),
+            (0.2405, 2.25),
+            (0.2493, 342.0),
+            (0.2577, 336.7692307692308),
+        ]:
+            o.observe_sample(t, angle, 30.0)
+        self.assertFalse(o.has_plateau())
+        result = o.conclude_check()
+        self.assertEqual(result["outcome"], "GREAT")
+        self.assertAlmostEqual(result["hit_angle"], 48.31481481481482, delta=0.1)
+
     def test_lifecycle_can_leave_temporary_landed_state_when_motion_resumes(self):
         sm = PostFireLifecycle()
         sm.begin(1.0)
