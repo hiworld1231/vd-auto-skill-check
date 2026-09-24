@@ -70,6 +70,65 @@ class PostFireLifecycleTests(unittest.TestCase):
         self.assertEqual(d.state, FRENZY)
         self.assertEqual(d.reason, "PERSISTENT_RELOCATION_WITH_MOTION")
 
+    def test_generation_needle_relocation_confirms_before_generic_delay(self):
+        sm = PostFireLifecycle(
+            relocation_not_before_s=0.125,
+            relocation_frames=3,
+            generation_not_before_s=0.070,
+            generation_frames=2,
+        )
+        sm.begin(1.0)
+
+        d = sm.update(
+            1.075,
+            ring_present=True,
+            plateau_found=False,
+            zone_moved=True,
+            fresh_motion=True,
+            generation_evidence=True,
+        )
+        self.assertEqual(d.state, WAIT)
+
+        d = sm.update(
+            1.090,
+            ring_present=True,
+            plateau_found=False,
+            zone_moved=True,
+            fresh_motion=True,
+            generation_evidence=True,
+        )
+        self.assertEqual(d.state, FRENZY)
+        self.assertEqual(
+            d.reason,
+            "EARLY_RELOCATION_WITH_GENERATION_NEEDLE",
+        )
+        self.assertEqual(d.generation_evidence_streak, 2)
+
+    def test_generation_evidence_never_overrides_landing_plateau(self):
+        sm = PostFireLifecycle(
+            generation_not_before_s=0.070,
+            generation_frames=2,
+        )
+        sm.begin(1.0)
+        sm.update(
+            1.075,
+            ring_present=True,
+            plateau_found=False,
+            zone_moved=True,
+            fresh_motion=True,
+            generation_evidence=True,
+        )
+        d = sm.update(
+            1.090,
+            ring_present=True,
+            plateau_found=True,
+            zone_moved=True,
+            fresh_motion=False,
+            generation_evidence=True,
+        )
+        self.assertEqual(d.state, LANDED)
+        self.assertEqual(d.reason, "FREEZE_PLATEAU")
+
     def test_rollback_alone_never_confirms_frenzy(self):
         sm = PostFireLifecycle()
         sm.begin(1.0)

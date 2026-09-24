@@ -967,6 +967,10 @@ def run_genrush_clean(
                     zone_moved=zone_move,
                     rollback=rollback,
                     fresh_motion=observer.has_recent_motion(),
+                    generation_evidence=bool(
+                        isinstance(det, dict)
+                        and det.get("generation_needle_valid")
+                    ),
                 )
 
                 recorder.on_frame(
@@ -981,6 +985,9 @@ def run_genrush_clean(
                         "post_fire_reason": decision.reason,
                         "post_fire_absence_ms": decision.absence_ms,
                         "post_fire_relocated_streak": decision.relocated_streak,
+                        "post_fire_generation_evidence_streak": (
+                            decision.generation_evidence_streak
+                        ),
                     },
                 )
 
