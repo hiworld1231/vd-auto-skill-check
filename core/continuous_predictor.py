@@ -378,8 +378,19 @@ class ContinuousAngularPredictor:
                 chosen = float(self.generation_prior_speed)
                 reason = "FRENZY_PRIOR_HOLD"
             elif self._segment_speeds:
-                chosen = float(statistics.median(list(self._segment_speeds)[-2:]))
-                reason = "SEGMENT_PROVISIONAL"
+                segment = float(statistics.median(list(self._segment_speeds)[-2:]))
+                prior = max(20.0, float(self.session_base_speed))
+                # A single adjacent normal-check segment is still vulnerable to
+                # detector jumps / duplicated source cadence.  Do not let one
+                # implausible 2-point estimate replace the session prior and arm
+                # an irreversible early keydown.  Real fast checks become
+                # authoritative as soon as the robust >=3-point fit exists.
+                if 0.55 * prior <= segment <= 2.20 * prior:
+                    chosen = segment
+                    reason = "SEGMENT_PROVISIONAL"
+                else:
+                    chosen = prior
+                    reason = "SESSION_PRIOR_SEGMENT_GUARD"
             else:
                 chosen = float(self.session_base_speed)
                 reason = "SESSION_PRIOR_PREARM"
@@ -636,9 +647,10 @@ class ContinuousAngularPredictor:
             speed_low = float(self._speed_uncertainty_low or speed)
             speed_high = float(self._speed_uncertainty_high or speed)
             speed_source = "MEASURED"
-        elif self._segment_speeds:
-            # One adjacent-frame segment is enough to move a tentative
-            # deadline on normal checks, but not in Frenzy.
+        elif self._actuation_speed_reason == "SEGMENT_PROVISIONAL":
+            # One plausible adjacent-frame segment may move a tentative
+            # deadline on normal checks.  Outlier segments are kept on the
+            # session prior by get_actuation_speed() until robust fitting.
             speed_low = max(20.0, speed * 0.85)
             speed_high = min(1500.0, speed * 1.15)
             speed_source = "SEGMENT_PROVISIONAL"
