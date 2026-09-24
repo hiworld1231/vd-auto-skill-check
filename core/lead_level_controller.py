@@ -287,7 +287,35 @@ class LeadLevelController:
                 recent_med = float(statistics.median(restored_recent))
                 recent_mad = self._mad(restored_recent, recent_med)
                 delta = recent_med - self.current_lead_ms
-                if recent_mad <= 6.0 and abs(delta) >= 15.0:
+                restored_uncertainty = float(
+                    self._restored_uncertainty_ms
+                    if self._restored_uncertainty_ms is not None
+                    else 6.0
+                )
+                # Persisted uncertainty is the expected live scatter of a
+                # single delivery.  A fixed 6 ms MAD gate was too strict for a
+                # still-coherent restored session whose saved uncertainty was
+                # slightly wider (live 126.1±7.8 ms produced trusted ideals
+                # 106.3/98.6/113.5 and stayed knowingly off-center).  Let the
+                # saved uncertainty widen only this warm-start coherence gate,
+                # capped at 10 ms, and require every trusted sample to agree on
+                # the direction of the shift.
+                restored_mad_limit = min(
+                    self.recent_shift_max_mad_ms,
+                    max(6.0, restored_uncertainty),
+                )
+                same_side = (
+                    abs(delta) > 1e-9
+                    and all(
+                        (float(v) - self.current_lead_ms) * delta > 0.0
+                        for v in restored_recent
+                    )
+                )
+                if (
+                    recent_mad <= restored_mad_limit
+                    and abs(delta) >= 15.0
+                    and same_side
+                ):
                     self.current_lead_ms = self._clip(recent_med)
                     self.restored_from_disk = False
                     self._restored_uncertainty_ms = None

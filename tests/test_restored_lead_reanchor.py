@@ -43,6 +43,32 @@ class RestoredLeadReanchorTests(unittest.TestCase):
         self.assertAlmostEqual(c.current_lead_ms, 151.2, delta=0.01)
         self.assertFalse(c.restored_from_disk)
 
+    def test_live_126_with_saved_uncertainty_reanchors(self):
+        c = LeadLevelController(60.0)
+        c.restore_calibration(126.1, 7.8)
+
+        for ideal in (106.3, 98.6):
+            r = self.clean(c, ideal)
+            self.assertTrue(r["accepted"])
+            self.assertFalse(r["updated"])
+
+        r = self.clean(c, 113.5)
+        self.assertTrue(r["updated"])
+        self.assertEqual(r["update_reason"], "RESTORED_CALIBRATION_REANCHOR")
+        self.assertAlmostEqual(c.current_lead_ms, 106.3, delta=0.01)
+        self.assertFalse(c.restored_from_disk)
+
+    def test_restored_reanchor_requires_all_samples_on_same_side(self):
+        c = LeadLevelController(60.0)
+        c.restore_calibration(126.1, 10.0)
+
+        for ideal in (104.0, 106.0, 127.0):
+            r = self.clean(c, ideal)
+
+        self.assertFalse(r["updated"])
+        self.assertAlmostEqual(c.current_lead_ms, 126.1, delta=0.01)
+        self.assertTrue(c.restored_from_disk)
+
     def test_small_live_difference_does_not_fast_reanchor(self):
         c = LeadLevelController(60.0)
         c.restore_calibration(119.8, 6.9)
