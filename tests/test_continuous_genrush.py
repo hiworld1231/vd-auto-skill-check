@@ -527,6 +527,41 @@ class TestContinuousGenRush(unittest.TestCase):
         self.assertEqual(pred["speed_source"], "SEGMENT_PROVISIONAL")
         self.assertAlmostEqual(pred["speed_deg_s"], 350.0, delta=3.0)
 
+    def test_outlier_second_segment_keeps_session_prior_until_robust_fit(self):
+        # Live 2026-09-24 produced repeated 716-1169 deg/s two-point spikes
+        # against the 278 deg/s session prior.  Those SEGMENT_PROVISIONAL
+        # schedules fired ~90 ms early before a robust fit could replace them.
+        p = ContinuousAngularPredictor(
+            114.1,
+            session_base_speed=278.0,
+        )
+        w = {
+            "start": 85.0,
+            "end": 95.0,
+            "center": 90.0,
+            "width": 10.0,
+            "source": "MEASURED",
+        }
+        b = {
+            "start": 95.0,
+            "end": 135.0,
+            "center": 115.0,
+            "width": 40.0,
+            "source": "MEASURED",
+        }
+        p.update(0.000, 0.0, 80.0, w, b)
+        p.update(0.008, 9.0, 80.0, w, b)  # 1125 deg/s one-segment outlier
+
+        pred = p.predict(0.008, 9.0, target="GREAT")
+        self.assertIsNotNone(pred)
+        self.assertFalse(p.has_usable_speed())
+        self.assertEqual(pred["speed_source"], "SESSION_PRIOR")
+        self.assertAlmostEqual(pred["speed_deg_s"], 278.0, delta=0.1)
+        self.assertEqual(
+            p.get_shadow_telemetry()["actuation_speed_reason"],
+            "SESSION_PRIOR_SEGMENT_GUARD",
+        )
+
     def test_prior_can_immediately_salvage_success_when_center_deadline_passed(self):
         p = ContinuousAngularPredictor(
             138.9,
