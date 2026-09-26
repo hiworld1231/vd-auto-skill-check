@@ -1,7 +1,0 @@
-__pycache__/
-.venv/
-.pytest_cache/
-build/
-recordings/
-calibration.json
-reports/
