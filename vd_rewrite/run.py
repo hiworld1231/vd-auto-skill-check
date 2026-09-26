@@ -21,7 +21,7 @@ from vd.capture import PortalCapture
 
 def main():
     parser = argparse.ArgumentParser(description='VD rewrite: capture, dry-run, replay')
-    parser.add_argument('mode', choices=['capture-probe','dry-run','run','replay','preflight'])
+    parser.add_argument('mode', choices=['capture-probe','dry-run','run','replay','summary','preflight'])
     parser.add_argument('--synthetic', action='store_true')
     parser.add_argument('--seconds', type=float)
     parser.add_argument('--fps', type=int, default=60,
@@ -33,6 +33,12 @@ def main():
     parser.add_argument('--learn-lead', action='store_true',
                         help='Apply session-local CV latency estimates after four consistent observations')
     args = parser.parse_args()
+    if args.mode=='summary':
+        if args.recording is None:
+            parser.error('summary requires --recording')
+        from vd.recording import summarize_recording
+        print(json.dumps(summarize_recording(args.recording),indent=2,ensure_ascii=False))
+        return
     if args.mode=='preflight':
         from vd.preflight import inspect_system
         result=inspect_system()
