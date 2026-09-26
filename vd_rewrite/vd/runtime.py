@@ -11,7 +11,6 @@ from vd.calibration import FreezeObserver, LeadEstimator
 from vd.motion import Motion
 from vd.engine import Engine
 from vd.dispatch import dispatch
-from vd.input import MouseMonitor, SpaceOutput
 from vd.recording import Recorder, read_recording
 from vd.vision import Arc, Detector, retained_target
 
@@ -88,6 +87,13 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             if frame is None:
                 raise RuntimeError('No first frame')
             if physical:
+                try:
+                    from vd.input import MouseMonitor, SpaceOutput
+                except ImportError as exc:
+                    raise RuntimeError(
+                        'Physical input component is not present in this GitHub branch; '
+                        'dry-run and replay remain available.'
+                    ) from exc
                 mouse=stack.enter_context(MouseMonitor())
                 output=stack.enter_context(SpaceOutput())
             until=time.monotonic()+seconds
