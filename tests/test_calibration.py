@@ -1,4 +1,4 @@
-from vd.calibration import FreezeObserver
+from vd.calibration import FreezeObserver, Landing, LeadEstimator
 from vd.motion import Motion
 from vd.vision import Arc, Measurement, Needle
 
@@ -39,3 +39,29 @@ def test_needle_loss_before_a_stable_suffix_stays_unconfirmed():
 
     assert landing.label == 'UNCONFIRMED'
     assert not landing.eligible
+
+
+def test_lead_estimator_applies_two_consistent_physical_measurements():
+    estimator = LeadEstimator(.060, .015)
+    first = Landing('CV_MISS', 104.04, .033633, .020419, True,
+                    'CV_FREEZE_ESTIMATE')
+    second = Landing('CV_MISS', 34.71, .036445, .021414, True,
+                     'CV_FREEZE_ESTIMATE')
+
+    assert not estimator.observe(first, at=1.0, physical=True)
+    assert estimator.lead == .060
+    assert estimator.observe(second, at=2.0, physical=True)
+    assert abs(estimator.lead - .035039) < .000001
+    assert abs(estimator.uncertainty - .0209165) < .000001
+    assert estimator.reason == 'FRESH_CV_GROUP'
+
+
+def test_lead_estimator_rejects_two_inconsistent_measurements():
+    estimator = LeadEstimator(.060, .015)
+    first = Landing('CV_GREAT', 100, .035, .010, True, 'CV_FREEZE_ESTIMATE')
+    second = Landing('CV_MISS', 130, .065, .010, True, 'CV_FREEZE_ESTIMATE')
+
+    assert not estimator.observe(first, at=1.0, physical=True)
+    assert not estimator.observe(second, at=2.0, physical=True)
+    assert estimator.lead == .060
+    assert estimator.reason == 'INCONSISTENT_RESPONSE'

@@ -9,7 +9,7 @@ function bench(){
   let now=0,frame,timers=[],keydown;
   const nodes=new Map();
   const document={getElementById(id){
-    if(!nodes.has(id)) nodes.set(id,{style:{},textContent:'',value:'60',setAttribute(){},addEventListener(){}});
+    if(!nodes.has(id)) nodes.set(id,{style:{},textContent:'',value:'35',setAttribute(){},addEventListener(){}});
     return nodes.get(id);
   }};
   const window={};
@@ -69,7 +69,7 @@ test('fast Frenzy timing includes the configured Space response delay',()=>{
   const b=bench();
   b.key('KeyF');
   const state=b.state();
-  const leadMs=60;
+  const leadMs=35;
   assert.equal(state.responseDelayMs,leadMs);
   const phaseAtPress=state.targetPhase+5-700*leadMs/1000;
   const waitMs=(phaseAtPress-state.phase)/700*1000;

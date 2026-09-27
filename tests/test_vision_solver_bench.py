@@ -97,7 +97,7 @@ def test_continuous_frenzy_ring_gets_two_great_claims():
 @pytest.mark.parametrize('speed', [278, 550, 700, 1000, 1300])
 def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
     detector=Detector()
-    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
     target=40
     next_target_at=None
     claims=[]
@@ -119,7 +119,7 @@ def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
             if event['kind']=='PRESS_CLAIM':
                 claims.append(event)
                 plan=event['plan']
-                impact=(270+speed*(event['at']+.060))%360
+                impact=(270+speed*(event['at']+.036))%360
                 outcomes.append(Arc(plan['target_window_start'],
                                     plan['target_window_width']).contains(impact))
                 next_target_at=event['at']+.15
@@ -129,7 +129,7 @@ def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
     assert len({event['generation'] for event in claims})==20
     assert all(event['plan']['target_grade']=='GREAT' for event in claims)
     assert all(event['plan']['timing_mode']=='PREDICTED' for event in claims)
-    # The bench exposes its next target too late for a 60 ms response at
-    # 1000/1300°/s; those speeds still must receive one Space attempt each.
+    # At 1000°/s, some bench target transitions arrive too late for this
+    # measured response; every visible check must still receive one attempt.
     if speed<=700:
         assert outcomes==[True]*20

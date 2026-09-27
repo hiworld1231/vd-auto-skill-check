@@ -31,6 +31,8 @@ def test_run_cli_without_seconds_passes_unlimited_duration(monkeypatch, tmp_path
     assert seen['capture_priority'] == 10
     assert seen['variant'] == 'quiet'
     assert seen['video_recording'] is False
+    assert seen['lead_seconds'] == .035
+    assert seen['lead_uncertainty'] == .020
     assert 'Ctrl+C' in capsys.readouterr().out
 
 

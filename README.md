@@ -17,13 +17,13 @@ python run.py preflight
 ```
 
 Select the game monitor in KDE's screen-sharing dialog. Ctrl+C stops the
-solver. Video and timing logs are always saved under `recordings/` unless an
-explicit `--recording DIR` is supplied. The recorder runs on a bounded queue;
-frame drops and capture gaps are counted. The solver neither reads nor writes
-the game process. Video is full-rate during a detected check and sampled once
-per second otherwise. The solver still analyzes every captured frame while LMB
-is held; while released, it skips CV. Capture and video encoding run at lower
-CPU priority than the game.
+solver. Decision and timing logs are saved under `recordings/` unless an
+explicit `--recording DIR` is supplied. Frame video is off by default; add
+`--video` only when you need replay footage. The solver neither reads nor writes
+the game process. It analyzes every captured frame while LMB is held and skips
+CV while released. The capture worker runs at lower CPU priority than the game.
+The default lead is 35 ms, based on recent CV freeze estimates; two consistent
+physical observations can refine it for the current session.
 
 ## Compare capture profiles
 
@@ -75,7 +75,7 @@ and white/black zones appear at the exact
 screen coordinates the solver captures. Hold LMB to activate the solver; press
 F to start or stop a Frenzy sequence. The bench is for testing screen detection
 and input timing, not proof of an in-game hit. Its Space response delay defaults
-to 60 ms to match the solver's default `--lead-ms 60`; adjust the slider to the
+to 35 ms to match the solver's default `--lead-ms 35`; adjust the slider to the
 same value if you override `--lead-ms`.
 
 ## Replay and diagnostics

@@ -52,8 +52,8 @@ def main():
     video.add_argument('--no-video', dest='video_recording', action='store_false',
                        help='Keep decision events and performance stats but skip frame copies and video encoding')
     parser.set_defaults(video_recording=False)
-    parser.add_argument('--lead-ms', type=float, default=60)
-    parser.add_argument('--lead-uncertainty-ms', type=float, default=15)
+    parser.add_argument('--lead-ms', type=float, default=35)
+    parser.add_argument('--lead-uncertainty-ms', type=float, default=20)
     parser.add_argument('--learn-lead', action=argparse.BooleanOptionalAction, default=None,
                         help='Apply session-local CV latency estimates after four consistent observations (default in run)')
     args = parser.parse_args()

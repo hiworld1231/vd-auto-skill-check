@@ -122,7 +122,7 @@ class FreezeObserver:
 
 
 class LeadEstimator:
-    """Four fresh, consistent real-press observations; never learn from replay."""
+    """Two fresh, consistent real-press observations; never learn from replay."""
     def __init__(self, lead, uncertainty):
         self.lead=lead
         self.uncertainty=uncertainty
@@ -142,7 +142,7 @@ class LeadEstimator:
         self.samples=[s for s in self.samples if at-s[0]<=120]
         self.samples.append((at,landing.latency,landing.uncertainty))
         self.samples=self.samples[-4:]
-        if len(self.samples)<4:
+        if len(self.samples)<2:
             self.reason='COLLECTING'
             return False
         values=[s[1] for s in self.samples]

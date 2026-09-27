@@ -16,7 +16,7 @@ def same_target(a, b):
 
 
 class Engine:
-    def __init__(self, *, lead_seconds=.060, lead_uncertainty=.015,
+    def __init__(self, *, lead_seconds=.035, lead_uncertainty=.020,
                  absence_seconds=.12):
         self.planner=Planner(lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty)
         self.motion=MotionTracker()
