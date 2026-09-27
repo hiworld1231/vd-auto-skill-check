@@ -118,3 +118,13 @@ def test_uncertain_plan_can_claim_after_scheduler_wakes_late():
     plan=p.update(m,frame_at=1,now=1)
     assert plan is not None
     assert p.claim(plan,now=plan.press_at+.004,held=True,capture_alive=True)
+
+
+def test_late_attempt_preserves_original_deadline_for_diagnostics():
+    p=Planner(lead_seconds=.06,lead_uncertainty=.015)
+    p.begin(Arc(96,8),60)
+    m=Motion(1,110,300,0,0,1,6)
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan.press_at==1
+    assert plan.intended_press_at<1
+    assert plan.latest_press_at<1

@@ -45,3 +45,16 @@ def test_frenzy_target_change_keeps_measured_motion():
     assert engine.generation==2
     assert engine.motion.estimate is not None
     assert engine.planner.current is not None
+
+
+def test_frenzy_after_full_turn_aims_at_current_revolution():
+    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+    for i,angle in enumerate((340,350,0,10,20,30)):
+        engine.observe(measurement(1+i*.02,angle=angle,great=Arc(96,10)),now=1+i*.02)
+    assert engine.motion.estimate.phase>360
+    engine.planner.fired=True
+    engine.observe(measurement(1.12,angle=40,great=Arc(90,10)),now=1.12)
+    engine.observe(measurement(1.14,angle=50,great=Arc(90,10)),now=1.14)
+    assert engine.generation==2
+    assert engine.planner.target_phase>360
+    assert engine.planner.current.press_at>1.14

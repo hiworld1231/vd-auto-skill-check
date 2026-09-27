@@ -51,6 +51,6 @@ def dispatch(engine, capture, sequence, *, mouse=None, output=None, clock=time.m
                     prefire_motion=asdict(engine.motion.estimate) if engine.motion.estimate else None,
                     great=asdict(engine.planner.target),
                     good=asdict(engine.good) if engine.good else None,
-                    dispatch_lag_ms=(keydown.syn_completed_at-plan.press_at)*1000,
+                    dispatch_lag_ms=(keydown.syn_completed_at-plan.intended_press_at)*1000,
                     outside_target_window=bool(keydown.syn_completed_at>plan.latest_press_at))
             return plan

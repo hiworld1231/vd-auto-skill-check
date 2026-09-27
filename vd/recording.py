@@ -87,10 +87,22 @@ class Recorder:
             raise RuntimeError('Recorder closed')
         if self.error:
             raise RuntimeError('Recorder failed: '+self.error)
+        item=(None,dict(event))
         try:
-            self.queue.put_nowait((None,dict(event)))
+            self.queue.put_nowait(item)
         except queue.Full:
-            self.events_dropped+=1
+            with self.queue.mutex:
+                video=next((i for i,queued in enumerate(self.queue.queue)
+                            if queued is not None and queued[0] is not None),None)
+                if video is None:
+                    self.events_dropped+=1
+                    return
+                del self.queue.queue[video]
+                self.queue.unfinished_tasks-=1
+                self.dropped+=1
+                self.queue.queue.append(item)
+                self.queue.unfinished_tasks+=1
+                self.queue.not_empty.notify()
 
     def _start_encoder(self,image):
         if image.ndim!=3 or image.shape[2]!=3:

@@ -120,6 +120,8 @@ class Engine:
             self.good=m.good
             self.center=m.center
             initial=self.pending[2] if self.pending[2] is not None else ranked[0].angle
+            if continuing_chain and self.motion.last_unwrapped is not None:
+                initial=self.motion.last_unwrapped+delta(initial,self.motion.last_unwrapped)
             self.planner.begin(m.great,initial,m.good)
             if not continuing_chain:
                 self.motion.reset()

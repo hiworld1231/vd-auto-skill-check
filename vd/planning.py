@@ -15,6 +15,7 @@ class Plan:
     generation: int
     version: int
     press_at: float
+    intended_press_at: float
     valid_until: float
     target_phase: float
     uncertainty_degrees: float
@@ -92,13 +93,11 @@ class Planner:
         uncertainty=self._uncertainty(motion,aim)
         margin=max(0,window_width/2-uncertainty)
 
-        press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
+        intended_press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
         # Speed uncertainty also grows while a timer wakes late.
-        latest_press_at=press_at+margin/(motion.speed+motion.speed_scatter)
-        if press_at<now:
-            press_at=now
-            latest_press_at=max(now+.002,latest_press_at)
-        self.current=Plan(self.generation,self.version,press_at,valid_until,
+        latest_press_at=intended_press_at+margin/(motion.speed+motion.speed_scatter)
+        press_at=max(now,intended_press_at)
+        self.current=Plan(self.generation,self.version,press_at,intended_press_at,valid_until,
                           aim,uncertainty,latest_press_at,grade,
                           window_start,window_width)
         self.reason='PLANNED'

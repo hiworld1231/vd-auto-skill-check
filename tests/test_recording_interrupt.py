@@ -22,3 +22,21 @@ def test_ctrl_c_marks_recording_partial_and_returns_quickly(tmp_path):
     manifest = json.loads((tmp_path / "interrupt" / "manifest.json").read_text())
     assert manifest["interrupted"] is True
     assert manifest["complete"] is False
+
+
+def test_event_evicts_video_when_recording_queue_is_full():
+    import queue
+    from vd.recording import Recorder
+    recorder=Recorder.__new__(Recorder)
+    recorder.closed=False
+    recorder.error=None
+    recorder.dropped=0
+    recorder.events_dropped=0
+    recorder.queue=queue.Queue(maxsize=1)
+    recorder.queue.put_nowait((object(),{'sequence':1}))
+    recorder.event({'kind':'KEYDOWN'})
+    image,row=recorder.queue.get_nowait()
+    assert image is None
+    assert row['kind']=='KEYDOWN'
+    assert recorder.dropped==1
+    assert recorder.events_dropped==0
