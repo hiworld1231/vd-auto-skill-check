@@ -37,7 +37,6 @@ class FreezeObserver:
         self.offset_low=0.
         self.offset_high=0.
         self.tainted='LATE_DISPATCH' if late_dispatch else None
-        self.seen_after_press=False
 
     def _clear_plateau(self):
         self.plateau=[]
@@ -77,7 +76,6 @@ class FreezeObserver:
             self._clear_plateau()
             return
         angle=measurement.candidates[0].angle
-        self.seen_after_press=True
         if self.plateau:
             value=delta(angle,self.plateau_origin)
             low=min(self.offset_low,value)
