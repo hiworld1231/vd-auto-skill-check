@@ -69,6 +69,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     frame_age_ms=deque(maxlen=600)
     capture_pipe_age_ms=deque(maxlen=600)
     previous_received_time=None
+    started_wall=time.monotonic()
+    started_cpu=time.process_time()
     with ExitStack() as stack:
         if recording:
             recorder=stack.enter_context(Recorder(directory,metadata=dict(
@@ -117,6 +119,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             frame=capture.next(timeout=65)
             if frame is None:
                 raise RuntimeError('No first frame')
+            started_wall=time.monotonic()
+            started_cpu=time.process_time()
             if physical:
                 try:
                     from vd.input import MouseMonitor, SpaceOutput
@@ -181,12 +185,16 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             engine.cancel('STOPPED',time.monotonic())
             events()
             recorder.metadata['capture_sequences_skipped']=skipped
-            recorder.metadata['performance']=dict(
+            elapsed=max(time.monotonic()-started_wall,1e-9)
+            performance=dict(
                 frame_processing_ms=_timing_summary(frame_processing_ms),
                 frame_delivery_gap_ms=_timing_summary(frame_delivery_gap_ms),
                 frame_age_ms=_timing_summary(frame_age_ms),
                 capture_pipe_age_ms=_timing_summary(capture_pipe_age_ms),
+                elapsed_seconds=round(elapsed,3),
+                main_cpu_percent=round(100*(time.process_time()-started_cpu)/elapsed,1),
                 profile_window_frames=frame_processing_ms.maxlen)
+            recorder.metadata['performance']=performance
             recorder.metadata['final_lead_estimate']=dict(lead=estimator.lead,
                 uncertainty=estimator.uncertainty,reason=estimator.reason,
                 samples=estimator.samples,applied=learn_lead)
@@ -195,11 +203,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                                  ensure_ascii=False),flush=True)
     return dict(mode=mode,frames=nframes,claims=presses,physical_presses=keydowns,
                 capture_sequences_skipped=skipped,reasons=dict(reasons),
-                performance=dict(frame_processing_ms=_timing_summary(frame_processing_ms),
-                                 frame_delivery_gap_ms=_timing_summary(frame_delivery_gap_ms),
-                                 frame_age_ms=_timing_summary(frame_age_ms),
-                                 capture_pipe_age_ms=_timing_summary(capture_pipe_age_ms),
-                                 profile_window_frames=frame_processing_ms.maxlen),
+                performance=performance,
                 recording=str(directory) if recording else None,
                 recording_frames_dropped=recorder.dropped)
 

@@ -44,5 +44,6 @@ Replay reprocesses recorded video and timestamps, but virtual presses change
 what would happen next, so later video is counterfactual. A CV landing label
 only describes where the visible needle appeared to stop; it is not a
 confirmed game result. Performance output includes frame age, delivery gaps,
-processing time, capture skips, and recording drops. A real-game run with
+processing time, main-process CPU share, capture skips, and recording drops.
+The CPU share excludes the capture and video-encoder processes. A real-game run with
 visible results is required to establish GREAT rate and game lag.

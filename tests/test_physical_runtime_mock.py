@@ -99,6 +99,8 @@ def test_run_mode_initializes_capture_mouse_and_output_without_physical_presses(
     assert result['performance']['capture_pipe_age_ms']['samples'] > 0
     assert result['performance']['frame_delivery_gap_ms']['samples'] == result['frames'] - 1
     assert result['performance']['frame_delivery_gap_ms']['p95'] > 0
+    assert 0 <= result['performance']['main_cpu_percent']
+    assert result['performance']['elapsed_seconds'] > 0
 
 
 def test_no_recording_skips_video_writer_and_still_reports_performance(monkeypatch, tmp_path, capsys):
