@@ -55,7 +55,7 @@ def main():
     parser.add_argument('--lead-ms', type=float, default=35)
     parser.add_argument('--lead-uncertainty-ms', type=float, default=20)
     parser.add_argument('--learn-lead', action=argparse.BooleanOptionalAction, default=None,
-                        help='Apply session-local CV latency estimates after four consistent observations (default in run)')
+                        help='Apply session-local CV latency estimates after two consistent observations (default in run)')
     args = parser.parse_args()
     profile_fps, profile_priority = VARIANTS[args.variant]
     args.fps = profile_fps if args.fps is None else args.fps
