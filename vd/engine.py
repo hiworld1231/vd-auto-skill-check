@@ -9,13 +9,10 @@ import math
 
 from vd.motion import MotionTracker, delta
 from vd.planning import Planner
+from vd.vision import same_arc
 
 
 CHAIN_FAST_SHIFT_DEGREES=25
-
-
-def same_target(a, b):
-    return abs(delta(a.center,b.center))<=3 and abs(a.width-b.width)<=3
 
 
 class Engine:
@@ -92,7 +89,7 @@ class Engine:
                 self.cancel('RING_ENDED',now)
             return
         self.last_visible=m.timestamp
-        shifted=(not self.active or not same_target(self.target,m.great)
+        shifted=(not self.active or not same_arc(self.target,m.great)
                  or math.dist(self.center,m.center)>3)
         if shifted:
             self.reason='CONFIRMING_GEOMETRY'
@@ -104,7 +101,7 @@ class Engine:
             if not continuing_chain:
                 self.motion.reset_fit()
             pending_matches=(self.pending is not None
-                and same_target(self.pending[0],m.great)
+                and same_arc(self.pending[0],m.great)
                 and math.dist(self.pending[1],m.center)<=3)
             if not large_chain_shift:
                 if (not pending_matches or self.pending_at is None
