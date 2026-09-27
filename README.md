@@ -53,6 +53,19 @@ You can also mix settings for an extra test, for example
 `./start-solver.sh --variant quiet --fps 50 --capture-priority 5`.
 Explicit `--fps` and `--capture-priority` values override the selected profile.
 
+To test whether video encoding contributes to stutter while keeping the event
+log and performance summary, run:
+
+```bash
+./start-solver.sh --variant baseline --no-video
+./start-solver.sh --variant fps45 --no-video
+./start-solver.sh --variant deep-quiet --no-video
+```
+
+`--no-video` avoids copying captured frames and starting FFmpeg. The session
+still records detections, Space events, CV diagnostics, and performance
+statistics, but its frames cannot be replayed or inspected later.
+
 ## Browser test bench
 
 Run `./start-practice.sh` (or `./start-practice.sh --solver-test`). Open the

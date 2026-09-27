@@ -30,6 +30,7 @@ def test_run_cli_without_seconds_passes_unlimited_duration(monkeypatch, tmp_path
     assert seen['fps'] == 60
     assert seen['capture_priority'] == 5
     assert seen['variant'] == 'baseline'
+    assert seen['video_recording'] is True
     assert 'Ctrl+C' in capsys.readouterr().out
 
 
@@ -75,6 +76,22 @@ def test_explicit_capture_settings_override_the_selected_profile(monkeypatch, tm
     assert seen['fps'] == 50
     assert seen['capture_priority'] == 2
     assert seen['variant'] == 'quiet'
+
+
+def test_no_video_keeps_the_decision_event_log(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run_session(**kwargs):
+        seen.update(kwargs)
+        return {'mode': 'run', 'frames': 0}
+
+    monkeypatch.setattr('vd.runtime.run_session', fake_run_session)
+    monkeypatch.setattr('sys.argv', [str(PROJECT / 'run.py'), 'run', '--no-video',
+                                    '--recording', str(tmp_path / 'session')])
+    cli.main()
+
+    assert seen['recording'] is True
+    assert seen['video_recording'] is False
 
 
 def test_run_cli_prints_partial_performance_summary_after_ctrl_c(monkeypatch, tmp_path, capsys):
@@ -132,6 +149,11 @@ def test_start_solver_keeps_explicit_time_limit_optional(tmp_path):
 def test_start_solver_forwards_capture_profile(tmp_path):
     args = invoke_start_solver(tmp_path, '--variant', 'deep-quiet')
     assert args[1:] == ['run', '--variant', 'deep-quiet']
+
+
+def test_start_solver_forwards_no_video_option(tmp_path):
+    args = invoke_start_solver(tmp_path, '--variant', 'fps45', '--no-video')
+    assert args[1:] == ['run', '--variant', 'fps45', '--no-video']
 
 
 def test_start_solver_accepts_explicit_recording_directory(tmp_path):

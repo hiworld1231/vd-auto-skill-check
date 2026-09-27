@@ -2,8 +2,9 @@ import json
 import time
 
 import numpy as np
+import pytest
 
-from vd.recording import Recorder
+from vd.recording import Recorder, read_recording
 
 
 def test_ctrl_c_marks_recording_partial_and_returns_quickly(tmp_path):
@@ -40,3 +41,37 @@ def test_event_evicts_video_when_recording_queue_is_full():
     assert row['kind']=='KEYDOWN'
     assert recorder.dropped==1
     assert recorder.events_dropped==0
+
+
+def test_events_only_recording_skips_frame_copy_and_video_encoder(tmp_path, monkeypatch):
+    class Frame:
+        sequence = 1
+        media_time = 1.0
+        received_time = 1.0
+        consumed_time = 1.0
+        timestamp_kind = "test"
+        pts_ns = 1
+        negotiated_caps = "test"
+        synthetic = False
+
+        @property
+        def image(self):
+            raise AssertionError("events-only recording must not copy frame pixels")
+
+    monkeypatch.setattr("vd.recording._ffmpeg_encoder",
+                        lambda: pytest.fail("events-only mode must not probe FFmpeg"))
+    recorder = Recorder(tmp_path / "events-only",
+                        metadata={"requested_fps": 60}, record_video=False)
+    assert recorder.submit(Frame(), decision_time=1.1, held=True, state={}, events=[])
+    recorder.event({"kind": "KEYDOWN", "generation": 1})
+    recorder.close()
+
+    manifest = json.loads((tmp_path / "events-only" / "manifest.json").read_text())
+    events = [json.loads(line) for line in
+              (tmp_path / "events-only" / "events.jsonl").read_text().splitlines()]
+    assert manifest["video_recorded"] is False
+    assert manifest["frames_written"] == 0
+    assert manifest["events_written"] == 1
+    assert events == [{"kind": "KEYDOWN", "generation": 1}]
+    with pytest.raises(ValueError, match="events-only recording"):
+        list(read_recording(tmp_path / "events-only"))

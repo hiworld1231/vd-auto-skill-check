@@ -47,13 +47,15 @@ def _ffmpeg_encoder():
 
 
 class Recorder:
-    def __init__(self, directory, *, metadata, capacity=120):
+    def __init__(self, directory, *, metadata, capacity=120, record_video=True):
         self.directory=Path(directory)
         self.directory.mkdir(parents=True,exist_ok=False)
-        self.ffmpeg,self.video_codec=_ffmpeg_encoder()
+        self.record_video=bool(record_video)
+        self.ffmpeg,self.video_codec=(_ffmpeg_encoder() if self.record_video else (None,None))
         self.metadata=dict(format=FORMAT,source_sha256=source_digest(),
-                           video=VIDEO_NAME,video_codec=self.video_codec,
-                           video_lossless=False,**metadata)
+                           video=VIDEO_NAME if self.record_video else None,
+                           video_codec=self.video_codec,
+                           video_lossless=False,video_recorded=self.record_video,**metadata)
         self.queue=queue.Queue(maxsize=capacity)
         self.dropped=0
         self.written=0
@@ -71,6 +73,8 @@ class Recorder:
             raise RuntimeError('Recorder closed')
         if self.error:
             raise RuntimeError('Recorder failed: '+self.error)
+        if not self.record_video:
+            return True
         row=dict(sequence=frame.sequence,media_time=frame.media_time,
                  received_time=frame.received_time,consumed_time=frame.consumed_time,
                  timestamp_kind=frame.timestamp_kind,pts_ns=frame.pts_ns,
@@ -286,6 +290,8 @@ def read_recording(directory):
         yield from _read_legacy(directory)
         return
     if fmt==FORMAT:
+        if not manifest.get('video_recorded',True):
+            raise ValueError('This events-only recording has no video frames to replay')
         yield from _read_video(directory,manifest)
         return
     raise ValueError('Unsupported recording format')

@@ -40,7 +40,7 @@ def _timing_summary(samples):
 
 def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
                 physical=False, learn_lead=False, recording=True,
-                capture_priority=5, variant='baseline'):
+                capture_priority=5, variant='baseline', video_recording=True):
     if physical and synthetic:
         raise ValueError('Physical input is forbidden for synthetic capture')
     if learn_lead and not physical:
@@ -74,9 +74,10 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                 capture_priority=capture_priority,
                 lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
                 learn_lead=learn_lead,
-                video_sampling='full_rate_during_check_1fps_while_idle',
+                video_sampling=('full_rate_during_check_1fps_while_idle'
+                                if video_recording else 'disabled'),
                 held_source='evdev' if physical else 'assumed_for_dry_run',
-                game_outcome_measured=False)))
+                game_outcome_measured=False),record_video=video_recording))
         else:
             recorder=_NullRecorder()
 
@@ -166,7 +167,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                         state['measurement']=asdict(m)
                     reasons[state['reason']]+=1
                     events()
-                    if (held and engine.active
+                    if video_recording and (
+                            held and engine.active
                             or frame.received_time-last_idle_recorded_at>=1):
                         recorder.submit(frame,decision_time=decision_time,held=held,
                                         state=state,events=[])

@@ -46,6 +46,8 @@ def main():
     parser.add_argument('--recording', type=Path, help='New output directory, or input for replay')
     parser.add_argument('--no-recording', action='store_true',
                         help='Disable video/decision recording to reduce CPU and disk load')
+    parser.add_argument('--no-video', action='store_true',
+                        help='Keep decision events and performance stats but skip frame copies and video encoding')
     parser.add_argument('--lead-ms', type=float, default=60)
     parser.add_argument('--lead-uncertainty-ms', type=float, default=15)
     parser.add_argument('--learn-lead', action=argparse.BooleanOptionalAction, default=None,
@@ -100,13 +102,15 @@ def main():
                       f'nice≥{args.capture_priority}; '
                       f'lead={args.lead_ms:g} ms '
                       f'(CV-калибровка: {"включена" if args.learn_lead is not False else "только наблюдение"}; '
-                      f'видеозапись: {"вкл." if not args.no_recording else "выкл."}).',flush=True)
+                      f'видеозапись: {"вкл." if not args.no_video else "выкл."}; '
+                      f'журнал событий: вкл.).',flush=True)
                 try:
                     result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
                                capture_priority=args.capture_priority,variant=args.variant,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
                                physical=True,learn_lead=args.learn_lead is not False,
+                               video_recording=not args.no_video,
                                recording=not args.no_recording)
                 except KeyboardInterrupt:
                     manifest_path=directory/'manifest.json'
@@ -124,6 +128,7 @@ def main():
                                capture_priority=args.capture_priority,variant=args.variant,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
+                               video_recording=not args.no_video,
                                physical=False,learn_lead=False,
                                recording=not args.no_recording)
         print(json.dumps({k:v for k,v in result.items() if k not in ('rows','events')},indent=2))

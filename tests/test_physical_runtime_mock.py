@@ -138,6 +138,20 @@ def test_run_session_applies_and_records_capture_profile(monkeypatch, tmp_path):
     assert manifest['variant'] == 'deep-quiet'
 
 
+def test_events_only_run_does_not_submit_video_frames(monkeypatch, tmp_path):
+    monkeypatch.setattr('vd.runtime.PortalCapture', FakeCapture)
+    directory = tmp_path / 'events-only'
+    run_session(seconds=.025, synthetic=False, fps=60, directory=directory,
+                lead_seconds=.06, lead_uncertainty=.015, recording=True,
+                video_recording=False)
+
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    assert manifest['video_recorded'] is False
+    assert manifest['video_sampling'] == 'disabled'
+    assert manifest['frames_written'] == 0
+    assert manifest['events_written'] == 0
+
+
 def test_run_session_without_seconds_keeps_running_until_interrupted(monkeypatch, tmp_path):
     class InterruptingCapture(FakeCapture):
         def next(self, after=-1, timeout=1.0):
