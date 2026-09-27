@@ -131,7 +131,8 @@ def test_run_session_without_seconds_keeps_running_until_interrupted(monkeypatch
                     lead_seconds=.06, lead_uncertainty=.015, physical=False)
 
     manifest = json.loads((recording / 'manifest.json').read_text())
-    assert manifest['frames_written'] >= 4
+    assert manifest['frames_written'] == 1
+    assert manifest['video_sampling'] == 'full_rate_during_check_1fps_while_idle'
     assert manifest['runtime_error'] == 'KeyboardInterrupt'
     assert manifest['complete'] is False
     assert manifest['performance']['frame_processing_ms']['samples'] <= 600

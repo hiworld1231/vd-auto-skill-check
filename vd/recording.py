@@ -7,6 +7,7 @@ readable.
 """
 import hashlib
 import json
+import os
 from collections import Counter
 from pathlib import Path
 import queue
@@ -112,16 +113,22 @@ class Recorder:
         if not 1<=fps<=240:
             fps=60.0
         command=[self.ffmpeg,'-hide_banner','-loglevel','error','-y',
+                 '-filter_threads','1',
                  '-f','rawvideo','-pix_fmt','bgr24','-s:v',f'{width}x{height}',
                  '-r',f'{fps:g}','-i','pipe:0','-an']
         if self.video_codec=='libx264':
-            command += ['-c:v','libx264','-preset','veryfast','-crf','18',
+            command += ['-c:v','libx264','-threads:v','1','-preset','veryfast','-crf','18',
                         '-pix_fmt','yuv420p','-movflags','+faststart']
         else:
-            command += ['-c:v','mpeg4','-q:v','3','-pix_fmt','yuv420p']
+            command += ['-c:v','mpeg4','-threads:v','1','-q:v','3','-pix_fmt','yuv420p']
         command += [str(self.directory/VIDEO_NAME)]
         proc=subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,
                               stderr=subprocess.PIPE)
+        try:
+            os.setpriority(os.PRIO_PROCESS,proc.pid,
+                           max(os.getpriority(os.PRIO_PROCESS,proc.pid),10))
+        except ProcessLookupError:
+            pass
         self.metadata['video_width']=width
         self.metadata['video_height']=height
         self.metadata['video_nominal_fps']=fps

@@ -91,3 +91,29 @@ def test_continuous_frenzy_ring_gets_two_great_claims():
     claims=[e for e in events if e['kind']=='PRESS_CLAIM']
     assert len(claims)==2
     assert all(e['plan']['target_grade']=='GREAT' for e in claims)
+
+
+def test_twenty_continuous_frenzy_checks_each_get_one_great_attempt():
+    detector=Detector()
+    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+    target=40
+    next_target_at=None
+    claims=[]
+    for index in range(900):
+        at=index/60
+        if next_target_at is not None and at>=next_target_at:
+            target=(target+150)%360
+            next_target_at=None
+        angle=(270+700*at)%360
+        measured=detector.measure(bench_frame((160,162.5),angle,target),at)
+        engine.observe(measured,now=at,held=True)
+        engine.poll(at,held=True)
+        for event in engine.take_events():
+            if event['kind']=='PRESS_CLAIM':
+                claims.append(event)
+                next_target_at=at+.15
+        if len(claims)>=20:
+            break
+    assert len(claims)==20
+    assert len({event['generation'] for event in claims})==20
+    assert all(event['plan']['target_grade']=='GREAT' for event in claims)

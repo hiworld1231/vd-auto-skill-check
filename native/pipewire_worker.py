@@ -19,9 +19,6 @@ gi.require_version('GstVideo', '1.0')
 from gi.repository import Gst, GLib, GstVideo
 import numpy as np
 
-Gst.init(None)
-
-
 def portal_video_caps(fps):
     return f'video/x-raw,framerate=0/1,max-framerate={fps}/1'
 
@@ -121,6 +118,9 @@ def main():
     ap.add_argument('--fps', type=int, default=60)
     ap.add_argument('--roi', default='800,420,320,240')
     args = ap.parse_args()
+    os.setpriority(os.PRIO_PROCESS, 0,
+                   max(os.getpriority(os.PRIO_PROCESS, 0), 5))
+    Gst.init(None)
     if not 1 <= args.fps <= 240:
         raise ValueError('FPS must be in [1, 240]')
     left, top, width, height = map(int, args.roi.split(','))

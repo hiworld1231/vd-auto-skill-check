@@ -20,13 +20,16 @@ Select the game monitor in KDE's screen-sharing dialog. Ctrl+C stops the
 solver. Video and timing logs are always saved under `recordings/` unless an
 explicit `--recording DIR` is supplied. The recorder runs on a bounded queue;
 frame drops and capture gaps are counted. The solver neither reads nor writes
-the game process. While LMB is released, it skips CV and records one idle
-frame per second; full-rate solving and recording resume when LMB is held.
+the game process. Video is full-rate during a detected check and sampled once
+per second otherwise. The solver still analyzes every captured frame while LMB
+is held; while released, it skips CV. Capture and video encoding run at lower
+CPU priority than the game.
 
 ## Browser test bench
 
-Run `./start-practice.sh`. Open the browser at a 1920×1080 viewport; F11 may
-be needed. The synthetic red pointer and white/black zones appear at the exact
+Run `./start-practice.sh` (or `./start-practice.sh --solver-test`). Open the
+browser at a 1920×1080 viewport; F11 may be needed. The synthetic red pointer
+and white/black zones appear at the exact
 screen coordinates the solver captures. Hold LMB to activate the solver; press
 F to start or stop a Frenzy sequence. The bench is for testing screen detection
 and input timing, not proof of an in-game hit.

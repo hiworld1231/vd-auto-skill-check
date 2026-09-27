@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 practice_file="$project_dir/simulator/skillcheck.html"
-if (($#)); then
+if (($#)) && [[ "$#" -ne 1 || "$1" != "--solver-test" ]]; then
   printf 'Usage: %s\n' "$0" >&2
   exit 2
 fi

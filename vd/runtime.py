@@ -78,6 +78,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                 mode=mode,synthetic=synthetic,requested_fps=fps,
                 lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
                 learn_lead=learn_lead,
+                video_sampling='full_rate_during_check_1fps_while_idle',
                 held_source='evdev' if physical else 'assumed_for_dry_run',
                 game_outcome_measured=False)))
         else:
@@ -168,10 +169,11 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                         state['measurement']=asdict(m)
                     reasons[state['reason']]+=1
                     events()
-                    if held or frame.received_time-last_idle_recorded_at>=1:
+                    if (held and engine.active
+                            or frame.received_time-last_idle_recorded_at>=1):
                         recorder.submit(frame,decision_time=decision_time,held=held,
                                         state=state,events=[])
-                        if not held:
+                        if not held or not engine.active:
                             last_idle_recorded_at=frame.received_time
                     frame_processing_ms.append((time.perf_counter()-frame_started)*1000)
                     nframes+=1
