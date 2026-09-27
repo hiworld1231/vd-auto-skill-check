@@ -63,7 +63,10 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     frame_delivery_gap_ms=deque(maxlen=600)
     frame_age_ms=deque(maxlen=600)
     capture_pipe_age_ms=deque(maxlen=600)
+    capture_worker_cpu_percent=deque(maxlen=600)
     previous_received_time=None
+    previous_worker_cpu_time_ns=None
+    previous_worker_received_time=None
     last_idle_recorded_at=float('-inf')
     started_wall=time.monotonic()
     started_cpu=time.process_time()
@@ -145,6 +148,18 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     frame_age_ms.append(max(0,(time.monotonic()-frame.received_time)*1000))
                     if frame.media_time is not None:
                         capture_pipe_age_ms.append(max(0,(frame.received_time-frame.media_time)*1000))
+                    worker_cpu_time_ns=getattr(frame,'worker_cpu_time_ns',None)
+                    if worker_cpu_time_ns is None:
+                        previous_worker_cpu_time_ns=None
+                        previous_worker_received_time=None
+                    else:
+                        if previous_worker_cpu_time_ns is not None:
+                            wall=frame.received_time-previous_worker_received_time
+                            cpu=worker_cpu_time_ns-previous_worker_cpu_time_ns
+                            if wall>0 and cpu>=0:
+                                capture_worker_cpu_percent.append(cpu/1e9/wall*100)
+                        previous_worker_cpu_time_ns=worker_cpu_time_ns
+                        previous_worker_received_time=frame.received_time
                     skipped+=max(0,frame.sequence-last-1) if last>=0 else 0
                     last=frame.sequence
                     if not held:
@@ -198,6 +213,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                 frame_delivery_gap_ms=_timing_summary(frame_delivery_gap_ms),
                 frame_age_ms=_timing_summary(frame_age_ms),
                 capture_pipe_age_ms=_timing_summary(capture_pipe_age_ms),
+                capture_worker_cpu_percent=_timing_summary(capture_worker_cpu_percent),
                 elapsed_seconds=round(elapsed,3),
                 main_cpu_percent=round(100*(time.process_time()-started_cpu)/elapsed,1),
                 profile_window_frames=frame_processing_ms.maxlen)

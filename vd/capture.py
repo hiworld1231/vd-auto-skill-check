@@ -23,6 +23,7 @@ class Frame:
     synthetic: bool
     pts_ns: int | None
     negotiated_caps: str
+    worker_cpu_time_ns: int | None = None
 
 
 class PortalCapture:
@@ -88,7 +89,8 @@ class PortalCapture:
                     None if media is None else media / 1e9,
                     h['received_ns'] / 1e9, time.monotonic(),
                     h['timestamp_kind'], bool(h['synthetic']),
-                    h['pts_ns'], h['negotiated_caps'])
+                    h['pts_ns'], h['negotiated_caps'],
+                    h.get('worker_cpu_time_ns'))
                 with self.cv:
                     self.latest = frame
                     self.cv.notify_all()

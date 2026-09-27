@@ -104,8 +104,53 @@ def test_run_mode_initializes_capture_mouse_and_output_without_physical_presses(
     assert result['performance']['elapsed_seconds'] > 0
 
 
-@pytest.mark.parametrize('speed', (700, 1300))
-def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, tmp_path, speed):
+def test_runtime_reports_capture_worker_cpu_share(monkeypatch, tmp_path):
+    class CpuCapture:
+        def __init__(self, **_):
+            self.cv = threading.Condition()
+            self.proc = FakeProcess()
+            self.stopping = False
+            self.error = None
+            self.latest = None
+            self.cpu_time_ns = 0
+            self.last_received = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.stopping = True
+
+        def next(self, after=-1, timeout=1.0):
+            time.sleep(.005)
+            received = time.monotonic()
+            if self.last_received is not None:
+                self.cpu_time_ns += int((received - self.last_received) * 500_000_000)
+            self.last_received = received
+            self.latest = SimpleNamespace(sequence=after + 1,
+                image=np.zeros((240, 320, 3), dtype=np.uint8),
+                media_time=received, received_time=received, consumed_time=received,
+                timestamp_kind='test_clock', synthetic=False, pts_ns=None,
+                    negotiated_caps='test_caps',worker_cpu_time_ns=self.cpu_time_ns)
+            return self.latest
+
+    class BlankDetector:
+        def measure(self, image, timestamp, *, center_hint=None):
+            return Measurement(timestamp,None,0,None,None,(),'NO_PROMPT')
+
+    monkeypatch.setattr('vd.runtime.PortalCapture', CpuCapture)
+    monkeypatch.setattr('vd.runtime.Detector', BlankDetector)
+    result=run_session(seconds=.05,synthetic=False,fps=60,directory=tmp_path/'cpu',
+                       lead_seconds=.035,lead_uncertainty=.020,recording=False,
+                       video_recording=False)
+
+    cpu=result['performance']['capture_worker_cpu_percent']
+    assert cpu['samples']==result['frames']-1
+    assert 48<=cpu['p50']<=52
+
+
+@pytest.mark.parametrize(('speed', 'fps'), ((700, 60), (1300, 60), (700, 30), (1300, 30)))
+def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, tmp_path, speed, fps):
     class TimerCapture:
         def __init__(self, *, synthetic, fps, priority=5):
             assert synthetic is False
@@ -184,8 +229,8 @@ def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, t
     monkeypatch.setattr('vd.runtime.Detector', SpinnerDetector)
     monkeypatch.setattr(vd_input, 'MouseMonitor', HeldMouse)
     monkeypatch.setattr(vd_input, 'SpaceOutput', lambda: output)
-    result = run_session(seconds=.35, synthetic=False, fps=60,
-                         directory=tmp_path / f'timer-{speed}',
+    result = run_session(seconds=.35, synthetic=False, fps=fps,
+                         directory=tmp_path / f'timer-{speed}-{fps}',
                          lead_seconds=.035, lead_uncertainty=.020,
                          physical=True, learn_lead=False, recording=False,
                          video_recording=False)
@@ -194,8 +239,8 @@ def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, t
     assert len(output.keydowns) == 1
     phase = (270 + speed * (output.keydowns[0] - capture.origin + .035)) % 360
     assert Arc(40, 10).contains(phase)
-    frame_phase = (output.keydowns[0] - capture.origin) * 60
-    assert abs(frame_phase - round(frame_phase)) > .1
+    frame_phase = (output.keydowns[0] - capture.origin) * fps
+    assert abs(frame_phase - round(frame_phase)) > .05
 
 
 def test_no_recording_skips_video_writer_and_still_reports_performance(monkeypatch, tmp_path, capsys):

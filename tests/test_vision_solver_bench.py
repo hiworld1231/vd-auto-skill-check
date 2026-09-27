@@ -103,7 +103,8 @@ def test_continuous_frenzy_ring_gets_two_great_claims():
 
 
 @pytest.mark.parametrize('speed', [278, 550, 700, 1000, 1300])
-def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
+@pytest.mark.parametrize('fps', [60, 30])
+def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed, fps):
     detector=Detector()
     engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
     target=40
@@ -111,8 +112,8 @@ def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
     claims=[]
     outcomes=[]
     missed=False
-    for index in range(3600):
-        at=index/60
+    for index in range(fps*60):
+        at=index/fps
         if next_target_at is not None and at>=next_target_at:
             target=(target+150)%360
             next_target_at=None
@@ -124,7 +125,7 @@ def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
         engine.observe(measured,now=at,held=True)
         plan=engine.planner.current
         # The physical runtime wakes at the planner deadline even between frames.
-        wake=(plan.press_at if plan is not None and at<=plan.press_at<at+1/60
+        wake=(plan.press_at if plan is not None and at<=plan.press_at<at+1/fps
               else at)
         engine.poll(wake,held=True)
         for event in engine.take_events():

@@ -24,3 +24,4 @@ def test_capture_converts_only_the_selected_roi_before_emitting_bgr_frames():
     header_size, = struct.unpack("!I", result.stdout[:4])
     header = json.loads(result.stdout[4:4 + header_size])
     assert (header["width"], header["height"], header["bytes"]) == (320, 240, 320 * 240 * 3)
+    assert header["worker_cpu_time_ns"] > 0

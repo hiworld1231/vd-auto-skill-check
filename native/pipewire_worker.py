@@ -183,6 +183,7 @@ def main():
                 raise RuntimeError('Cannot map video buffer')
             try:
                 received_ns = time.monotonic_ns()
+                worker_cpu_time_ns = time.process_time_ns()
                 clock = pipeline.get_clock()
                 clock_now_ns = clock.get_time()
                 segment = sample.get_segment()
@@ -196,6 +197,7 @@ def main():
                 payload = pixels.tobytes()
                 header = json.dumps(dict(seq=count, width=width, height=height,
                     bytes=len(payload), stride=width * 3,
+                    worker_cpu_time_ns=worker_cpu_time_ns,
                     pts_ns=int(b.pts) if pts_valid else None,
                     negotiated_caps=sample.get_caps().to_string(),
                     requested_fps=args.fps,

@@ -93,7 +93,7 @@ what would happen next, so later video is counterfactual. A CV landing label
 only describes where the visible needle appeared to stop; it is not a
 confirmed game result. The coverage audit separates predicted attempts from
 `BLIND_NO_NEEDLE` and `BLIND_NO_MOTION` attempts. Performance output includes
-frame age, delivery gaps, processing time, main-process CPU share, capture
-skips, and recording drops.
-The CPU share excludes the capture and video-encoder processes. A real-game run with
-visible results is required to establish GREAT rate and game lag.
+frame age, delivery gaps, processing time, CPU shares for the main process and
+PipeWire capture worker, capture skips, and recording drops. It excludes the
+optional video encoder. A real-game run with visible results is required to
+establish GREAT rate and game lag.
