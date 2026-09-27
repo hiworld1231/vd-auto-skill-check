@@ -1,43 +1,48 @@
-# VD rewrite
+# VD screen solver
 
-Independent rewrite of the skill-check path under `vd_rewrite/`. It does not import the legacy root `core` implementation.
+`./start-solver.sh` captures the selected 1920×1080 monitor, watches a fixed
+320×240 skill-check area at `(800, 420)`, and sends Space while LMB is held.
+It aims at the white GREAT arc on every detected check, including successive
+checks on a continuous Frenzy ring. It does not target GOOD. A missed timing
+prediction triggers an immediate late attempt while the check remains visible;
+missing ring, target, or needle pixels trigger reacquisition. No screen-only
+solver can guarantee a hit when the target crosses between captured frames.
 
-## Current state
-
-The rewrite contains independent PipeWire capture, per-frame CV, robust motion fitting, generation lifecycle, scheduling, recording and replay. The planner is **GREAT-first**: it targets the narrow GREAT arc whenever the full timing uncertainty fits there. If GREAT is too narrow but the uncertainty fits inside the paired GREAT+GOOD success interval, it emits an explicit `GOOD_FALLBACK` plan. If neither interval is safe, it keeps `TARGET_UNCERTAIN` and does not claim a press.
-
-The uploaded GitHub branch supports `preflight`, `capture-probe`, `dry-run`, and `replay`. The local rewrite also contains the physical evdev/UInput component used by `run`, but that single file could not be published through the connected GitHub write path. Consequently this branch deliberately lazy-loads physical input: dry-run/replay remain usable, while `run` reports a clear error instead of breaking module import.
-
-## Setup
+## Start
 
 ```bash
-cd vd_rewrite
 ./setup.sh
 python run.py preflight
-python run.py capture-probe --synthetic --seconds 5
-python run.py dry-run --seconds 60
+./start-solver.sh
 ```
 
-Live capture opens KDE's standard screen-sharing selector. Select the monitor containing the game. The current ROI is fixed for the tested 1920x1080 layout: `800,420,320,240`, with ring radius 66 px.
+Select the game monitor in KDE's screen-sharing dialog. Ctrl+C stops the
+solver. Video and timing logs are always saved under `recordings/` unless an
+explicit `--recording DIR` is supplied. The recorder runs on a bounded queue;
+frame drops and capture gaps are counted. The solver neither reads nor writes
+the game process.
 
-Dry-run treats LMB as held but opens no input device. Every run records processed ROI frames losslessly under `recordings/` unless another output directory is supplied.
+## Browser test bench
 
-## Replay
+Run `./start-practice.sh`. Open the browser at a 1920×1080 viewport; F11 may
+be needed. The synthetic red pointer and white/black zones appear at the exact
+screen coordinates the solver captures. Hold LMB to activate the solver; press
+F to start or stop a Frenzy sequence. The bench is for testing screen detection
+and input timing, not proof of an in-game hit.
+
+## Replay and diagnostics
 
 ```bash
-python run.py replay --recording recordings/<session> --report reports/replay.json
+python run.py replay --recording recordings/SESSION
+python run.py summary --recording recordings/SESSION
+python tools/audit_solver_coverage.py recordings/SESSION
+node --test simulator/*.test.cjs
+.venv/bin/python -m pytest -q
 ```
 
-Replay reruns CV, motion and engine state from the recorded PNG frames. Timer wakes are idealized, and images after a virtual claim are counterfactual because no physical Space was sent during replay. Therefore replay claims are scheduler/CV evidence, not proof of an in-game hit.
-
-## GOOD fallback found from the live dry-run
-
-The recording `20260926_154417_693878` repeatedly produced `TARGET_UNCERTAIN`: GREAT was about 10.7 degrees wide while the modeled uncertainty could be wider than half of GREAT. The paired GOOD arc immediately after it was about 42 degrees wide.
-
-After the planner change, replay of that recording produced 3 virtual claims, all explicitly marked `GOOD_FALLBACK`. Frames ending in `TARGET_UNCERTAIN` dropped from 48 to 7. GREAT is still preferred whenever its own uncertainty envelope fits, and a remote/unpaired GOOD arc is never allowed to widen the target.
-
-## Tests performed on the uploaded source snapshot
-
-The local source snapshot from which this branch was uploaded passed 55 tests covering the rewrite logic; the only separately collected mouse-monitor test could not be collected in the execution environment because the `evdev` package was unavailable there. Python compile checks passed. The exact GOOD-fallback geometry from the live recording is also covered by `tests/test_planning.py`.
-
-These checks validate program behavior. They do not establish Roblox-side hit accuracy or long-session stability.
+Replay reprocesses recorded video and timestamps, but virtual presses change
+what would happen next, so later video is counterfactual. A CV landing label
+only describes where the visible needle appeared to stop; it is not a
+confirmed game result. Performance output includes frame age, delivery gaps,
+processing time, capture skips, and recording drops. A real-game run with
+visible results is required to establish GREAT rate and game lag.

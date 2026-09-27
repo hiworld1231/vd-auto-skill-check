@@ -122,6 +122,14 @@ class MotionTracker:
         self.last_accepted_at=timestamp
         self.points.append((timestamp,unwrapped))
         if len(self.points)<4 or self.points[-1][0]-self.points[0][0]<.04:
+            if len(self.points)>=2 and self.points[-1][0]-self.points[0][0]>=.012:
+                span=self.points[-1][0]-self.points[0][0]
+                speed=(self.points[-1][1]-self.points[0][1])/span
+                if 20<=speed<=1800:
+                    self.estimate=Motion(timestamp,unwrapped,speed,1.5,
+                                         max(80,.2*speed),timestamp,len(self.points))
+                    self.reason='EARLY_MOTION'
+                    return self.estimate
             self.estimate=None
             self.reason='MEASURING_MOTION'
             return None

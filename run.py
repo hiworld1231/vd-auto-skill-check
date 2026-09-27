@@ -28,10 +28,12 @@ def main():
                         help='requested maximum portal frame rate; synthetic source uses fixed FPS')
     parser.add_argument('--report', type=Path)
     parser.add_argument('--recording', type=Path, help='New output directory, or input for replay')
+    parser.add_argument('--no-recording', action='store_true',
+                        help='Disable video/decision recording to reduce CPU and disk load')
     parser.add_argument('--lead-ms', type=float, default=60)
     parser.add_argument('--lead-uncertainty-ms', type=float, default=15)
-    parser.add_argument('--learn-lead', action='store_true',
-                        help='Apply session-local CV latency estimates after four consistent observations')
+    parser.add_argument('--learn-lead', action=argparse.BooleanOptionalAction, default=None,
+                        help='Apply session-local CV latency estimates after four consistent observations (default in run)')
     args = parser.parse_args()
     if args.mode=='summary':
         if args.recording is None:
@@ -49,13 +51,15 @@ def main():
         if not result['ok']:
             raise SystemExit(1)
         return
-    if args.seconds is None:
-        args.seconds=3600 if args.mode=='run' else 5
-    if not 0 < args.seconds <= 86400:
+    if args.seconds is None and args.mode!='run':
+        args.seconds=5
+    if args.seconds is not None and not 0 < args.seconds <= 86400:
         parser.error('seconds must be in (0, 86400]')
     if args.mode=='run' and args.synthetic:
         parser.error('run does not accept synthetic capture')
-    if args.learn_lead and args.mode!='run':
+    if args.mode=='run' and args.no_recording:
+        parser.error('run always records; --no-recording is only for dry-run')
+    if args.learn_lead is True and args.mode!='run':
         parser.error('--learn-lead requires run')
     if not 1<=args.fps<=240:
         parser.error('fps must be in [1, 240]')
@@ -71,12 +75,33 @@ def main():
             directory=args.recording or (Path(__file__).resolve().parent/'recordings'/
                          datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
             if args.mode=='run':
-                print(f'RUN: Space при удержании LMB; lead={args.lead_ms:g} ms '
-                      f'(CV-калибровка: {"включена" if args.learn_lead else "только наблюдение"}).',flush=True)
-            result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
-                           directory=directory,lead_seconds=args.lead_ms/1000,
-                           lead_uncertainty=args.lead_uncertainty_ms/1000,
-                           physical=args.mode=='run',learn_lead=args.learn_lead)
+                print(f'RUN: Space при удержании LMB; Ctrl+C для остановки; '
+                      f'lead={args.lead_ms:g} ms '
+                      f'(CV-калибровка: {"включена" if args.learn_lead is not False else "только наблюдение"}; '
+                      f'видеозапись: {"вкл." if not args.no_recording else "выкл."}).',flush=True)
+                try:
+                    result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
+                               directory=directory,lead_seconds=args.lead_ms/1000,
+                               lead_uncertainty=args.lead_uncertainty_ms/1000,
+                               physical=True,learn_lead=args.learn_lead is not False,
+                               recording=not args.no_recording)
+                except KeyboardInterrupt:
+                    manifest_path=directory/'manifest.json'
+                    print('\nStopped.',flush=True)
+                    if manifest_path.is_file():
+                        manifest=json.loads(manifest_path.read_text())
+                        print(json.dumps(dict(recording=str(directory),complete=manifest.get('complete'),
+                            frames_written=manifest.get('frames_written'),
+                            frames_dropped=manifest.get('frames_dropped'),
+                            capture_sequences_skipped=manifest.get('capture_sequences_skipped'),
+                            performance=manifest.get('performance')),indent=2))
+                    return
+            else:
+                result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
+                               directory=directory,lead_seconds=args.lead_ms/1000,
+                               lead_uncertainty=args.lead_uncertainty_ms/1000,
+                               physical=False,learn_lead=False,
+                               recording=not args.no_recording)
         print(json.dumps({k:v for k,v in result.items() if k not in ('rows','events')},indent=2))
         if args.report:
             args.report.parent.mkdir(parents=True,exist_ok=True)

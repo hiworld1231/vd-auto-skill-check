@@ -1,9 +1,10 @@
 """Independent capture/CV/engine integration. No physical input in dry-run."""
-from collections import Counter
+from collections import Counter, deque
 from contextlib import ExitStack
 from dataclasses import asdict
 import json
 from pathlib import Path
+import statistics
 import time
 
 from vd.capture import PortalCapture
@@ -15,6 +16,28 @@ from vd.recording import Recorder, read_recording
 from vd.vision import Arc, Detector, retained_target
 
 
+class _NullRecorder:
+    """Keep the live decision loop without video encoding or disk writes."""
+    def __init__(self):
+        self.metadata = {}
+        self.dropped = 0
+
+    def event(self, event):
+        pass
+
+    def submit(self, *args, **kwargs):
+        pass
+
+
+def _timing_summary(samples):
+    ordered = sorted(samples)
+    if not ordered:
+        return {"samples": 0, "p50": None, "p95": None, "max": None}
+    p95_index = min(len(ordered) - 1, int(len(ordered) * .95))
+    return {"samples": len(ordered), "p50": round(statistics.median(ordered), 3),
+            "p95": round(ordered[p95_index], 3), "max": round(ordered[-1], 3)}
+
+
 def dry_run(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty):
     return run_session(seconds=seconds,synthetic=synthetic,fps=fps,directory=directory,
                        lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
@@ -22,7 +45,7 @@ def dry_run(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertaint
 
 
 def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
-                physical=False, learn_lead=False):
+                physical=False, learn_lead=False, recording=True):
     if physical and synthetic:
         raise ValueError('Physical input is forbidden for synthetic capture')
     if learn_lead and not physical:
@@ -41,13 +64,21 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     observer=None
     observer_generation=None
     estimator=LeadEstimator(lead_seconds,lead_uncertainty)
+    frame_processing_ms=deque(maxlen=600)
+    frame_delivery_gap_ms=deque(maxlen=600)
+    frame_age_ms=deque(maxlen=600)
+    capture_pipe_age_ms=deque(maxlen=600)
+    previous_received_time=None
     with ExitStack() as stack:
-        recorder=stack.enter_context(Recorder(directory,metadata=dict(
-            mode=mode,synthetic=synthetic,requested_fps=fps,
-            lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
-            learn_lead=learn_lead,
-            held_source='evdev' if physical else 'assumed_for_dry_run',
-            game_outcome_measured=False)))
+        if recording:
+            recorder=stack.enter_context(Recorder(directory,metadata=dict(
+                mode=mode,synthetic=synthetic,requested_fps=fps,
+                lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
+                learn_lead=learn_lead,
+                held_source='evdev' if physical else 'assumed_for_dry_run',
+                game_outcome_measured=False)))
+        else:
+            recorder=_NullRecorder()
 
         def events():
             nonlocal presses,keydowns,observer,observer_generation
@@ -91,17 +122,25 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     from vd.input import MouseMonitor, SpaceOutput
                 except ImportError as exc:
                     raise RuntimeError(
-                        'Physical input component is not present in this GitHub branch; '
+                        'Physical input requires the evdev package; '
                         'dry-run and replay remain available.'
                     ) from exc
                 mouse=stack.enter_context(MouseMonitor())
                 output=stack.enter_context(SpaceOutput())
-            until=time.monotonic()+seconds
-            while time.monotonic()<until:
+            until=None if seconds is None else time.monotonic()+seconds
+            while until is None or time.monotonic()<until:
                 if output is not None and output.error:
                     raise RuntimeError('Input failed: '+output.error)
                 held=mouse.snapshot().held if mouse is not None else True
                 if frame is not None:
+                    frame_started=time.perf_counter()
+                    if previous_received_time is not None:
+                        frame_delivery_gap_ms.append(
+                            max(0,(frame.received_time-previous_received_time)*1000))
+                    previous_received_time=frame.received_time
+                    frame_age_ms.append(max(0,(time.monotonic()-frame.received_time)*1000))
+                    if frame.media_time is not None:
+                        capture_pipe_age_ms.append(max(0,(frame.received_time-frame.media_time)*1000))
                     skipped+=max(0,frame.sequence-last-1) if last>=0 else 0
                     last=frame.sequence
                     if frame.media_time is None:
@@ -124,13 +163,14 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     events()
                     recorder.submit(frame,decision_time=decision_time,held=held,
                                     state=state,events=[])
+                    frame_processing_ms.append((time.perf_counter()-frame_started)*1000)
                     nframes+=1
                 else:
                     dispatch(engine,capture,last,mouse=mouse,output=output,clock=time.monotonic)
                     events()
                 now=time.monotonic()
                 plan=engine.planner.current
-                timeout=min(.020,max(0,until-now))
+                timeout=.020 if until is None else min(.020,max(0,until-now))
                 if plan is not None:
                     timeout=min(timeout,max(0,plan.press_at-now),max(0,plan.valid_until-now))
                 frame=capture.next(last,timeout=timeout)
@@ -141,11 +181,26 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             engine.cancel('STOPPED',time.monotonic())
             events()
             recorder.metadata['capture_sequences_skipped']=skipped
+            recorder.metadata['performance']=dict(
+                frame_processing_ms=_timing_summary(frame_processing_ms),
+                frame_delivery_gap_ms=_timing_summary(frame_delivery_gap_ms),
+                frame_age_ms=_timing_summary(frame_age_ms),
+                capture_pipe_age_ms=_timing_summary(capture_pipe_age_ms),
+                profile_window_frames=frame_processing_ms.maxlen)
             recorder.metadata['final_lead_estimate']=dict(lead=estimator.lead,
                 uncertainty=estimator.uncertainty,reason=estimator.reason,
                 samples=estimator.samples,applied=learn_lead)
+            if not recording:
+                print(json.dumps(dict(kind='PERFORMANCE',**recorder.metadata['performance']),
+                                 ensure_ascii=False),flush=True)
     return dict(mode=mode,frames=nframes,claims=presses,physical_presses=keydowns,
-                capture_sequences_skipped=skipped,reasons=dict(reasons),recording=str(directory),
+                capture_sequences_skipped=skipped,reasons=dict(reasons),
+                performance=dict(frame_processing_ms=_timing_summary(frame_processing_ms),
+                                 frame_delivery_gap_ms=_timing_summary(frame_delivery_gap_ms),
+                                 frame_age_ms=_timing_summary(frame_age_ms),
+                                 capture_pipe_age_ms=_timing_summary(capture_pipe_age_ms),
+                                 profile_window_frames=frame_processing_ms.maxlen),
+                recording=str(directory) if recording else None,
                 recording_frames_dropped=recorder.dropped)
 
 

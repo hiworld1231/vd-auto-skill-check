@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VD Skill Check Practice</title>
+<script type="module">if(new URLSearchParams(location.search).has('solver-test')){document.documentElement.classList.add('solver-bench');addEventListener('DOMContentLoaded',()=>{const label=document.querySelector('.bench-label');const update=()=>{const ready=innerWidth===1920&&innerHeight===1080;label.dataset.ready=String(ready);label.textContent='SOLVER TEST BENCH · synthetic red pointer · viewport '+innerWidth+'×'+innerHeight+(ready?' · READY':' · press F11 / use 1920×1080');};update();addEventListener('resize',update);});}</script>
+<style>
+:root{color-scheme:dark;font:15px Inter,system-ui,sans-serif;background:#11151b;color:#f0f3f5}
+*{box-sizing:border-box}body{margin:0;min-height:100dvh;overflow-x:hidden;background:radial-gradient(ellipse at 50% 46%,#342f24 0,#1d1b18 38%,#11151b 76%)}
+.layout{width:min(1120px,calc(100vw - 32px));height:100dvh;margin-inline:auto;padding:12px 0;display:grid;grid-template-rows:32px minmax(0,1fr) 24px auto;gap:8px;align-items:center}
+.toolbar{display:flex;justify-content:space-between;align-items:center;min-width:0}.brand{display:flex;align-items:center;gap:9px;letter-spacing:.12em;font-size:12px;color:#adb6be}.brand strong{font-size:13px;color:#eef3f5}.brand-mark{display:grid;place-items:center;width:28px;height:28px;border:1px solid #53616b;border-radius:8px;color:#baf3d9;font-weight:800;letter-spacing:0}.toolbar .toggle{font-size:11px;letter-spacing:0}.toolbar .message{margin:0;padding:7px 10px;border:1px solid #3b464f;border-radius:999px;background:#161d22;font-size:11px}
+.stage{aspect-ratio:4/3;height:min(68dvh,calc(100dvh - 245px),720px);width:auto;max-width:calc(100vw - 32px);min-height:220px;justify-self:center;position:relative;overflow:hidden;border:1px solid #4b5053;border-radius:4px;background:url("./assets/game-scene.png") center / cover no-repeat;box-shadow:0 22px 70px #0009}
+.result{height:24px;min-width:150px;justify-self:center;text-align:center;font-size:17px;font-weight:850;letter-spacing:.1em;line-height:24px}.result.great{color:#1ee78b}.result.good{color:#ffd23f}.result.miss{color:#ff5262}
+.check{position:absolute;inset:0;width:100%;height:100%;overflow:visible;opacity:0;transition:opacity .08s linear}
+.ring{fill:none;stroke:#e5e9eb;stroke-opacity:.78;stroke-width:2.5}.arc{fill:none;stroke-linecap:butt}.great{stroke:#fff;stroke-width:10;filter:drop-shadow(0 0 2px #fff)}.good{stroke:#090b0d;stroke-width:6.5;filter:drop-shadow(0 0 1px #fff);paint-order:stroke}
+.needle{stroke:#d9dee0;stroke-width:2.5;stroke-linecap:round;filter:drop-shadow(0 0 2px #fff8)}
+.center{fill:#090b0d;stroke:#13191b;stroke-width:2}.message{font-weight:700;letter-spacing:.04em;color:#e9eee9;white-space:nowrap}.message.good{color:#dce2e5}.message.great{color:#fff}.message.miss{color:#ff5360}
+.panel{width:100%;max-width:820px;justify-self:center;padding:8px 10px;border-radius:12px;background:#1a2027ed;border:1px solid #3b424a;box-shadow:0 15px 45px #0006;display:grid;gap:6px}
+.control-grid{display:grid;grid-template-columns:1.2fr .8fr 1.2fr;gap:7px}.group{min-width:0;padding:7px 8px;border:1px solid #343e46;border-radius:9px;background:#171d22}.group-title{margin:0 0 5px;color:#9eabb4;font-size:10px;font-weight:750;letter-spacing:.1em;text-transform:uppercase}.fe-line,.toggle-line,.frenzy-line,.action-row{display:flex;align-items:center;gap:7px}.fe-line{justify-content:space-between;margin-bottom:5px}.fe-line label{font-size:12px}.fe-line select{max-width:100px}.toggle-line{justify-content:space-between}.toggle{display:flex;align-items:center;gap:6px;color:#d8e0e4;font-size:11px}.switch{accent-color:#27e38a;width:15px;height:15px;margin:0}
+select,button{min-height:30px;color:#eef4f4;background:#29323b;border:1px solid #4b5964;border-radius:7px;padding:5px 8px;font:inherit;font-size:12px}button{cursor:pointer}button:hover{background:#36424d}.primary{background:#146447;border-color:#2fa87a}.buttons{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0}.buttons button{width:100%;min-height:28px;padding:4px 6px}.meter{height:6px;border-radius:8px;background:#303940;overflow:hidden;margin:0 0 5px}.meter i{display:block;height:100%;background:linear-gradient(90deg,#19bdf2,#23ef8a);width:0;transition:width .2s}.stats{font-size:11px;line-height:1.35;color:#c5cdd2}.frenzy-line{justify-content:space-between;margin-bottom:4px}.frenzy-line select{min-width:138px}.frenzy-control{display:grid;grid-template-columns:minmax(0,1fr) 46px;gap:5px;align-items:center}.frenzy-control button{width:100%}.frenzy-control .frenzy-status{grid-column:1/-1}.frenzy-status{font-size:10px;line-height:1.2;color:#aab4bc;min-height:11px}.keybind{min-width:46px;text-align:center;font-weight:700}.help{font-size:11px;color:#aeb9c0}.help summary{width:max-content;cursor:pointer;list-style:none;color:#aeb9c0}.help summary::-webkit-details-marker{display:none}.help summary::before{content:'＋';display:inline-block;width:17px;color:#baf3d9}.help[open] summary::before{content:'−'}.help-content{padding:7px 0 2px;line-height:1.45;max-width:760px}.sep{height:1px;background:#343d45;margin:7px 0}.badge{display:inline-block;border:1px solid #45525c;color:#c7d4dc;border-radius:4px;padding:2px 5px;font-size:10px;letter-spacing:.08em}
+button:focus-visible,select:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid #8cf0bd;outline-offset:2px}
+@media(max-width:780px){.layout{width:min(100% - 24px,680px);height:auto;min-height:100dvh;padding:10px 0;grid-template-rows:32px minmax(180px,1fr) 24px auto;gap:8px}.stage{height:min(56dvh,calc(100dvh - 330px),430px);min-height:0;max-width:100%}.panel{padding:8px}.control-grid{grid-template-columns:1fr 1fr}.frenzy-group{grid-column:1/-1}}
+@media(max-width:520px){.layout{grid-template-rows:30px minmax(190px,1fr) 24px auto}.toolbar .message{max-width:62vw;overflow:hidden;text-overflow:ellipsis}.stage{height:auto;width:100%;min-height:0}.control-grid{grid-template-columns:1fr 1fr}.repair-group,.streak-group{grid-column:auto}.frenzy-group{grid-column:1/-1}.buttons{grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}.buttons button{font-size:11px;padding-inline:3px}.group{padding:7px}}
+.solver-bench body{display:block;min-height:1080px;width:1920px;overflow:hidden;background:#080a0c}
+.solver-bench .layout{display:block;position:relative;width:1920px;height:1080px;margin:0;padding:0}
+.solver-bench .stage{position:absolute;left:800px;top:420px;width:320px;height:240px;min-height:0;aspect-ratio:auto;border:0;border-radius:0;background:#101317;box-shadow:none}
+.solver-bench .panel,.solver-bench .toolbar{display:none}
+.solver-bench .needle{stroke:#e83d43}
+.solver-bench .bench-label{display:block;position:fixed;left:16px;top:16px;color:#fff;background:#8b3036;padding:8px 12px;font:12px system-ui,sans-serif;z-index:2}
+.solver-bench .bench-label[data-ready="true"]{background:#176746}
+.bench-label{display:none}
+</style>
+</head>
+<body>
+<div class="bench-label">SOLVER TEST BENCH · synthetic red pointer · browser viewport must be 1920×1080 · press F11 if needed</div>
+<main class="layout">
+  <header class="toolbar">
+    <div class="brand"><span class="brand-mark">VD</span><strong>SKILL CHECK</strong><label class="toggle" for="infiniteFrenzy"><input id="infiniteFrenzy" class="switch" type="checkbox"><span>∞ Frenzy</span></label></div>
+    <div id="message" class="message">REPAIRING · WAITING FOR CHECK</div>
+  </header>
+  <section id="stage" class="stage" aria-label="Skill check">
+    <svg id="checkSvg" class="check" viewBox="0 0 320 240" role="img" aria-label="Rotating skill check indicator">
+      <circle id="ring" class="ring" cx="160" cy="162.5" r="66.5"/>
+      <path id="goodArc" class="arc good"/>
+      <path id="greatArc" class="arc great"/>
+      <line id="needle" class="needle" x1="160" y1="162.5" x2="160" y2="91"/>
+      <circle id="hub" class="center" cx="160" cy="162.5" r="4"/>
+      <image id="keyPrompt" href="../assets/space_template.png" x="125" y="145" width="70" height="35"/>
+    </svg>
+  </section>
+  <div id="result" class="result" aria-live="polite"></div>
+  <aside class="panel" aria-label="Practice controls">
+    <div class="control-grid">
+      <section class="group repair-group">
+        <h2 class="group-title">Repair &amp; Flawless Execution</h2>
+        <div class="fe-line"><label class="toggle" for="fe"><input id="fe" class="switch" type="checkbox"><span>Flawless Execution</span></label><select id="tier" aria-label="Flawless Execution tier"><option value="1">Tier I</option><option value="2">Tier II</option><option value="3" selected>Tier III</option></select></div>
+        <div class="toggle-line"><label class="toggle" for="alone"><input id="alone" class="switch" type="checkbox" checked><span>Alone</span></label><label class="toggle" for="repair"><input id="repair" class="switch" type="checkbox" checked><span>Repairing</span></label></div>
+      </section>
+      <section class="group streak-group">
+        <h2 class="group-title">GREAT streak</h2>
+        <div class="stats">Consecutive GREAT checks</div><div class="meter"><i id="meter"></i></div>
+        <div id="perkState" class="stats">Perk off</div>
+      </section>
+      <section class="group frenzy-group">
+        <h2 class="group-title">King’s Scourge · Frenzy</h2>
+        <div class="frenzy-line"><label for="checkDelay" class="stats">Normal interval <output id="checkDelayValue">3.5 s</output></label><input id="checkDelay" type="range" min="0.5" max="15" step="0.5" value="3.5" aria-label="Ordinary skillcheck interval in seconds"></div>
+        <div class="frenzy-line"><label for="frenzyDelay" class="stats">Frenzy interval <output id="frenzyDelayValue">0.15 s</output></label><input id="frenzyDelay" type="range" min="0.05" max="1" step="0.01" value="0.15" aria-label="Delay from a successful hit to the next Frenzy check in seconds"></div>
+        <div class="frenzy-control"><button id="frenzyStart" class="primary">Start Frenzy</button><button id="frenzyBind" class="keybind" type="button" title="Click, then press a key">F</button><div id="frenzyStatus" class="frenzy-status" aria-live="polite">Inactive · click the button or press F</div></div>
+      </section>
+    </div>
+    <div class="buttons action-row"><button id="leave">Leave generator</button><button id="return" class="primary">Return</button><button id="new">New check</button><button id="reset">Reset streak</button></div>
+    <details class="help"><summary>Controls and perk notes</summary><div class="help-content"><span class="badge">SPACE</span> hits the needle. GREAT is white in the game (green in the old overlay); GOOD is black (blue in the old overlay). The practice pointer is neutral. A miss ends Frenzy and resets the perk streak. The top-left checkbox follows measured Frenzy transitions after the captured route ends, until you miss. Leaving starts the tier’s return window. During Frenzy, a successful hit keeps the ring and rotating needle visible until the next check begins, matching the recorded continuous transition through 360° and beyond. Normal interval controls ordinary checks; Frenzy interval controls the delay from a hit to the next Frenzy check. Finite captured routes keep their exact angles; infinite continuation applies a measured relative angle and destination-zone geometry to the current check. Flawless Execution models streak effects while repairing alone. Outcomes are simulated; replay timing and zones are estimates.</div></details>
+  </aside>
+</main>
+<script src="./scene-backgrounds.js"></script>
+<script src="./default-zone-sequences.js"></script>
+  <script src="./frenzy-sequences.js"></script>
+<script src="./check-interval-samples.js"></script>
+<script src="./check-anchors.js"></script>
+<script src="./perk-model.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const model = window.VDPerkModel;
+  let circle = {x:160, y:162.5, r:66.5};
+  // Keep the practice stand's skill check fixed in the center of its crop.
+  // A second center appeared in a few differently framed recordings, but
+  // that is not enough evidence to model the check moving around the screen.
+  const checkAnchors = [[160,162.5]];
+  let anchorIndex = -1;
+  const scenes = Array.isArray(window.VDSceneBackgrounds) ? window.VDSceneBackgrounds : [];
+  const defaultZoneSequences = Array.isArray(window.VDDefaultZoneSequences) ? window.VDDefaultZoneSequences : [];
+  let sceneIndex = -1;
+  let checksStarted = 0;
+  const needleSpeed = 278;
+  const baseCheckDuration = 360 / needleSpeed;
+  const perk = model.createState();
+  let target = null;
+  let angle = 270;
+  let checkSpeed = needleSpeed;
+  let checkStartAngle = 0;
+  let checkActive = false;
+  let frenzyTransitionVisible = false;
+  let replayDataMissing = false;
+  let checkStartedAt = 0;
+  let checkEndsAt = 0;
+  let idleTimer = null;
+  let lastPanelUpdate = -Infinity;
+  let panelCheckActive = false;
+  let nextCheck = performance.now() + 900;
+  let leaveAt = null;
+  let returnWindowSeconds = null;
+  let resultUntil = 0;
+  let lastResult = '';
+  let frenzyActive = false;
+  let frenzyRouteCursor = 0;
+  let frenzyRouteIndex = 0;
+  let frenzyZoneIndex = 0;
+  let frenzyGenerated = false;
+  let frenzyCheckCount = 0;
+  let frenzyTransitionCursor = 0;
+  let frenzySampleDone = false;
+  let frenzyKey = localStorage.getItem('vd-frenzy-key') || 'KeyF';
+  let waitingForFrenzyKey = false;
+  const frenzySequences = Array.isArray(window.VDFrenzySequences) ? window.VDFrenzySequences : [];
+  const frenzySpeeds = Array.isArray(window.VDFrenzySpeeds) && window.VDFrenzySpeeds.length
+    ? window.VDFrenzySpeeds : [278, 293, 370];
+  const frenzyTransitions = Array.isArray(window.VDFrenzyTransitions)
+    ? window.VDFrenzyTransitions : [];
+  const frenzyTiming = window.VDFrenzyTiming || {median_ms:150};
+  const checkIntervals = Array.isArray(window.VDDefaultCheckIntervals) ? window.VDDefaultCheckIntervals : [];
+  let checkIntervalIndex = 0;
+  let normalRouteIndex = 0;
+  let normalZoneIndex = 0;
+  let normalRouteComplete = false;
+
+  const norm = value => (value % 360 + 360) % 360;
+  function nextNormalSample() {
+    if (!defaultZoneSequences.length) return null;
+    const sample = defaultZoneSequences[normalRouteIndex]?.[normalZoneIndex];
+    if (!sample) {
+      normalRouteComplete = true;
+      return null;
+    }
+    normalZoneIndex += 1;
+    return sample;
+  }
+  function advanceNormalRoute() {
+    if (!defaultZoneSequences.length) return;
+    normalRouteIndex = (normalRouteIndex + 1) % defaultZoneSequences.length;
+    normalZoneIndex = 0;
+    normalRouteComplete = false;
+    replayDataMissing = false;
+  }
+  function changeScene() {
+    if (!scenes.length) return;
+    let next = Math.floor(Math.random() * scenes.length);
+    if (scenes.length > 1 && next === sceneIndex) next = (next + 1) % scenes.length;
+    sceneIndex = next;
+    $('stage').style.backgroundImage = 'url("' + scenes[sceneIndex] + '")';
+  }
+  function nextAnchor() {
+    anchorIndex = (anchorIndex + 1) % checkAnchors.length;
+    const [x,y] = checkAnchors[anchorIndex];
+    circle = {x,y,r:66.5};
+    for (const id of ['ring','hub']) {
+      $(id).setAttribute('cx', x);
+      $(id).setAttribute('cy', y);
+    }
+    $('needle').setAttribute('x1', x);
+    $('needle').setAttribute('y1', y);
+    $('keyPrompt').setAttribute('x', x - 35);
+    $('keyPrompt').setAttribute('y', y - 17.5);
+  }
+  function arcPath(start, width) {
+    const a = norm(start) * Math.PI / 180;
+    const b = norm(start + width) * Math.PI / 180;
+    const x1 = circle.x + circle.r * Math.cos(a);
+    const y1 = circle.y + circle.r * Math.sin(a);
+    const x2 = circle.x + circle.r * Math.cos(b);
+    const y2 = circle.y + circle.r * Math.sin(b);
+    return 'M ' + x1 + ' ' + y1 + ' A ' + circle.r + ' ' + circle.r + ' 0 0 1 ' + x2 + ' ' + y2;
+  }
+  function setTarget() {
+    let greatWidth, goodWidth, gap;
+    let greatStart;
+    let recordedChainCount = null;
+    if (frenzyActive) {
+      const route = frenzySequences[frenzyRouteIndex];
+      const sample = route?.checks?.[frenzyZoneIndex];
+      if (sample) {
+        frenzyZoneIndex += 1;
+        [greatWidth, goodWidth, gap, greatStart, recordedChainCount] = sample;
+      } else if ($('infiniteFrenzy').checked && target && frenzyTransitions.length) {
+        const step = frenzyTransitions[frenzyTransitionCursor % frenzyTransitions.length];
+        frenzyTransitionCursor += 1;
+        [greatWidth, goodWidth, gap] = step;
+        greatStart = norm(target.greatStart + Number(step[3]));
+        recordedChainCount = (target.recordedChainCount || 1) + 1;
+        frenzyGenerated = true;
+      } else {
+        return null;
+      }
+    } else {
+      const sample = nextNormalSample();
+      if (!sample) return null;
+      [greatWidth, goodWidth, gap, greatStart] = sample;
+    }
+    const goodStart = norm(greatStart + greatWidth + gap);
+    $('greatArc').setAttribute('d', arcPath(greatStart, greatWidth));
+    $('goodArc').setAttribute('d', arcPath(goodStart, goodWidth));
+    return {greatStart:norm(greatStart), greatWidth, goodStart,
+      goodHitStart:norm(greatStart + greatWidth), goodWidth, recordedChainCount};
+  }
+  function effectEligible() {
+    return $('fe').checked && leaveAt === null;
+  }
+  function durationEligible() {
+    return effectEligible() && $('repair').checked;
+  }
+  function canEarn() {
+    return durationEligible() && $('alone').checked;
+  }
+  function tier() { return Number($('tier').value); }
+  function duration() { return model.nextDuration(perk, durationEligible(), tier(), baseCheckDuration); }
+  function nextInterval() {
+    const desiredMedian = Number($('checkDelay').value) || 3.5;
+    if (!checkIntervals.length) return desiredMedian;
+    const interval = checkIntervals[checkIntervalIndex % checkIntervals.length];
+    checkIntervalIndex += 1;
+    return Math.min(desiredMedian * 3, Math.max(.5, interval * desiredMedian / 6.5));
+  }
+  function pointNeedle() {
+    const radians = angle * Math.PI / 180;
+    $('needle').setAttribute('x2', circle.x + Math.cos(radians) * 74);
+    $('needle').setAttribute('y2', circle.y + Math.sin(radians) * 74);
+  }
+  function updateNeedle(now) {
+    const elapsed = checkActive ? Math.min(now - checkStartedAt, checkEndsAt - checkStartedAt) :
+      now - checkStartedAt;
+    angle = norm(checkStartAngle + checkSpeed * elapsed / 1000);
+    pointNeedle();
+  }
+  function startCheck(now) {
+    if (frenzyTransitionVisible) updateNeedle(now);
+    const nextTarget = setTarget();
+    if (!nextTarget) {
+      replayDataMissing = !normalRouteComplete;
+      frenzyActive = false;
+      frenzySampleDone = false;
+      checkActive = false;
+      nextCheck = Infinity;
+      updatePanel(now);
+      return;
+    }
+    replayDataMissing = false;
+    frenzyTransitionVisible = false;
+    // Keep scene changes out of the way during fast Frenzy chains.
+    if (checksStarted % 64 === 0) changeScene();
+    checksStarted += 1;
+    nextAnchor();
+    target = nextTarget;
+    checkStartAngle = frenzyActive ? angle : 270;
+    angle = checkStartAngle;
+    const speedIndex = frenzyActive && $('infiniteFrenzy').checked ? frenzyCheckCount :
+      target.recordedChainCount === null ? 0 : target.recordedChainCount - 1;
+    checkSpeed = frenzyActive ? frenzySpeeds[Math.min(speedIndex, frenzySpeeds.length - 1)] : needleSpeed;
+    if (frenzyActive) frenzyCheckCount += 1;
+    checkStartedAt = now;
+    checkEndsAt = now + Math.min(duration(), 360 / checkSpeed) * 1000;
+    checkActive = true;
+    pointNeedle();
+  }
+  function finishCheck(outcome, now) {
+    if (!checkActive) return;
+    checkActive = false;
+    lastResult = outcome;
+    resultUntil = now + 850;
+    model.resolve(perk, outcome, canEarn(), durationEligible(), tier());
+    if (frenzyActive) {
+      if (outcome === 'MISS') {
+        frenzyActive = false;
+        frenzyTransitionVisible = false;
+        frenzySampleDone = false;
+        nextCheck = now + nextInterval() * 1000;
+      } else if (!$('infiniteFrenzy').checked &&
+                 (frenzyGenerated || frenzyZoneIndex >= frenzySequences[frenzyRouteIndex].checks.length)) {
+        frenzyActive = false;
+        frenzyTransitionVisible = false;
+        frenzySampleDone = true;
+        nextCheck = Infinity;
+      } else {
+        frenzyTransitionVisible = true;
+        nextCheck = now + Math.max(0.05, Number($('frenzyDelay').value) || frenzyTiming.median_ms / 1000) * 1000;
+      }
+    } else {
+      frenzyTransitionVisible = false;
+      nextCheck = now + nextInterval() * 1000;
+    }
+    updatePanel(now);
+  }
+  function clearStreak() { model.reset(perk); }
+  function check() {
+    if (!checkActive || !$('repair').checked) return;
+    const now = performance.now();
+    if (now >= checkEndsAt) {
+      finishCheck('MISS', checkEndsAt);
+      return;
+    }
+    updateNeedle(now);
+    const contains = (value, start, width) => norm(value - start) <= width;
+    const outcome = contains(angle, target.greatStart, target.greatWidth) ? 'GREAT' :
+      contains(angle, target.goodHitStart, target.goodWidth + (target.goodStart - target.goodHitStart + 360) % 360) ? 'GOOD' : 'MISS';
+    finishCheck(outcome, now);
+  }
+  function updatePanel(now) {
+    lastPanelUpdate = now;
+    panelCheckActive = checkActive;
+    const on = $('fe').checked;
+    const isEligible = canEarn();
+    const perkTier = model.tiers[tier()];
+    const visibleReturnWindow = returnWindowSeconds ?? perkTier.window;
+    const reduction = durationEligible() ? perk.hitsSinceMiss * perkTier.step : 0;
+    $('meter').style.width = Math.min(100, perk.greatStreak / 3 * 100) + '%';
+    $('perkState').innerHTML = on ?
+      '<b>' + (effectEligible() ? (isEligible ? 'Active' : 'Paused') : 'Paused') + '</b> · Repair boost <b>' +
+      model.currentBonus(perk, effectEligible(), tier()) + '%</b><br>' +
+      'Next check duration −' + reduction.toFixed(3) + ' s<br>Return window ' + visibleReturnWindow + ' s' +
+      (leaveAt !== null ? ' · ' + Math.max(0, visibleReturnWindow - (now - leaveAt) / 1000).toFixed(1) + ' s left' : '') :
+      'Perk off';
+    $('message').textContent = now < resultUntil ? lastResult : replayDataMissing ? 'REPLAY DATA MISSING' :
+      !$('repair').checked ? 'NOT REPAIRING' :
+      checkActive ? 'REPAIRING · PRESS SPACE' : normalRouteComplete ?
+      'RECORDED ROUTE COMPLETE · NEW CHECK FOR NEXT TRACE' : 'REPAIRING · WAITING FOR CHECK';
+    $('message').className = 'message ' + (now < resultUntil ? lastResult.toLowerCase() : '');
+    $('result').textContent = now < resultUntil ? lastResult : '';
+    $('result').className = 'result ' + (now < resultUntil ? lastResult.toLowerCase() : '');
+    $('checkSvg').style.opacity = checkActive || frenzyTransitionVisible ? '1' : '0';
+    $('frenzyStart').textContent = frenzyActive ? 'Cancel Frenzy' : 'Start Frenzy';
+    $('frenzyStart').classList.toggle('primary', !frenzyActive);
+    $('frenzyBind').textContent = waitingForFrenzyKey ? 'Press key…' : (frenzyKey.replace(/^Key/, '').replace(/^Digit/, '') || frenzyKey);
+    $('frenzyStatus').textContent = frenzySampleDone ?
+      'Recorded Frenzy trace complete · press F for another' : frenzyActive ?
+      ( $('repair').checked ? (frenzyGenerated ?
+        'Frenzy active · measured transitions' :
+        'Frenzy active · continuous checks') : 'Frenzy armed · start repairing to begin') :
+      'Inactive · click or press ' + $('frenzyBind').textContent + (frenzyKey === 'KeyF' ? '' : ' or F');
+  }
+  function toggleFrenzy() {
+    const now = performance.now();
+    if (frenzyActive) {
+      frenzyActive = false;
+      frenzyTransitionVisible = false;
+      frenzySampleDone = false;
+      checkActive = false;
+      nextCheck = $('repair').checked && leaveAt === null ? now + nextInterval() * 1000 : Infinity;
+    } else {
+      if (!frenzySequences.length) return;
+      frenzyActive = true;
+      frenzyTransitionVisible = false;
+      frenzySampleDone = false;
+      frenzyRouteIndex = frenzyRouteCursor % frenzySequences.length;
+      frenzyRouteCursor = (frenzyRouteCursor + 1) % frenzySequences.length;
+      frenzyZoneIndex = 0;
+      frenzyGenerated = false;
+      frenzyCheckCount = 0;
+      frenzyTransitionCursor = 0;
+      if ($('repair').checked && leaveAt === null) startCheck(now);
+    }
+    updatePanel(now);
+    scheduleFrame();
+  }
+  function scheduleFrame() {
+    if (idleTimer !== null) {
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+    if (checkActive || frenzyTransitionVisible) {
+      requestAnimationFrame(frame);
+      return;
+    }
+    const now = performance.now();
+    let delay = Infinity;
+    if ($('repair').checked && leaveAt === null) delay = Math.max(0, nextCheck - now);
+    if (leaveAt !== null) {
+      const expiry = leaveAt + returnWindowSeconds * 1000;
+      delay = Math.min(delay, Math.max(0, expiry - now), 1000);
+    }
+    if (Number.isFinite(delay)) {
+      idleTimer = window.setTimeout(() => {
+        idleTimer = null;
+        frame(performance.now());
+      }, Math.min(delay, 1000));
+    }
+  }
+  function frame(now) {
+    if (frenzyTransitionVisible) updateNeedle(now);
+    if ($('repair').checked && leaveAt === null && !checkActive && now >= nextCheck) startCheck(now);
+    if (checkActive) {
+      updateNeedle(now);
+      if (now >= checkEndsAt) finishCheck('MISS', now);
+    }
+    if (leaveAt !== null && (now - leaveAt) / 1000 > returnWindowSeconds) {
+      leaveAt = null;
+      returnWindowSeconds = null;
+      if ($('repair').checked) nextCheck = now + 600;
+      clearStreak();
+    }
+    if (checkActive !== panelCheckActive || now - lastPanelUpdate >= 100) updatePanel(now);
+    scheduleFrame();
+  }
+  $('fe').addEventListener('change', () => {
+    if (!$('fe').checked) clearStreak();
+    updatePanel(performance.now());
+  });
+  $('tier').addEventListener('change', () => updatePanel(performance.now()));
+  $('checkDelay').addEventListener('input', () => {
+    $('checkDelayValue').textContent = Number($('checkDelay').value).toFixed(1).replace(/\.0$/, '') + ' s';
+  });
+  $('frenzyDelay').addEventListener('input', () => {
+    $('frenzyDelayValue').textContent = Number($('frenzyDelay').value).toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + ' s';
+  });
+  $('alone').addEventListener('change', () => {
+    if ($('alone').checked && $('repair').checked && leaveAt === null && !checkActive)
+      nextCheck = performance.now() + 600;
+    updatePanel(performance.now());
+    scheduleFrame();
+  });
+  $('repair').addEventListener('change', () => {
+    const now = performance.now();
+    if (!$('repair').checked) {
+      if (leaveAt === null) {
+        leaveAt = now;
+        returnWindowSeconds = model.tiers[tier()].window;
+      }
+      checkActive = false;
+      frenzyTransitionVisible = false;
+      nextCheck = Infinity;
+    } else if (leaveAt !== null) {
+      const returnedInTime = (now - leaveAt) / 1000 <= returnWindowSeconds;
+      leaveAt = null;
+      returnWindowSeconds = null;
+      if (!returnedInTime) clearStreak();
+      nextCheck = now + 600;
+    } else {
+      nextCheck = now + 600;
+    }
+    updatePanel(now);
+    scheduleFrame();
+  });
+  window.addEventListener('keydown', event => {
+    if (waitingForFrenzyKey) {
+      if (event.key === 'Escape') {
+        waitingForFrenzyKey = false;
+        updatePanel(performance.now());
+        return;
+      }
+      if (['Tab', 'Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) return;
+      event.preventDefault();
+      frenzyKey = event.code;
+      localStorage.setItem('vd-frenzy-key', frenzyKey);
+      waitingForFrenzyKey = false;
+      updatePanel(performance.now());
+      return;
+    }
+    if ((event.code === frenzyKey || event.code === 'KeyF') && !event.repeat) {
+      const target = event.target;
+      if (!(target && target.closest && target.closest('input, select, textarea, [contenteditable="true"]'))) {
+        event.preventDefault();
+        toggleFrenzy();
+        return;
+      }
+    }
+    if (event.code !== 'Space') return;
+    const target = event.target;
+    if (target && target.closest && target.closest('button, input, select, textarea, a, [contenteditable="true"]')) return;
+    event.preventDefault();
+    check();
+  });
+  $('frenzyStart').addEventListener('click', toggleFrenzy);
+  $('frenzyBind').addEventListener('click', () => {
+    waitingForFrenzyKey = true;
+    $('frenzyBind').textContent = 'Press key…';
+    $('frenzyStatus').textContent = 'Press any key to set the Frenzy shortcut · Esc cancels';
+  });
+  $('leave').onclick = () => {
+    if (leaveAt === null) {
+      leaveAt = performance.now();
+      returnWindowSeconds = model.tiers[tier()].window;
+      $('repair').checked = false;
+      checkActive = false;
+      frenzyTransitionVisible = false;
+      nextCheck = Infinity;
+      updatePanel(performance.now());
+      scheduleFrame();
+    }
+  };
+  $('return').onclick = () => {
+    if (leaveAt !== null && (performance.now() - leaveAt) / 1000 <= returnWindowSeconds) {
+      leaveAt = null;
+      returnWindowSeconds = null;
+      $('repair').checked = true;
+      nextCheck = performance.now() + 600;
+      updatePanel(performance.now());
+      scheduleFrame();
+    }
+  };
+  $('new').onclick = () => {
+    if (!$('repair').checked || leaveAt !== null) return;
+    if (!frenzyActive && (normalRouteComplete ||
+        normalZoneIndex >= (defaultZoneSequences[normalRouteIndex]?.length || 0))) {
+      if (checkActive) checkActive = false;
+      advanceNormalRoute();
+    }
+    startCheck(performance.now());
+    scheduleFrame();
+  };
+  $('reset').onclick = () => { clearStreak(); lastResult = ''; resultUntil = 0; };
+  pointNeedle();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

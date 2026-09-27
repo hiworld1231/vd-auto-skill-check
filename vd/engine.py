@@ -76,7 +76,10 @@ class Engine:
         if m.timestamp>now+.002 or now-m.timestamp>self.planner.max_age:
             self.reason='STALE_FRAME'
             return
-        visible=m.center is not None and m.great is not None
+        # The center hint is useful for tracking an already confirmed ring,
+        # but background texture can also form convincing arcs. Never start or
+        # refresh a check unless the original Space prompt is actually visible.
+        visible=m.prompt_score>=.80 and m.center is not None and m.great is not None
         if not visible:
             self.pending=None
             self.pending_at=None
@@ -90,7 +93,10 @@ class Engine:
                  or math.dist(self.center,m.center)>3)
         if shifted:
             self.reason='CONFIRMING_GEOMETRY'
-            self.motion.reset_fit()
+            continuing_chain=(self.active and self.planner.fired
+                              and math.dist(self.center,m.center)<=3)
+            if not continuing_chain:
+                self.motion.reset_fit()
             if (self.pending is None or not same_target(self.pending[0],m.great)
                     or math.dist(self.pending[1],m.center)>3
                     or m.timestamp-self.pending_at>self.motion.max_gap):
@@ -115,8 +121,9 @@ class Engine:
             self.center=m.center
             initial=self.pending[2] if self.pending[2] is not None else ranked[0].angle
             self.planner.begin(m.great,initial,m.good)
-            self.motion.reset()
-            self.motion.unwrap_floor=initial
+            if not continuing_chain:
+                self.motion.reset()
+                self.motion.unwrap_floor=initial
             self.active=True
             self.started_at=m.timestamp
             self.pending=None

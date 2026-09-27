@@ -67,28 +67,6 @@ class Planner:
         return (max(.75,3*motion.residual)+motion.speed_scatter*horizon
                 +motion.speed*self.lead_uncertainty)
 
-    def _good_fallback_window(self):
-        """Return the current unwrapped success window, or None.
-
-        Detector pairs GOOD immediately after GREAT (allowing a small measured
-        boundary gap). Both outcomes are accepted by the game, so when GREAT's
-        narrow envelope cannot contain the timing uncertainty we may aim at the
-        wider combined success interval instead of refusing to press entirely.
-        """
-        if self.good is None:
-            return None
-        great_start=self.target_phase-self.target.width/2
-        offset=(self.good.start-self.target.start)%360
-        # Keep this fallback tied to the GOOD arc paired with this GREAT. A
-        # remote arc must never turn into permission to target another region.
-        if offset>self.target.width+8:
-            return None
-        good_start=great_start+offset
-        end=good_start+self.good.width
-        if end<=great_start or end-great_start>=180:
-            return None
-        return great_start,end
-
     def update(self, motion: Motion | None, *, frame_at: float, now: float):
         self.invalidate('NO_MOTION')
         if self.target is None or self.fired or motion is None:
@@ -105,38 +83,21 @@ class Planner:
             self.reason='INVALID_MOTION'
             return None
 
-        # GREAT is always the first choice. Only widen to the paired acceptable
-        # GOOD interval when the predicted error no longer fits inside GREAT.
+        # Every visible check gets a GREAT attempt. Uncertainty is diagnostic,
+        # never permission to redirect the press to GOOD or abandon the check.
         aim=self.target_phase
         window_start=self.target_phase-self.target.width/2
         window_width=self.target.width
         grade='GREAT'
         uncertainty=self._uncertainty(motion,aim)
-        margin=window_width/2-uncertainty
-        if margin<0:
-            fallback=self._good_fallback_window()
-            if fallback is None:
-                self.reason='TARGET_UNCERTAIN'
-                return None
-            window_start,window_end=fallback
-            window_width=window_end-window_start
-            aim=window_start+window_width/2
-            uncertainty=self._uncertainty(motion,aim)
-            margin=window_width/2-uncertainty
-            if margin<0:
-                self.reason='TARGET_UNCERTAIN'
-                return None
-            grade='GOOD_FALLBACK'
+        margin=max(0,window_width/2-uncertainty)
 
         press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
-        landing=motion.phase_at(now+self.lead)
         # Speed uncertainty also grows while a timer wakes late.
         latest_press_at=press_at+margin/(motion.speed+motion.speed_scatter)
         if press_at<now:
-            if abs(landing-aim)>margin or now>latest_press_at:
-                self.reason='TARGET_PASSED'
-                return None
             press_at=now
+            latest_press_at=max(now+.002,latest_press_at)
         self.current=Plan(self.generation,self.version,press_at,valid_until,
                           aim,uncertainty,latest_press_at,grade,
                           window_start,window_width)
@@ -150,14 +111,8 @@ class Planner:
                 or plan.version!=self.version or now<plan.press_at
                 or now>plan.valid_until):
             return False
-        # A late wake can miss the planned success envelope even while the
-        # observation is fresh. Runtime must update before claiming.
-        if now-plan.press_at>.002:
-            self.invalidate('MISSED_DEADLINE')
-            return False
-        if now>plan.latest_press_at:
-            self.invalidate('TARGET_WINDOW_PASSED')
-            return False
+        # The deadline is a target, not a veto. Dispatch records lateness so
+        # a visible check still receives its single attempt.
         self.fired=True
         self.invalidate('CLAIMED')
         return True

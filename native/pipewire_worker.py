@@ -28,6 +28,7 @@ def portal_video_caps(fps):
 
 def capture_pipeline(source):
     return Gst.parse_launch(source +
+        ' ! videocrop name=roi'
         ' ! videoconvert ! video/x-raw,format=BGR' +
         ' ! appsink name=frames sync=false max-buffers=1 drop=true')
 
@@ -136,11 +137,15 @@ def main():
                       f' ! {portal_video_caps(args.fps)}')
             print(f'Requesting {portal_video_caps(args.fps)}', file=sys.stderr, flush=True)
         pipeline = capture_pipeline(source)
+        cropper = pipeline.get_by_name('roi')
+        cropper.set_property('left', left)
+        cropper.set_property('top', top)
         sink = pipeline.get_by_name('frames')
         bus = pipeline.get_bus()
         pipeline.set_state(Gst.State.PLAYING)
         count = 0
         last_sample = time.monotonic()
+        crop_configured = False
         while not args.frames or count < args.frames:
             while GLib.MainContext.default().pending():
                 GLib.MainContext.default().iteration(False)
@@ -153,14 +158,21 @@ def main():
                     raise RuntimeError('No video frames for 10 seconds')
                 continue
             last_sample = time.monotonic()
-            if count == 0:
-                print(f'Capture negotiated: {sample.get_caps().to_string()}',
-                      file=sys.stderr, flush=True)
             b = sample.get_buffer()
             caps = sample.get_caps().get_structure(0)
             w, h = caps.get_value('width'), caps.get_value('height')
-            if left + width > w or top + height > h:
-                raise RuntimeError(f'ROI outside captured monitor {w}x{h}')
+            if not crop_configured:
+                if w < width or h < height:
+                    raise RuntimeError(f'ROI outside captured monitor {w + left}x{h + top}')
+                cropper.set_property('right', w - width)
+                cropper.set_property('bottom', h - height)
+                crop_configured = True
+                continue
+            if (w, h) != (width, height):
+                continue
+            if count == 0:
+                print(f'Capture negotiated: {sample.get_caps().to_string()}',
+                      file=sys.stderr, flush=True)
             video_info = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
             ok, mapping = b.map(Gst.MapFlags.READ)
             if not ok:
@@ -174,10 +186,10 @@ def main():
                 pts_valid = b.pts != Gst.CLOCK_TIME_NONE and running_pts != Gst.CLOCK_TIME_NONE
                 source_ns = (received_ns - (clock_now_ns - pipeline.get_base_time() - running_pts)
                              if pts_valid else None)
-                pixels = np.ndarray((h, w, 3), dtype=np.uint8,
+                pixels = np.ndarray((height, width, 3), dtype=np.uint8,
                     buffer=mapping.data, offset=video_info.offset[0],
                     strides=(video_info.stride[0], 3, 1))
-                payload = pixels[top:top + height, left:left + width].tobytes()
+                payload = pixels.tobytes()
                 header = json.dumps(dict(seq=count, width=width, height=height,
                     bytes=len(payload), stride=width * 3,
                     pts_ns=int(b.pts) if pts_valid else None,

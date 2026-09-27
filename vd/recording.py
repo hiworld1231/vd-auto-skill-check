@@ -60,6 +60,8 @@ class Recorder:
         self.events_written=0
         self.error=None
         self.closed=False
+        self.interrupted=False
+        self.writer_proc=None
         self.thread=threading.Thread(target=self._write,name='VD-recording',daemon=True)
         self.thread.start()
 
@@ -131,6 +133,7 @@ class Recorder:
                         continue
                     if proc is None:
                         proc,shape=self._start_encoder(image)
+                        self.writer_proc=proc
                     if image.shape[:2]!=shape:
                         raise ValueError(f'Frame size changed from {shape[::-1]} to {image.shape[1::-1]}')
                     try:
@@ -141,14 +144,25 @@ class Recorder:
                     row['video_frame']=self.written
                     log.write(json.dumps(row,allow_nan=False,separators=(',',':'))+'\n')
                     self.written+=1
-                if proc is not None:
+                if proc is not None and not self.interrupted:
                     proc.stdin.close()
                     stderr=proc.stderr.read().decode(errors='replace').strip() if proc.stderr else ''
                     code=proc.wait(timeout=30)
                     if code:
                         raise OSError(f'Video encoder exited {code}'+(': '+stderr if stderr else ''))
+                elif proc is not None:
+                    proc.stdin.close()
+                    try:
+                        code=proc.wait(timeout=.25)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        code=proc.wait(timeout=.2)
+                    stderr=proc.stderr.read().decode(errors='replace').strip() if proc.stderr else ''
+                    if code and not self.interrupted:
+                        raise OSError(f'Video encoder exited {code}'+(': '+stderr if stderr else ''))
         except Exception as exc:
-            self.error=str(exc)
+            if not self.interrupted:
+                self.error=str(exc)
             if proc is not None and proc.poll() is None:
                 try:
                     proc.kill()
@@ -156,17 +170,36 @@ class Recorder:
                 except Exception:
                     pass
 
-    def close(self):
+    def close(self, *, interrupted=False):
         if self.closed:
             return
         self.closed=True
-        while self.thread.is_alive():
-            try:
-                self.queue.put(None,timeout=.1)
-                break
-            except queue.Full:
-                continue
-        self.thread.join()
+        self.interrupted=interrupted
+        if interrupted:
+            self.metadata['interrupted']=True
+            self.metadata['runtime_error']='KeyboardInterrupt'
+            with self.queue.mutex:
+                pending=list(self.queue.queue)
+                frame_indexes=[i for i,item in enumerate(pending) if item[0] is not None]
+                keep_frames=set(frame_indexes[-8:])
+                pending=[item for i,item in enumerate(pending)
+                         if item[0] is None or i in keep_frames]
+                self.queue.queue.clear()
+                self.queue.queue.extend(pending)
+                self.queue.queue.append(None)
+                self.queue.not_empty.notify()
+            self.thread.join(timeout=.7)
+            if self.thread.is_alive() and self.writer_proc is not None and self.writer_proc.poll() is None:
+                self.writer_proc.kill()
+                self.thread.join(timeout=.2)
+        else:
+            while self.thread.is_alive():
+                try:
+                    self.queue.put(None,timeout=.1)
+                    break
+                except queue.Full:
+                    continue
+            self.thread.join()
         writer_complete=self.error is None and self.dropped==0 and self.events_dropped==0
         video_path=self.directory/VIDEO_NAME
         result=dict(self.metadata,frames_written=self.written,frames_dropped=self.dropped,
@@ -183,8 +216,8 @@ class Recorder:
     def __enter__(self):
         return self
 
-    def __exit__(self,*exc):
-        self.close()
+    def __exit__(self,exc_type,*exc):
+        self.close(interrupted=exc_type is not None and issubclass(exc_type,KeyboardInterrupt))
 
 
 def _read_legacy(directory):

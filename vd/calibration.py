@@ -45,6 +45,9 @@ class FreezeObserver:
         self.plateau_origin=None
         self.offset_low=self.offset_high=0.
 
+    def _has_stable_suffix(self):
+        return len(self.plateau)>=2 and self.plateau[-1][0]-self.plateau_start>=.015
+
     def feed(self, measurement):
         t=measurement.timestamp
         if t<=self.last_time:
@@ -59,15 +62,13 @@ class FreezeObserver:
             return
         self.intervals.append(gap)
         self.intervals=self.intervals[-32:]
-        if measurement.great is None:
-            return
         if measurement.great is not None and (
                 abs(delta(measurement.great.center,self.great.center))>3
                 or abs(measurement.great.width-self.great.width)>3):
             self._clear_plateau()
             return
         if not measurement.candidates:
-            if measurement.great is not None:
+            if measurement.great is not None and not self._has_stable_suffix():
                 self.tainted='NEEDLE_LOST'
                 self._clear_plateau()
             return
@@ -92,7 +93,7 @@ class FreezeObserver:
         self.plateau=self.plateau[-32:]
 
     def finish(self, reason):
-        if len(self.plateau)<4 or self.plateau[-1][0]-self.plateau_start<.060:
+        if not self._has_stable_suffix():
             return Landing('UNCONFIRMED',None,None,None,False,'NO_STABLE_SUFFIX')
         origin=self.plateau_origin
         offsets=[delta(a,origin) for _,a in self.plateau]

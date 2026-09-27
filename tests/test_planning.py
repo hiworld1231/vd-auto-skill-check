@@ -31,8 +31,9 @@ def test_future_deadline_cannot_outlive_its_observation():
 def test_passed_target_does_not_become_next_rotation():
     p,_=setup()
     m=Motion(1,110,300,0,0,1,6)
-    assert p.update(m,frame_at=1,now=1) is None
-    assert p.reason=='TARGET_PASSED'
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan.press_at==1
+    assert plan.target_phase==100
 
 
 def test_frozen_motion_does_not_get_freshness_from_new_delivery():
@@ -41,14 +42,14 @@ def test_frozen_motion_does_not_get_freshness_from_new_delivery():
     assert p.reason=='STALE_OBSERVATION'
 
 
-def test_late_wake_and_release_do_not_press():
+def test_release_blocks_but_late_wake_attempts():
     p,m=setup()
     plan=p.update(m,frame_at=1,now=1)
     assert not p.claim(plan,now=1,held=False,capture_alive=True)
-    assert not p.claim(plan,now=1.01,held=True,capture_alive=True)
+    assert p.claim(plan,now=1.01,held=True,capture_alive=True)
 
 
-def test_small_scheduler_delay_cannot_exceed_remaining_target_margin():
+def test_small_scheduler_delay_is_recorded_but_does_not_block_attempt():
     p=Planner(lead_seconds=.1,lead_uncertainty=.002)
     p.begin(Arc(96,8),60)
     # 3*residual + speed*lead_uncertainty = 3.6°, leaving only 0.4°.
@@ -56,10 +57,10 @@ def test_small_scheduler_delay_cannot_exceed_remaining_target_margin():
     plan=p.update(m,frame_at=1,now=1)
     assert plan is not None
     # 1.9ms is below the generic 2ms wake limit, but moves the needle 0.57°.
-    assert not p.claim(plan,now=1.0019,held=True,capture_alive=True)
+    assert p.claim(plan,now=1.0019,held=True,capture_alive=True)
 
 
-def test_good_fallback_is_explicit_when_great_is_too_narrow():
+def test_narrow_great_remains_the_only_target():
     p=Planner(lead_seconds=.060,lead_uncertainty=.015)
     p.begin(Arc(120.87349400366959,10.728950934823914),66,
             Arc(132.41010851560065,42.14130537921591))
@@ -67,9 +68,9 @@ def test_good_fallback_is_explicit_when_great_is_too_narrow():
              1.7121848764034837,44.415726752027744,12403.950864845,5)
     plan=p.update(m,frame_at=m.at,now=m.at)
     assert plan is not None
-    assert plan.target_grade=='GOOD_FALLBACK'
-    assert plan.target_window_width>50
-    assert plan.uncertainty_degrees<plan.target_window_width/2
+    assert plan.target_grade=='GREAT'
+    assert plan.target_window_width<11
+    assert plan.uncertainty_degrees>plan.target_window_width/2
 
 
 def test_great_remains_preferred_when_its_envelope_is_safe():
@@ -85,5 +86,35 @@ def test_remote_good_arc_cannot_expand_target_permission():
     p=Planner(lead_seconds=.060,lead_uncertainty=.015)
     p.begin(Arc(96,8),60,Arc(180,40))
     m=Motion(1,70,300,2,20,1,6)
-    assert p.update(m,frame_at=1,now=1) is None
-    assert p.reason=='TARGET_UNCERTAIN'
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan.target_grade=='GREAT'
+    assert plan.target_window_width==8
+
+
+def test_uncertain_white_still_gets_a_great_attempt():
+    p=Planner(lead_seconds=.060,lead_uncertainty=.015)
+    p.begin(Arc(120,10),66,Arc(131,42))
+    m=Motion(1,66,251,1.8,45,1,5)
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan is not None
+    assert plan.target_grade=='GREAT'
+    assert plan.target_phase==125
+
+
+def test_late_white_attempt_is_not_silently_dropped():
+    p=Planner(lead_seconds=.060,lead_uncertainty=.015)
+    p.begin(Arc(96,8),60)
+    m=Motion(1,110,300,0,0,1,6)
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan is not None
+    assert plan.target_grade=='GREAT'
+    assert plan.press_at==1
+
+
+def test_uncertain_plan_can_claim_after_scheduler_wakes_late():
+    p=Planner(lead_seconds=.06,lead_uncertainty=.015)
+    p.begin(Arc(96,8),60)
+    m=Motion(1,70,300,2,20,1,6)
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan is not None
+    assert p.claim(plan,now=plan.press_at+.004,held=True,capture_alive=True)

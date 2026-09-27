@@ -110,7 +110,7 @@ class PortalCapture:
                 self.cv.wait(remaining)
         return None
 
-    def close(self):
+    def close(self, *, fast=False):
         with self.cv:
             self.stopping = True
             self.cv.notify_all()
@@ -119,18 +119,18 @@ class PortalCapture:
             import signal
             self.proc.send_signal(signal.SIGINT)
             try:
-                self.proc.wait(timeout=2)
+                self.proc.wait(timeout=.2 if fast else 2)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
-                self.proc.wait(timeout=2)
+                self.proc.wait(timeout=.2 if fast else 2)
         for thread in (self.reader,self.errors):
             if thread.ident is not None:
-                thread.join(timeout=2)
+                thread.join(timeout=.1 if fast else 2)
         self.proc.stdout.close()
         self.proc.stderr.close()
 
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc):
-        self.close()
+    def __exit__(self, exc_type, *exc):
+        self.close(fast=exc_type is not None and issubclass(exc_type, KeyboardInterrupt))
