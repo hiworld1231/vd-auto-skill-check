@@ -130,8 +130,25 @@ class Detector:
         h, w = gray.shape
         if h < th or w < tw:
             raise ValueError('ROI is smaller than prompt template')
-        result = cv2.matchTemplate(gray, self.template, cv2.TM_CCOEFF_NORMED)
-        _, score, _, pos = cv2.minMaxLoc(result)
+        score=-1.0
+        pos=(0,0)
+        # The 1080p capture ROI has two observed prompt positions. Searching
+        # only their small neighborhoods avoids a full ROI scan every frame.
+        for candidate in dict.fromkeys((center_hint,(160,162.5),(170,82.5))):
+            if candidate is None:
+                continue
+            left=round(candidate[0]-tw/2)
+            top=round(candidate[1]-th/2)
+            x0=max(0,left-5);y0=max(0,top-5)
+            x1=min(w,left+tw+5);y1=min(h,top+th+5)
+            if x1-x0<tw or y1-y0<th:
+                continue
+            result=cv2.matchTemplate(gray[y0:y1,x0:x1],self.template,
+                                     cv2.TM_CCOEFF_NORMED)
+            _,value,_,local=cv2.minMaxLoc(result)
+            if value>score:
+                score=value
+                pos=(x0+local[0],y0+local[1])
         center = (pos[0] + tw/2, pos[1] + th/2) if score >= .80 else center_hint
         if center is None:
             return Measurement(timestamp, None, float(score), None, None, (), 'NO_PROMPT')

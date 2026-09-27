@@ -91,11 +91,10 @@ class Planner:
         window_width=self.target.width
         grade='GREAT'
         uncertainty=self._uncertainty(motion,aim)
-        margin=max(0,window_width/2-uncertainty)
-
         intended_press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
-        # Speed uncertainty also grows while a timer wakes late.
-        latest_press_at=intended_press_at+margin/(motion.speed+motion.speed_scatter)
+        # This is the nominal white-sector exit time for diagnostics. Model
+        # uncertainty is reported separately and does not erase the window.
+        latest_press_at=intended_press_at+window_width/(2*motion.speed)
         press_at=max(now,intended_press_at)
         self.current=Plan(self.generation,self.version,press_at,intended_press_at,valid_until,
                           aim,uncertainty,latest_press_at,grade,

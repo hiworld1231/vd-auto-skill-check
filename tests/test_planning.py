@@ -128,3 +128,12 @@ def test_late_attempt_preserves_original_deadline_for_diagnostics():
     assert plan.press_at==1
     assert plan.intended_press_at<1
     assert plan.latest_press_at<1
+
+
+def test_white_exit_deadline_uses_arc_width_not_model_uncertainty():
+    p=Planner(lead_seconds=.06,lead_uncertainty=.015)
+    p.begin(Arc(96,10),60)
+    m=Motion(1,70,300,2,20,1,6)
+    plan=p.update(m,frame_at=1,now=1)
+    assert plan.uncertainty_degrees>5
+    assert 0.015<plan.latest_press_at-plan.intended_press_at<0.018
