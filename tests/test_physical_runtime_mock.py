@@ -22,8 +22,9 @@ class FakeProcess:
 
 
 class FakeCapture:
-    def __init__(self, *, synthetic, fps):
+    def __init__(self, *, synthetic, fps, priority=5):
         assert synthetic is False
+        self.priority = priority
         self.cv = threading.Condition()
         self.proc = FakeProcess()
         self.stopping = False
@@ -115,6 +116,26 @@ def test_no_recording_skips_video_writer_and_still_reports_performance(monkeypat
     assert diagnostic['kind'] == 'PERFORMANCE'
     assert diagnostic['frame_processing_ms']['samples'] > 0
     assert diagnostic['frame_delivery_gap_ms']['samples'] > 0
+
+
+def test_run_session_applies_and_records_capture_profile(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_capture(**kwargs):
+        seen.update(kwargs)
+        return FakeCapture(**kwargs)
+
+    monkeypatch.setattr('vd.runtime.PortalCapture', fake_capture)
+    directory = tmp_path / 'quiet-profile'
+    run_session(seconds=.025, synthetic=False, fps=30, directory=directory,
+                lead_seconds=.06, lead_uncertainty=.015, recording=True,
+                capture_priority=10, variant='deep-quiet')
+
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    assert seen == {'synthetic': False, 'fps': 30, 'priority': 10}
+    assert manifest['requested_fps'] == 30
+    assert manifest['capture_priority'] == 10
+    assert manifest['variant'] == 'deep-quiet'
 
 
 def test_run_session_without_seconds_keeps_running_until_interrupted(monkeypatch, tmp_path):

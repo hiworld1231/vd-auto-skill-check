@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
+
 import run as cli
 
 
@@ -25,7 +27,54 @@ def test_run_cli_without_seconds_passes_unlimited_duration(monkeypatch, tmp_path
     assert seen['physical'] is True
     assert seen['learn_lead'] is True
     assert seen['recording'] is True
+    assert seen['fps'] == 60
+    assert seen['capture_priority'] == 5
+    assert seen['variant'] == 'baseline'
     assert 'Ctrl+C' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(('variant', 'fps', 'priority'), [
+    ('baseline', 60, 5),
+    ('responsive', 60, 0),
+    ('quiet', 60, 10),
+    ('fps50', 50, 5),
+    ('fps45', 45, 5),
+    ('fps30', 30, 5),
+    ('deep-quiet', 30, 10),
+])
+def test_run_cli_resolves_capture_profile(monkeypatch, tmp_path, variant, fps, priority):
+    seen = {}
+
+    def fake_run_session(**kwargs):
+        seen.update(kwargs)
+        return {'mode': 'run', 'frames': 0}
+
+    monkeypatch.setattr('vd.runtime.run_session', fake_run_session)
+    monkeypatch.setattr('sys.argv', [str(PROJECT / 'run.py'), 'run', '--variant', variant,
+                                    '--recording', str(tmp_path / 'session')])
+    cli.main()
+
+    assert seen['fps'] == fps
+    assert seen['capture_priority'] == priority
+    assert seen['variant'] == variant
+
+
+def test_explicit_capture_settings_override_the_selected_profile(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run_session(**kwargs):
+        seen.update(kwargs)
+        return {'mode': 'run', 'frames': 0}
+
+    monkeypatch.setattr('vd.runtime.run_session', fake_run_session)
+    monkeypatch.setattr('sys.argv', [str(PROJECT / 'run.py'), 'run', '--variant', 'quiet',
+                                    '--fps', '50', '--capture-priority', '2',
+                                    '--recording', str(tmp_path / 'session')])
+    cli.main()
+
+    assert seen['fps'] == 50
+    assert seen['capture_priority'] == 2
+    assert seen['variant'] == 'quiet'
 
 
 def test_run_cli_prints_partial_performance_summary_after_ctrl_c(monkeypatch, tmp_path, capsys):
@@ -78,6 +127,11 @@ def test_start_solver_omits_time_limit_by_default(tmp_path):
 def test_start_solver_keeps_explicit_time_limit_optional(tmp_path):
     args = invoke_start_solver(tmp_path, '--seconds=45', '--lead-ms', '55')
     assert args[1:] == ['run', '--seconds', '45', '--lead-ms', '55']
+
+
+def test_start_solver_forwards_capture_profile(tmp_path):
+    args = invoke_start_solver(tmp_path, '--variant', 'deep-quiet')
+    assert args[1:] == ['run', '--variant', 'deep-quiet']
 
 
 def test_start_solver_accepts_explicit_recording_directory(tmp_path):

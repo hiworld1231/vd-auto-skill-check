@@ -38,14 +38,16 @@ def _timing_summary(samples):
             "p95": round(ordered[p95_index], 3), "max": round(ordered[-1], 3)}
 
 
-def dry_run(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty):
+def dry_run(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
+            capture_priority=5, variant='baseline'):
     return run_session(seconds=seconds,synthetic=synthetic,fps=fps,directory=directory,
                        lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
-                       physical=False)
+                       physical=False,capture_priority=capture_priority,variant=variant)
 
 
 def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
-                physical=False, learn_lead=False, recording=True):
+                physical=False, learn_lead=False, recording=True,
+                capture_priority=5, variant='baseline'):
     if physical and synthetic:
         raise ValueError('Physical input is forbidden for synthetic capture')
     if learn_lead and not physical:
@@ -75,7 +77,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     with ExitStack() as stack:
         if recording:
             recorder=stack.enter_context(Recorder(directory,metadata=dict(
-                mode=mode,synthetic=synthetic,requested_fps=fps,
+                mode=mode,synthetic=synthetic,variant=variant,requested_fps=fps,
+                capture_priority=capture_priority,
                 lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
                 learn_lead=learn_lead,
                 video_sampling='full_rate_during_check_1fps_while_idle',
@@ -117,7 +120,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     observer=None
 
         try:
-            capture=stack.enter_context(PortalCapture(synthetic=synthetic,fps=fps))
+            capture=stack.enter_context(PortalCapture(synthetic=synthetic,fps=fps,
+                                                     priority=capture_priority))
             frame=capture.next(timeout=65)
             if frame is None:
                 raise RuntimeError('No first frame')

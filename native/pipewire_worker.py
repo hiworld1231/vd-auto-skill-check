@@ -116,13 +116,17 @@ def main():
     ap.add_argument('--synthetic', action='store_true')
     ap.add_argument('--frames', type=int, default=0)
     ap.add_argument('--fps', type=int, default=60)
+    ap.add_argument('--priority', type=int, default=5,
+                    help='minimum nice value for this worker (0=normal, 19=lowest)')
     ap.add_argument('--roi', default='800,420,320,240')
     args = ap.parse_args()
-    os.setpriority(os.PRIO_PROCESS, 0,
-                   max(os.getpriority(os.PRIO_PROCESS, 0), 5))
     Gst.init(None)
     if not 1 <= args.fps <= 240:
         raise ValueError('FPS must be in [1, 240]')
+    if not 0 <= args.priority <= 19:
+        raise ValueError('Priority must be in [0, 19]')
+    os.setpriority(os.PRIO_PROCESS, 0,
+                   max(os.getpriority(os.PRIO_PROCESS, 0), args.priority))
     left, top, width, height = map(int, args.roi.split(','))
     if min(left, top) < 0 or min(width, height) <= 0:
         raise ValueError('Invalid ROI')

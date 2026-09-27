@@ -27,9 +27,11 @@ class Frame:
 
 class PortalCapture:
     """Own one worker and one replaceable frame; never build a frame queue."""
-    def __init__(self, roi=(800, 420, 320, 240), *, synthetic=False, fps=60):
+    def __init__(self, roi=(800, 420, 320, 240), *, synthetic=False, fps=60, priority=5):
         if type(fps) is not int or not 1 <= fps <= 240:
             raise ValueError('FPS must be an integer in [1, 240]')
+        if type(priority) is not int or not 0 <= priority <= 19:
+            raise ValueError('Capture priority must be an integer in [0, 19]')
         self.roi = tuple(roi)
         if len(self.roi) != 4 or any(type(x) is not int for x in self.roi):
             raise ValueError('ROI must contain four integers')
@@ -42,7 +44,7 @@ class PortalCapture:
         self.stderr = deque(maxlen=15)
         worker = Path(__file__).resolve().parents[1] / 'native' / 'pipewire_worker.py'
         command = ['/usr/bin/python', str(worker), '--roi', ','.join(map(str, self.roi)),
-                   '--fps', str(fps)]
+                   '--fps', str(fps), '--priority', str(priority)]
         if synthetic:
             command.append('--synthetic')
         self.proc = subprocess.Popen(command, stdout=subprocess.PIPE,

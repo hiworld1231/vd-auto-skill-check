@@ -19,13 +19,29 @@ import time
 from vd.capture import PortalCapture
 
 
+VARIANTS = {
+    # FPS, minimum nice value for the capture worker (higher yields more CPU).
+    'baseline': (60, 5),
+    'responsive': (60, 0),
+    'quiet': (60, 10),
+    'fps50': (50, 5),
+    'fps45': (45, 5),
+    'fps30': (30, 5),
+    'deep-quiet': (30, 10),
+}
+
+
 def main():
     parser = argparse.ArgumentParser(description='VD rewrite: capture, dry-run, replay')
     parser.add_argument('mode', choices=['capture-probe','dry-run','run','replay','summary','preflight'])
     parser.add_argument('--synthetic', action='store_true')
     parser.add_argument('--seconds', type=float)
-    parser.add_argument('--fps', type=int, default=60,
+    parser.add_argument('--variant', choices=VARIANTS, default='baseline',
+                        help='capture profile; explicit --fps/--capture-priority override it')
+    parser.add_argument('--fps', type=int, default=None,
                         help='requested maximum portal frame rate; synthetic source uses fixed FPS')
+    parser.add_argument('--capture-priority', type=int, choices=range(20), default=None,
+                        help='minimum nice value for the capture worker (0 is more CPU, 19 less)')
     parser.add_argument('--report', type=Path)
     parser.add_argument('--recording', type=Path, help='New output directory, or input for replay')
     parser.add_argument('--no-recording', action='store_true',
@@ -35,6 +51,10 @@ def main():
     parser.add_argument('--learn-lead', action=argparse.BooleanOptionalAction, default=None,
                         help='Apply session-local CV latency estimates after four consistent observations (default in run)')
     args = parser.parse_args()
+    profile_fps, profile_priority = VARIANTS[args.variant]
+    args.fps = profile_fps if args.fps is None else args.fps
+    args.capture_priority = (profile_priority if args.capture_priority is None
+                             else args.capture_priority)
     if args.mode=='summary':
         if args.recording is None:
             parser.error('summary requires --recording')
@@ -76,11 +96,14 @@ def main():
                          datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
             if args.mode=='run':
                 print(f'RUN: Space при удержании LMB; Ctrl+C для остановки; '
+                      f'profile={args.variant} capture={args.fps} FPS/'
+                      f'nice≥{args.capture_priority}; '
                       f'lead={args.lead_ms:g} ms '
                       f'(CV-калибровка: {"включена" if args.learn_lead is not False else "только наблюдение"}; '
                       f'видеозапись: {"вкл." if not args.no_recording else "выкл."}).',flush=True)
                 try:
                     result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
+                               capture_priority=args.capture_priority,variant=args.variant,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
                                physical=True,learn_lead=args.learn_lead is not False,
@@ -98,6 +121,7 @@ def main():
                     return
             else:
                 result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
+                               capture_priority=args.capture_priority,variant=args.variant,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
                                physical=False,learn_lead=False,
@@ -108,7 +132,8 @@ def main():
             args.report.write_text(json.dumps(result,indent=2)+'\n')
         return
     rows = []
-    with PortalCapture(synthetic=args.synthetic, fps=args.fps) as capture:
+    with PortalCapture(synthetic=args.synthetic, fps=args.fps,
+                       priority=args.capture_priority) as capture:
         # Screen selection can take up to a minute; no input device is opened.
         frame = capture.next(timeout=65)
         if frame is None:

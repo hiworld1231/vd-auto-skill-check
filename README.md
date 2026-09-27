@@ -25,6 +25,34 @@ per second otherwise. The solver still analyzes every captured frame while LMB
 is held; while released, it skips CV. Capture and video encoding run at lower
 CPU priority than the game.
 
+## Compare capture profiles
+
+The default is the saved 60 FPS baseline. To compare load and responsiveness,
+stop the current solver before starting another profile:
+
+```bash
+./start-solver.sh --variant baseline
+./start-solver.sh --variant responsive
+./start-solver.sh --variant quiet
+./start-solver.sh --variant fps50
+./start-solver.sh --variant fps45
+./start-solver.sh --variant fps30
+./start-solver.sh --variant deep-quiet
+```
+
+`baseline` requests 60 FPS and nice 5 for the capture worker. `responsive`
+keeps 60 FPS and requests nice 0; `quiet` keeps 60 FPS and requests nice 10.
+`fps50`, `fps45`, and `fps30` lower the capture rate while requesting nice 5;
+`deep-quiet` uses 30 FPS and requests nice 10. A higher nice value lets the game
+get CPU sooner but can delay frames. Lower FPS reduces capture work but can miss
+a fast check between frames. All profiles use the same solver and continue
+trying on each check it detects. The chosen profile, requested FPS, and worker
+priority are recorded in each session's `manifest.json`.
+
+You can also mix settings for an extra test, for example
+`./start-solver.sh --variant quiet --fps 50 --capture-priority 5`.
+Explicit `--fps` and `--capture-priority` values override the selected profile.
+
 ## Browser test bench
 
 Run `./start-practice.sh` (or `./start-practice.sh --solver-test`). Open the
