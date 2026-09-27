@@ -103,4 +103,4 @@ def invoke_start_practice(tmp_path, *args):
 
 def test_start_practice_opens_the_solver_bench(tmp_path):
     args = invoke_start_practice(tmp_path)
-    assert args == [(PROJECT / 'simulator' / 'skillcheck.html').as_uri() + '?solver-test=1']
+    assert args == [(PROJECT / 'simulator' / 'skillcheck.html').as_uri()]

@@ -18,4 +18,4 @@ if ! command -v xdg-open >/dev/null 2>&1; then
 fi
 
 practice_uri="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).as_uri())' "$practice_file")"
-exec xdg-open "${practice_uri}?solver-test=1"
+exec xdg-open "$practice_uri"
