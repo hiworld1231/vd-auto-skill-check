@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from vd.vision import Arc, Detector
+from vd.vision import Arc, Detector, retained_target
 from vd.engine import Engine
 
 
@@ -26,13 +26,17 @@ def bench_frame(center, needle_angle=210, great_start=40):
     cv2.circle(frame, origin, 67, (220, 225, 229), 2, cv2.LINE_AA)
 
     def arc(start, width, color, thickness):
-        points = []
+        outer = []
+        inner = []
         for angle in np.linspace(start, start + width, max(3, int(width * 2))):
             radians = math.radians(float(angle))
-            points.append((round(cx + 66.5 * math.cos(radians)),
-                           round(cy + 66.5 * math.sin(radians))))
-        cv2.polylines(frame, [np.asarray(points, np.int32)], False,
-                      color, thickness, cv2.LINE_AA)
+            cosine, sine = math.cos(radians), math.sin(radians)
+            outer.append((round(cx + (66.5 + thickness/2) * cosine),
+                          round(cy + (66.5 + thickness/2) * sine)))
+            inner.append((round(cx + (66.5 - thickness/2) * cosine),
+                          round(cy + (66.5 - thickness/2) * sine)))
+        sector = np.asarray(outer + inner[::-1], np.int32)
+        cv2.fillPoly(frame, [sector], color, lineType=cv2.LINE_AA)
 
     arc(great_start, 10, (255, 255, 255), 10)
     arc(great_start+11, 42, (8, 9, 10), 7)
@@ -50,6 +54,7 @@ def test_solver_detector_recognizes_synthetic_bench_at_both_observed_centers():
         assert result.center == center
         assert result.prompt_score >= .9
         assert result.great is not None and 5 <= result.great.width <= 16
+        assert abs((result.great.start - 40 + 180) % 360 - 180) < 2
         assert result.good is not None and 18 <= result.good.width <= 65
         assert len(result.candidates) == 1
         assert abs((result.candidates[0].angle - 210 + 180) % 360 - 180) < 3
@@ -82,7 +87,10 @@ def test_continuous_frenzy_ring_gets_two_great_claims():
     for index in range(100):
         at=index/60
         angle=(270+550*at)%360
-        measured=detector.measure(bench_frame((160,162.5),angle,target),at)
+        measured=detector.measure(bench_frame((160,162.5),angle,target),at,
+                                  center_hint=engine.center)
+        measured=retained_target(measured,great=engine.target,good=engine.good,
+                                 center=engine.center)
         engine.observe(measured,now=at,held=True)
         engine.poll(at,held=True)
         new=engine.take_events()
@@ -102,13 +110,17 @@ def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
     next_target_at=None
     claims=[]
     outcomes=[]
+    missed=False
     for index in range(3600):
         at=index/60
         if next_target_at is not None and at>=next_target_at:
             target=(target+150)%360
             next_target_at=None
         angle=(270+speed*at)%360
-        measured=detector.measure(bench_frame((160,162.5),angle,target),at)
+        measured=detector.measure(bench_frame((160,162.5),angle,target),at,
+                                  center_hint=engine.center)
+        measured=retained_target(measured,great=engine.target,good=engine.good,
+                                 center=engine.center)
         engine.observe(measured,now=at,held=True)
         plan=engine.planner.current
         # The physical runtime wakes at the planner deadline even between frames.
@@ -118,18 +130,20 @@ def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
         for event in engine.take_events():
             if event['kind']=='PRESS_CLAIM':
                 claims.append(event)
-                plan=event['plan']
-                impact=(270+speed*(event['at']+.036))%360
-                outcomes.append(Arc(plan['target_window_start'],
-                                    plan['target_window_width']).contains(impact))
-                next_target_at=event['at']+.15
-        if len(claims)>=20:
+                impact=(270+speed*(event['at']+.035))%360
+                great=Arc(target,10).contains(impact)
+                good=Arc(target+11,42).contains(impact)
+                outcomes.append(great)
+                if great or good:
+                    # The bench shows the next check 150 ms after the Space
+                    # response has been applied.
+                    next_target_at=event['at']+.035+.15
+                else:
+                    missed=True
+        if missed or len(claims)>=20:
             break
     assert len(claims)==20
     assert len({event['generation'] for event in claims})==20
     assert all(event['plan']['target_grade']=='GREAT' for event in claims)
     assert all(event['plan']['timing_mode']=='PREDICTED' for event in claims)
-    # At 1000°/s, some bench target transitions arrive too late for this
-    # measured response; every visible check must still receive one attempt.
-    if speed<=700:
-        assert outcomes==[True]*20
+    assert outcomes==[True]*20

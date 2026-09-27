@@ -27,4 +27,5 @@ def test_browser_bench_renders_a_detectable_check(tmp_path):
     assert m.prompt_score>.9
     assert m.center==(160,162.5)
     assert m.great is not None and 5<=m.great.width<=16
+    assert abs((m.great.start-40+180)%360-180)<2
     assert len(m.candidates)==1

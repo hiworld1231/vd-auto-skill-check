@@ -11,6 +11,9 @@ from vd.motion import MotionTracker, delta
 from vd.planning import Planner
 
 
+CHAIN_FAST_SHIFT_DEGREES=25
+
+
 def same_target(a, b):
     return abs(delta(a.center,b.center))<=3 and abs(a.width-b.width)<=3
 
@@ -95,17 +98,23 @@ class Engine:
             self.reason='CONFIRMING_GEOMETRY'
             continuing_chain=(self.active and self.planner.fired
                               and math.dist(self.center,m.center)<=3)
+            large_chain_shift=(continuing_chain and
+                               abs(delta(m.great.start,self.target.start))
+                               >=CHAIN_FAST_SHIFT_DEGREES)
             if not continuing_chain:
                 self.motion.reset_fit()
-            if (self.pending is None or not same_target(self.pending[0],m.great)
-                    or math.dist(self.pending[1],m.center)>3
-                    or m.timestamp-self.pending_at>self.motion.max_gap):
-                first=max(m.candidates,key=lambda c:c.contrast,default=None)
-                self.pending=(m.great,m.center,first.angle if first else None)
-                self.pending_at=m.timestamp
-                return
-            if m.timestamp-self.pending_at<.012:
-                return
+            pending_matches=(self.pending is not None
+                and same_target(self.pending[0],m.great)
+                and math.dist(self.pending[1],m.center)<=3)
+            if not large_chain_shift:
+                if (not pending_matches or self.pending_at is None
+                        or m.timestamp-self.pending_at>self.motion.max_gap):
+                    first=max(m.candidates,key=lambda c:c.contrast,default=None)
+                    self.pending=(m.great,m.center,first.angle if first else None)
+                    self.pending_at=m.timestamp
+                    return
+                if m.timestamp-self.pending_at<.012:
+                    return
             strongest=max(m.candidates,key=lambda c:c.contrast,default=None)
             prior_fired=self.active and self.planner.fired
             if self.active:
@@ -114,7 +123,7 @@ class Engine:
             self.target=m.great
             self.good=m.good
             self.center=m.center
-            initial=(self.pending[2] if self.pending[2] is not None else
+            initial=(self.pending[2] if pending_matches and self.pending[2] is not None else
                      strongest.angle if strongest is not None else m.great.center)
             if continuing_chain and self.motion.last_unwrapped is not None:
                 initial=self.motion.last_unwrapped+delta(initial,self.motion.last_unwrapped)

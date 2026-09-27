@@ -92,9 +92,26 @@ def test_frenzy_target_change_keeps_measured_motion():
     assert engine.active
     engine.planner.fired=True
     engine.observe(measurement(1.12,angle=66,great=Arc(150,10)),now=1.12)
+    assert engine.generation==2
+    assert engine.planner.current is not None
     engine.observe(measurement(1.14,angle=72,great=Arc(150,10)),now=1.14)
     assert engine.generation==2
     assert engine.motion.estimate is not None
+    assert engine.planner.current is not None
+
+
+def test_small_frenzy_arc_change_still_requires_confirmation():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    for i,angle in enumerate((30,36,42,48,54,60)):
+        engine.observe(measurement(1+i*.02,angle=angle,great=Arc(96,10)),now=1+i*.02)
+    engine.planner.fired=True
+
+    engine.observe(measurement(1.12,angle=66,great=Arc(101,10)),now=1.12)
+    assert engine.generation==1
+    assert engine.planner.current is None
+
+    engine.observe(measurement(1.14,angle=72,great=Arc(101,10)),now=1.14)
+    assert engine.generation==2
     assert engine.planner.current is not None
 
 
