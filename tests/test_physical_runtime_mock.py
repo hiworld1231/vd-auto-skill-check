@@ -12,7 +12,7 @@ from vd.runtime import run_session
 from vd.dispatch import dispatch
 from vd.engine import Engine
 from vd.motion import Motion
-from vd.vision import Arc
+from vd.vision import Arc, Measurement
 
 
 class FakeProcess:
@@ -240,6 +240,34 @@ def test_dispatch_never_pulses_if_capture_or_mouse_source_is_unhealthy():
                           clock=lambda: 1.0)
         assert result is None
     assert output.pulses == 0
+
+
+def test_dispatch_sends_blind_attempt_and_marks_timing_as_unknown():
+    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+    for at in (1.0,1.02):
+        engine.observe(Measurement(at,(160,162.5),.99,Arc(96,10),Arc(107,42),(),
+                                   'NO_LINE_CANDIDATE'),now=at)
+    capture=DispatchCapture(media_time=1.02,sequence=7)
+
+    class Output:
+        error=None
+        def pulse(self):
+            self.pulses+=1
+            return SimpleNamespace(requested_at=1.02,syn_completed_at=1.021)
+
+        def __init__(self):
+            self.pulses=0
+
+    output=Output()
+    result=dispatch(engine,capture,7,mouse=DispatchMouse(held=True),output=output,
+                    clock=lambda:1.02)
+    events=engine.take_events()
+    keydown=next(event for event in events if event['kind']=='KEYDOWN')
+
+    assert result is not None
+    assert result.timing_mode=='BLIND_NO_NEEDLE'
+    assert output.pulses==1
+    assert keydown['outside_target_window'] is None
 
 
 def test_released_mouse_skips_expensive_detector(monkeypatch, tmp_path):

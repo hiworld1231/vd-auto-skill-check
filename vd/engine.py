@@ -104,14 +104,9 @@ class Engine:
                 self.pending=(m.great,m.center,first.angle if first else None)
                 self.pending_at=m.timestamp
                 return
-            if m.timestamp-self.pending_at<.012 or not m.candidates:
+            if m.timestamp-self.pending_at<.012:
                 return
-            # Strong competing red lines need motion acquisition, not a guess
-            # used to select a possibly wrong target occurrence.
-            ranked=sorted(m.candidates,key=lambda c:c.contrast,reverse=True)
-            if len(ranked)>1 and ranked[1].contrast>.8*ranked[0].contrast:
-                self.reason='AMBIGUOUS_NEEDLE'
-                return
+            strongest=max(m.candidates,key=lambda c:c.contrast,default=None)
             prior_fired=self.active and self.planner.fired
             if self.active:
                 self.emit('END',now,reason='GEOMETRY_CHANGED',pressed=self.planner.fired)
@@ -119,7 +114,8 @@ class Engine:
             self.target=m.great
             self.good=m.good
             self.center=m.center
-            initial=self.pending[2] if self.pending[2] is not None else ranked[0].angle
+            initial=(self.pending[2] if self.pending[2] is not None else
+                     strongest.angle if strongest is not None else m.great.center)
             if continuing_chain and self.motion.last_unwrapped is not None:
                 initial=self.motion.last_unwrapped+delta(initial,self.motion.last_unwrapped)
             self.planner.begin(m.great,initial,m.good)
@@ -139,9 +135,16 @@ class Engine:
             self.reason='OBSERVING_AFTER_PRESS'
             return
         plan=self.planner.update(estimate,frame_at=m.timestamp,now=now)
+        if plan is None:
+            no_needle_to_track=not m.candidates and not self.motion.points
+            motion_timed_out=(m.timestamp-self.started_at>=self.planner.max_age)
+            if no_needle_to_track or motion_timed_out:
+                mode='BLIND_NO_NEEDLE' if not m.candidates else 'BLIND_NO_MOTION'
+                plan=self.planner.attempt_now(frame_at=m.timestamp,now=now,
+                                              timing_mode=mode)
         self.reason=self.planner.reason if estimate is not None else self.motion.reason
         if plan:
-            self.reason='PLANNED'
+            self.reason=plan.timing_mode
 
     def poll(self, now, *, held=True, capture_alive=True):
         if not held or not capture_alive:

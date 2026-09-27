@@ -38,13 +38,6 @@ def _timing_summary(samples):
             "p95": round(ordered[p95_index], 3), "max": round(ordered[-1], 3)}
 
 
-def dry_run(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
-            capture_priority=5, variant='baseline'):
-    return run_session(seconds=seconds,synthetic=synthetic,fps=fps,directory=directory,
-                       lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
-                       physical=False,capture_priority=capture_priority,variant=variant)
-
-
 def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
                 physical=False, learn_lead=False, recording=True,
                 capture_priority=5, variant='baseline'):

@@ -23,6 +23,7 @@ class Plan:
     target_grade: str
     target_window_start: float
     target_window_width: float
+    timing_mode: str = 'PREDICTED'
 
 
 class Planner:
@@ -100,6 +101,24 @@ class Planner:
                           aim,uncertainty,latest_press_at,grade,
                           window_start,window_width)
         self.reason='PLANNED'
+        return self.current
+
+    def attempt_now(self, *, frame_at: float, now: float, timing_mode: str):
+        """Queue one immediate GREAT attempt when visible motion cannot be timed."""
+        self.invalidate(timing_mode)
+        if self.target is None or self.fired:
+            return None
+        if not all(math.isfinite(v) for v in (frame_at,now)):
+            self.reason='INVALID_TIMING'
+            return None
+        valid_until=min(frame_at,now)+self.max_age
+        if frame_at>now+.002 or now>valid_until:
+            self.reason='STALE_OBSERVATION'
+            return None
+        aim=self.target_phase if self.target_phase is not None else self.target.center
+        self.current=Plan(self.generation,self.version,now,now,valid_until,aim,180.,now,
+                          'GREAT',self.target.start,self.target.width,timing_mode)
+        self.reason=timing_mode
         return self.current
 
     def claim(self, plan: Plan, *, now: float, held: bool, capture_alive: bool):

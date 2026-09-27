@@ -15,6 +15,57 @@ def test_background_arcs_and_needle_do_not_start_a_check_without_prompt():
     assert not any(event['kind'] == 'BEGIN' for event in engine.take_events())
 
 
+def test_ambiguous_red_candidates_still_get_a_great_attempt():
+    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+
+    def ambiguous(at, angle):
+        return Measurement(at,(160,162.5),.99,Arc(96,10),Arc(107,42),(
+            Needle(angle,80,.9,50,2),Needle(angle+110,78,.9,46,2)), 'OK')
+
+    engine.observe(ambiguous(1.0,70),now=1.0)
+    engine.observe(ambiguous(1.02,76),now=1.02)
+    engine.observe(ambiguous(1.04,82),now=1.04)
+    engine.observe(ambiguous(1.06,94),now=1.06)
+
+    plan=engine.planner.current
+    assert engine.active
+    assert plan is not None
+    assert plan.target_grade=='GREAT'
+    assert engine.poll(plan.press_at+.001) is plan
+
+
+def test_visible_check_without_needle_gets_one_blind_attempt():
+    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+
+    def no_needle(at):
+        return Measurement(at,(160,162.5),.99,Arc(96,10),Arc(107,42),(),
+                           'NO_LINE_CANDIDATE')
+
+    engine.observe(no_needle(1.0),now=1.0)
+    engine.observe(no_needle(1.02),now=1.02)
+
+    plan=engine.planner.current
+    assert engine.active
+    assert plan is not None
+    assert plan.timing_mode=='BLIND_NO_NEEDLE'
+    assert plan.target_grade=='GREAT'
+    assert engine.poll(1.02) is plan
+    assert engine.poll(1.02) is None
+
+
+def test_visible_check_with_stalled_needle_gets_blind_attempt_after_motion_expires():
+    engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
+
+    engine.observe(measurement(1.0,angle=70),now=1.0)
+    engine.observe(measurement(1.02,angle=72),now=1.02)
+    engine.observe(measurement(1.08,angle=72.1),now=1.08)
+
+    plan=engine.planner.current
+    assert plan is not None
+    assert plan.timing_mode=='BLIND_NO_MOTION'
+    assert engine.poll(1.08) is plan
+
+
 def test_confirmed_prompt_starts_check_and_brief_prompt_loss_uses_absence_grace():
     engine = Engine()
     engine.observe(measurement(1.0), now=1.0)

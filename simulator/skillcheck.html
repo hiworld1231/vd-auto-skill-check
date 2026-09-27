@@ -7,6 +7,9 @@
   *{box-sizing:border-box}html,body{margin:0;width:1920px;height:1080px;background:#080a0c;color:white;font:13px system-ui}
   #status{position:absolute;left:16px;top:16px;padding:9px 12px;background:#164c39;max-width:750px}
   #result{position:absolute;left:16px;top:58px;font-weight:bold}
+  #settings{position:absolute;right:16px;top:16px;padding:9px 12px;background:#1b2026}
+  #settings input{vertical-align:middle;width:150px}
+  #response-delay-value{display:inline-block;min-width:42px;text-align:right;font-variant-numeric:tabular-nums}
   #stage{position:absolute;left:800px;top:420px;width:320px;height:240px;background:#101317}
   svg{width:320px;height:240px;display:none}
   #ring{fill:none;stroke:#e5e9eb;stroke-width:2.5}
@@ -17,6 +20,10 @@
 </style>
 <div id="status">SOLVER BENCH · 1920×1080 · hold LMB for solver · F toggles Frenzy · Space tests manually</div>
 <div id="result" aria-live="polite"></div>
+<label id="settings">Simulated Space response delay
+  <input id="response-delay" type="range" min="0" max="300" step="5" value="60">
+  <output id="response-delay-value">60 ms</output>
+</label>
 <div id="stage">
   <svg id="check" viewBox="0 0 320 240" aria-label="Skill check">
     <circle id="ring" cx="160" cy="162.5" r="66.5"/>
@@ -32,9 +39,20 @@
   const $=id=>document.getElementById(id);
   const center={x:160,y:162.5};
   const zones=[40,190,340,130,280,70];
-  let count=0,active=false,frenzy=false,phase=270,speed=300,last=performance.now();
+  let count=0,active=false,frenzy=false,spacePending=false,phase=270,speed=300,last=performance.now();
   let target=zones[0],targetPhase=0,started=last,spawnTimer;
+  let responseDelayMs=60;
   const point=(angle,r)=>({x:center.x+r*Math.cos(angle*Math.PI/180),y:center.y+r*Math.sin(angle*Math.PI/180)});
+  const phaseAt=now=>phase+speed*Math.max(0,now-last)/1000;
+  function setResponseDelay(ms){
+    ms=Number(ms);
+    if(!Number.isFinite(ms)||ms<0||ms>300)return false;
+    responseDelayMs=ms;
+    $('response-delay').value=String(ms);
+    $('response-delay-value').textContent=`${ms} ms`;
+    return true;
+  }
+  $('response-delay').addEventListener('input',()=>setResponseDelay($('response-delay').value));
   function arc(start,width){
     const a=point(start,66.5),b=point(start+width,66.5);
     return `M ${a.x} ${a.y} A 66.5 66.5 0 ${width>180?1:0} 1 ${b.x} ${b.y}`;
@@ -50,7 +68,7 @@
   function resolve(label){
     $('result').textContent=`Check ${count}: ${label}`;
     $('result').style.color=label==='GREAT'?'#40ed9d':label==='GOOD'?'#ffdd60':'#ff6b75';
-    active=false;
+    active=false;spacePending=false;
     if(label==='MISS') frenzy=false;
     if(!frenzy) $('check').style.display='none';
     spawnTimer=setTimeout(show,frenzy?150:900);
@@ -61,7 +79,7 @@
       const tip=point(phase,74);
       $('needle').setAttribute('x2',tip.x);$('needle').setAttribute('y2',tip.y);
     }
-    if(active && phase>=targetPhase+10 && now-started>100) resolve('MISS');
+    if(active && phase>=targetPhase+53 && now-started>100) resolve('MISS');
     requestAnimationFrame(tick);
   }
   addEventListener('keydown',event=>{
@@ -70,14 +88,20 @@
       if(frenzy){active=false;clearTimeout(spawnTimer);show();}
       $('status').textContent=frenzy?'FRENZY ON · hold LMB · Space tests manually':'FRENZY OFF · hold LMB';
     }
-    if(event.code==='Space'&&!event.repeat&&active){
+    if(event.code==='Space'&&!event.repeat&&active&&!spacePending){
       event.preventDefault();
-      const angle=phase%360;
-      const offset=(angle-target+360)%360;
-      resolve(offset<=10?'GREAT':offset>=11&&offset<=53?'GOOD':'MISS');
+      spacePending=true;
+      setTimeout(()=>{
+        spacePending=false;
+        if(!active)return;
+        const angle=phaseAt(performance.now())%360;
+        const offset=(angle-target+360)%360;
+        resolve(offset<=10?'GREAT':offset>=11&&offset<=53?'GOOD':'MISS');
+      },responseDelayMs);
     }
   });
-  window.VDBenchState=()=>({count,active,frenzy,phase,target,targetPhase});
+  window.VDBenchState=()=>({count,active,frenzy,phase,target,targetPhase,responseDelayMs});
+  window.VDBenchSetResponseDelay=setResponseDelay;
   spawnTimer=setTimeout(show,600);
   requestAnimationFrame(tick);
 })();

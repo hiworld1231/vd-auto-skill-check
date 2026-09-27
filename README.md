@@ -60,7 +60,9 @@ browser at a 1920×1080 viewport; F11 may be needed. The synthetic red pointer
 and white/black zones appear at the exact
 screen coordinates the solver captures. Hold LMB to activate the solver; press
 F to start or stop a Frenzy sequence. The bench is for testing screen detection
-and input timing, not proof of an in-game hit.
+and input timing, not proof of an in-game hit. Its Space response delay defaults
+to 60 ms to match the solver's default `--lead-ms 60`; adjust the slider to the
+same value if you override `--lead-ms`.
 
 ## Replay and diagnostics
 
@@ -75,7 +77,9 @@ node --test simulator/*.test.cjs
 Replay reprocesses recorded video and timestamps, but virtual presses change
 what would happen next, so later video is counterfactual. A CV landing label
 only describes where the visible needle appeared to stop; it is not a
-confirmed game result. Performance output includes frame age, delivery gaps,
-processing time, main-process CPU share, capture skips, and recording drops.
+confirmed game result. The coverage audit separates predicted attempts from
+`BLIND_NO_NEEDLE` and `BLIND_NO_MOTION` attempts. Performance output includes
+frame age, delivery gaps, processing time, main-process CPU share, capture
+skips, and recording drops.
 The CPU share excludes the capture and video-encoder processes. A real-game run with
 visible results is required to establish GREAT rate and game lag.

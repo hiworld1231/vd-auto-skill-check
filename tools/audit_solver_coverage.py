@@ -20,6 +20,8 @@ def audit(directory):
         unpressed_generations=[b['generation'] for b in begins if not pressed[b['generation']]],
         end_reasons=dict(Counter(e.get('reason') for e in endings)),
         targets=dict(Counter(e.get('plan',{}).get('target_grade') for e in keys)),
+        timing_modes=dict(Counter(e.get('plan',{}).get('timing_mode','PREDICTED')
+                                  for e in keys)),
         cv_landings=dict(Counter(e.get('landing',{}).get('label') for e in landings)),
         game_outcomes_measured=False)
 
