@@ -36,7 +36,7 @@ def main():
     parser.add_argument('mode', choices=['capture-probe','dry-run','run','replay','summary','preflight'])
     parser.add_argument('--synthetic', action='store_true')
     parser.add_argument('--seconds', type=float)
-    parser.add_argument('--variant', choices=VARIANTS, default='baseline',
+    parser.add_argument('--variant', choices=VARIANTS, default='quiet',
                         help='capture profile; explicit --fps/--capture-priority override it')
     parser.add_argument('--fps', type=int, default=None,
                         help='requested maximum portal frame rate; synthetic source uses fixed FPS')
@@ -46,8 +46,12 @@ def main():
     parser.add_argument('--recording', type=Path, help='New output directory, or input for replay')
     parser.add_argument('--no-recording', action='store_true',
                         help='Disable video/decision recording to reduce CPU and disk load')
-    parser.add_argument('--no-video', action='store_true',
-                        help='Keep decision events and performance stats but skip frame copies and video encoding')
+    video = parser.add_mutually_exclusive_group()
+    video.add_argument('--video', dest='video_recording', action='store_true',
+                       help='Record frames as well as decision events for later replay')
+    video.add_argument('--no-video', dest='video_recording', action='store_false',
+                       help='Keep decision events and performance stats but skip frame copies and video encoding')
+    parser.set_defaults(video_recording=False)
     parser.add_argument('--lead-ms', type=float, default=60)
     parser.add_argument('--lead-uncertainty-ms', type=float, default=15)
     parser.add_argument('--learn-lead', action=argparse.BooleanOptionalAction, default=None,
@@ -102,7 +106,7 @@ def main():
                       f'nice≥{args.capture_priority}; '
                       f'lead={args.lead_ms:g} ms '
                       f'(CV-калибровка: {"включена" if args.learn_lead is not False else "только наблюдение"}; '
-                      f'видеозапись: {"вкл." if not args.no_video else "выкл."}; '
+                      f'видеозапись: {"вкл." if args.video_recording else "выкл."}; '
                       f'журнал событий: вкл.).',flush=True)
                 try:
                     result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
@@ -110,7 +114,7 @@ def main():
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
                                physical=True,learn_lead=args.learn_lead is not False,
-                               video_recording=not args.no_video,
+                               video_recording=args.video_recording,
                                recording=not args.no_recording)
                 except KeyboardInterrupt:
                     manifest_path=directory/'manifest.json'
@@ -128,7 +132,7 @@ def main():
                                capture_priority=args.capture_priority,variant=args.variant,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
-                               video_recording=not args.no_video,
+                               video_recording=args.video_recording,
                                physical=False,learn_lead=False,
                                recording=not args.no_recording)
         print(json.dumps({k:v for k,v in result.items() if k not in ('rows','events')},indent=2))

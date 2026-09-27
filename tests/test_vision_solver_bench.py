@@ -2,8 +2,9 @@ import math
 
 import cv2
 import numpy as np
+import pytest
 
-from vd.vision import Detector
+from vd.vision import Arc, Detector
 from vd.engine import Engine
 
 
@@ -93,27 +94,42 @@ def test_continuous_frenzy_ring_gets_two_great_claims():
     assert all(e['plan']['target_grade']=='GREAT' for e in claims)
 
 
-def test_twenty_continuous_frenzy_checks_each_get_one_great_attempt():
+@pytest.mark.parametrize('speed', [278, 550, 700, 1000, 1300])
+def test_twenty_continuous_frenzy_checks_each_get_one_attempt(speed):
     detector=Detector()
     engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
     target=40
     next_target_at=None
     claims=[]
-    for index in range(900):
+    outcomes=[]
+    for index in range(3600):
         at=index/60
         if next_target_at is not None and at>=next_target_at:
             target=(target+150)%360
             next_target_at=None
-        angle=(270+700*at)%360
+        angle=(270+speed*at)%360
         measured=detector.measure(bench_frame((160,162.5),angle,target),at)
         engine.observe(measured,now=at,held=True)
-        engine.poll(at,held=True)
+        plan=engine.planner.current
+        # The physical runtime wakes at the planner deadline even between frames.
+        wake=(plan.press_at if plan is not None and at<=plan.press_at<at+1/60
+              else at)
+        engine.poll(wake,held=True)
         for event in engine.take_events():
             if event['kind']=='PRESS_CLAIM':
                 claims.append(event)
-                next_target_at=at+.15
+                plan=event['plan']
+                impact=(270+speed*(event['at']+.060))%360
+                outcomes.append(Arc(plan['target_window_start'],
+                                    plan['target_window_width']).contains(impact))
+                next_target_at=event['at']+.15
         if len(claims)>=20:
             break
     assert len(claims)==20
     assert len({event['generation'] for event in claims})==20
     assert all(event['plan']['target_grade']=='GREAT' for event in claims)
+    assert all(event['plan']['timing_mode']=='PREDICTED' for event in claims)
+    # The bench exposes its next target too late for a 60 ms response at
+    # 1000/1300°/s; those speeds still must receive one Space attempt each.
+    if speed<=700:
+        assert outcomes==[True]*20

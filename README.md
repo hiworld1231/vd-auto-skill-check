@@ -27,8 +27,10 @@ CPU priority than the game.
 
 ## Compare capture profiles
 
-The default is the saved 60 FPS baseline. To compare load and responsiveness,
-stop the current solver before starting another profile:
+The default is `quiet`: 60 FPS, capture worker nice 10, and an event-only
+recording. The saved `baseline` remains available at 60 FPS and nice 5. To
+compare load and responsiveness, stop the current solver before starting
+another profile:
 
 ```bash
 ./start-solver.sh --variant baseline
@@ -53,18 +55,17 @@ You can also mix settings for an extra test, for example
 `./start-solver.sh --variant quiet --fps 50 --capture-priority 5`.
 Explicit `--fps` and `--capture-priority` values override the selected profile.
 
-To test whether video encoding contributes to stutter while keeping the event
-log and performance summary, run:
+Frame recording is off by default to avoid the frame copies and FFmpeg encoder
+during play. Decision events and performance statistics are still recorded.
+Use `--video` when you need a video for replay or inspection, for example:
 
 ```bash
-./start-solver.sh --variant baseline --no-video
-./start-solver.sh --variant fps45 --no-video
-./start-solver.sh --variant deep-quiet --no-video
+./start-solver.sh --variant quiet
+./start-solver.sh --variant baseline --video
 ```
 
-`--no-video` avoids copying captured frames and starting FFmpeg. The session
-still records detections, Space events, CV diagnostics, and performance
-statistics, but its frames cannot be replayed or inspected later.
+`--no-video` is accepted as an explicit way to disable frame recording. Without
+`--video`, sessions cannot be replayed or inspected frame by frame.
 
 ## Browser test bench
 
