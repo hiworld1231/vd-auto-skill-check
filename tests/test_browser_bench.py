@@ -18,7 +18,7 @@ def test_browser_bench_renders_a_detectable_check(tmp_path):
         pytest.skip('Chromium is not installed')
     screenshot=tmp_path/'bench.png'
     subprocess.run([browser,'--headless','--no-sandbox','--disable-gpu',
-        '--hide-scrollbars','--window-size=1920,1080','--virtual-time-budget=1300',
+        '--hide-scrollbars','--window-size=1920,1080','--virtual-time-budget=700',
         f'--screenshot={screenshot}',BENCH.as_uri()],check=True,
         stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20)
     frame=cv2.imread(str(screenshot))[420:660,800:1120]
