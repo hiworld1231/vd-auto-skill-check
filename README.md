@@ -20,7 +20,8 @@ Select the game monitor in KDE's screen-sharing dialog. Ctrl+C stops the
 solver. Video and timing logs are always saved under `recordings/` unless an
 explicit `--recording DIR` is supplied. The recorder runs on a bounded queue;
 frame drops and capture gaps are counted. The solver neither reads nor writes
-the game process.
+the game process. While LMB is released, it skips CV and records one idle
+frame per second; full-rate solving and recording resume when LMB is held.
 
 ## Browser test bench
 

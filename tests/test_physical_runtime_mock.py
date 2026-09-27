@@ -218,3 +218,28 @@ def test_dispatch_never_pulses_if_capture_or_mouse_source_is_unhealthy():
                           clock=lambda: 1.0)
         assert result is None
     assert output.pulses == 0
+
+
+def test_released_mouse_skips_expensive_detector(monkeypatch, tmp_path):
+    monkeypatch.setattr('vd.runtime.PortalCapture', FakeCapture)
+    monkeypatch.setattr(vd_input, 'MouseMonitor', FakeMouse)
+    monkeypatch.setattr(vd_input, 'SpaceOutput', FakeOutput)
+    def forbidden_measure(*args, **kwargs):
+        raise AssertionError('CV must sleep while LMB is released')
+    monkeypatch.setattr('vd.runtime.Detector.measure', forbidden_measure)
+    result=run_session(seconds=.03,synthetic=False,fps=60,directory=tmp_path/'idle',
+                       lead_seconds=.06,lead_uncertainty=.015,physical=True,
+                       recording=False)
+    assert result['frames']>0
+
+
+def test_released_mouse_records_only_a_sparse_idle_sample(monkeypatch, tmp_path):
+    monkeypatch.setattr('vd.runtime.PortalCapture', FakeCapture)
+    monkeypatch.setattr(vd_input, 'MouseMonitor', FakeMouse)
+    monkeypatch.setattr(vd_input, 'SpaceOutput', FakeOutput)
+    directory=tmp_path/'idle-recording'
+    result=run_session(seconds=.06,synthetic=False,fps=60,directory=directory,
+                       lead_seconds=.06,lead_uncertainty=.015,physical=True)
+    manifest=json.loads((directory/'manifest.json').read_text())
+    assert result['frames']>4
+    assert manifest['frames_written']==1

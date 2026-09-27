@@ -69,6 +69,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     frame_age_ms=deque(maxlen=600)
     capture_pipe_age_ms=deque(maxlen=600)
     previous_received_time=None
+    last_idle_recorded_at=float('-inf')
     started_wall=time.monotonic()
     started_cpu=time.process_time()
     with ExitStack() as stack:
@@ -147,7 +148,9 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                         capture_pipe_age_ms.append(max(0,(frame.received_time-frame.media_time)*1000))
                     skipped+=max(0,frame.sequence-last-1) if last>=0 else 0
                     last=frame.sequence
-                    if frame.media_time is None:
+                    if not held:
+                        engine.cancel('LMB_RELEASED',time.monotonic())
+                    elif frame.media_time is None:
                         engine.cancel('NO_MEDIA_TIMESTAMP',time.monotonic())
                     else:
                         m=detector.measure(frame.image,frame.media_time,center_hint=engine.center)
@@ -161,12 +164,15 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                         dispatch(engine,capture,last,mouse=mouse,output=output,clock=time.monotonic)
                     decision_time=time.monotonic()
                     state=engine.snapshot()
-                    if frame.media_time is not None:
+                    if held and frame.media_time is not None:
                         state['measurement']=asdict(m)
                     reasons[state['reason']]+=1
                     events()
-                    recorder.submit(frame,decision_time=decision_time,held=held,
-                                    state=state,events=[])
+                    if held or frame.received_time-last_idle_recorded_at>=1:
+                        recorder.submit(frame,decision_time=decision_time,held=held,
+                                        state=state,events=[])
+                        if not held:
+                            last_idle_recorded_at=frame.received_time
                     frame_processing_ms.append((time.perf_counter()-frame_started)*1000)
                     nframes+=1
                 else:
