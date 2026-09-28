@@ -27,7 +27,7 @@ class Plan:
 
 
 class Planner:
-    def __init__(self, *, lead_seconds, lead_uncertainty=.015, max_age=.050):
+    def __init__(self, *, lead_seconds, lead_uncertainty=.015, max_age=.080):
         if not all(math.isfinite(v) for v in (lead_seconds,lead_uncertainty,max_age)):
             raise ValueError('Non-finite timing configuration')
         if lead_seconds<0 or lead_uncertainty<0 or max_age<=0:

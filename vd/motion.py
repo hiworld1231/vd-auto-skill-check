@@ -28,7 +28,7 @@ class Motion:
 
 
 class MotionTracker:
-    def __init__(self, window=.22, max_gap=.055):
+    def __init__(self, window=.22, max_gap=.080):
         self.window=window
         self.max_gap=max_gap
         self.points=deque(maxlen=64)

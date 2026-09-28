@@ -42,6 +42,19 @@ def test_frozen_motion_does_not_get_freshness_from_new_delivery():
     assert p.reason=='STALE_OBSERVATION'
 
 
+def test_recent_motion_survives_one_delayed_capture_delivery():
+    p=Planner(lead_seconds=.035,lead_uncertainty=.020)
+    p.begin(Arc(106.926,10.7),353.729)
+    m=Motion(.761846,353.729,226.676,.972,32.946,.761846,4)
+
+    plan=p.update(m,frame_at=.811844,now=.819908)
+
+    assert plan is not None
+    assert plan.timing_mode=='PREDICTED'
+    assert plan.target_grade=='GREAT'
+    assert plan.press_at>plan.valid_until
+
+
 def test_release_blocks_but_late_wake_attempts():
     p,m=setup()
     plan=p.update(m,frame_at=1,now=1)

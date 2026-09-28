@@ -44,8 +44,8 @@ def test_visible_check_without_needle_gets_one_blind_attempt():
     engine.observe(no_needle(1.0),now=1.0)
     engine.observe(no_needle(1.02),now=1.02)
 
-    plan=engine.planner.current
     assert engine.active
+    plan=engine.planner.current
     assert plan is not None
     assert plan.timing_mode=='BLIND_NO_NEEDLE'
     assert plan.target_grade=='GREAT'
@@ -59,11 +59,34 @@ def test_visible_check_with_stalled_needle_gets_blind_attempt_after_motion_expir
     engine.observe(measurement(1.0,angle=70),now=1.0)
     engine.observe(measurement(1.02,angle=72),now=1.02)
     engine.observe(measurement(1.08,angle=72.1),now=1.08)
+    engine.observe(measurement(1.11,angle=72.1),now=1.11)
+    assert engine.planner.current is None
+    engine.observe(measurement(1.121,angle=72.1),now=1.121)
+    assert engine.planner.current is None
+    engine.observe(measurement(1.171,angle=72.1),now=1.171)
 
     plan=engine.planner.current
     assert plan is not None
     assert plan.timing_mode=='BLIND_NO_MOTION'
-    assert engine.poll(1.08) is plan
+    assert engine.poll(1.171) is plan
+
+
+def test_delayed_frame_keeps_recent_motion_prediction_instead_of_blind_firing():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    great=Arc(106.926,10.7)
+
+    def moving(at,angle):
+        return measurement(at,angle=angle,great=great)
+
+    for at,angle in ((1.0,353.729),(1.02,358.262),(1.036,1.888),(1.052,5.515)):
+        engine.observe(moving(at,angle),now=at)
+    engine.observe(moving(1.102,5.515),now=1.110)
+
+    plan=engine.planner.current
+    assert plan is not None
+    assert plan.timing_mode=='PREDICTED'
+    assert plan.target_grade=='GREAT'
+    assert plan.press_at>1.110
 
 
 def test_confirmed_prompt_starts_check_and_brief_prompt_loss_uses_absence_grace():
