@@ -36,6 +36,7 @@ class MotionTracker:
         self.last_angle=None
         self.last_unwrapped=None
         self.last_accepted_at=None
+        self.last_observed_motion_at=None
         self.unwrap_floor=None
         self.estimate=None
         self.reason='EMPTY'
@@ -53,8 +54,10 @@ class MotionTracker:
     def reset_fit(self):
         """Discard velocity samples while retaining the observed revolution."""
         floor=self.last_unwrapped if self.last_unwrapped is not None else self.unwrap_floor
+        motion_at=self.last_observed_motion_at
         self.reset()
         self.unwrap_floor=floor
+        self.last_observed_motion_at=motion_at
 
     def update(self, timestamp, candidates):
         if not math.isfinite(timestamp):
@@ -103,6 +106,8 @@ class MotionTracker:
                 # The same <=2° backward pixel noise is tolerated during
                 # reacquisition as during an established track.
                 unwrapped=self.unwrap_floor+(step if step>=-2 else step+360)
+                if .5<step<=90:
+                    self.last_observed_motion_at=timestamp
         else:
             step=delta(angle,self.last_angle)
             if abs(step)<.5:
@@ -117,6 +122,8 @@ class MotionTracker:
                 self.reason='ANGLE_DISCONTINUITY'
                 return None
             unwrapped=self.last_unwrapped+step
+            if step>.5:
+                self.last_observed_motion_at=timestamp
         self.last_angle=angle
         self.last_unwrapped=unwrapped
         self.last_accepted_at=timestamp

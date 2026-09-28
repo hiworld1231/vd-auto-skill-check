@@ -421,6 +421,8 @@ def test_dispatch_sends_blind_attempt_and_marks_timing_as_unknown():
     assert result.timing_mode=='BLIND_NO_NEEDLE'
     assert output.pulses==1
     assert keydown['outside_target_window'] is None
+    assert keydown['motion_diagnostics']['reason']=='NO_NEEDLE'
+    assert keydown['motion_diagnostics']['samples']==0
 
 
 def test_released_mouse_skips_expensive_detector(monkeypatch, tmp_path):

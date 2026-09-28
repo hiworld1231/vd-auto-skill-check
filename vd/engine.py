@@ -144,7 +144,10 @@ class Engine:
         plan=self.planner.update(estimate,frame_at=m.timestamp,now=now)
         if plan is None:
             no_needle_to_track=not m.candidates and not self.motion.points
-            motion_timed_out=(m.timestamp-self.started_at>=BLIND_ATTEMPT_DELAY)
+            last_motion_at=(self.motion.last_observed_motion_at
+                            if self.motion.last_observed_motion_at is not None
+                            else self.started_at)
+            motion_timed_out=m.timestamp-last_motion_at>=BLIND_ATTEMPT_DELAY
             if no_needle_to_track or motion_timed_out:
                 mode='BLIND_NO_NEEDLE' if not m.candidates else 'BLIND_NO_MOTION'
                 plan=self.planner.attempt_now(frame_at=m.timestamp,now=now,

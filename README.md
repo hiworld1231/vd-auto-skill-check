@@ -4,10 +4,10 @@
 320×240 skill-check area at `(800, 420)`, and sends Space while LMB is held.
 It aims at the white GREAT arc on every detected check, including successive
 checks on a continuous Frenzy ring. It does not target GOOD. If the needle is
-visible but its speed is not ready, the solver waits up to 150 ms for a usable
-track before making its one blind GREAT attempt; with no needle history at all
-it attempts immediately. No screen-only solver can guarantee a hit when the
-target crosses between captured frames.
+visible but its speed is not ready, the solver keeps tracking while it sees
+movement and waits 150 ms after the last observed change before a blind GREAT
+attempt; with no needle history at all it attempts immediately. No screen-only
+solver can guarantee a hit when the target crosses between captured frames.
 
 ## Start
 

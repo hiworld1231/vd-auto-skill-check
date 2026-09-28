@@ -58,17 +58,19 @@ def test_visible_check_with_stalled_needle_gets_blind_attempt_after_motion_expir
 
     engine.observe(measurement(1.0,angle=70),now=1.0)
     engine.observe(measurement(1.02,angle=72),now=1.02)
-    engine.observe(measurement(1.08,angle=72.1),now=1.08)
-    engine.observe(measurement(1.11,angle=72.1),now=1.11)
+    engine.observe(measurement(1.08,angle=73),now=1.08)
+    engine.observe(measurement(1.11,angle=73),now=1.11)
     assert engine.planner.current is None
-    engine.observe(measurement(1.121,angle=72.1),now=1.121)
+    engine.observe(measurement(1.121,angle=73),now=1.121)
     assert engine.planner.current is None
-    engine.observe(measurement(1.171,angle=72.1),now=1.171)
+    engine.observe(measurement(1.171,angle=73),now=1.171)
+    assert engine.planner.current is None
+    engine.observe(measurement(1.231,angle=73),now=1.231)
 
     plan=engine.planner.current
     assert plan is not None
     assert plan.timing_mode=='BLIND_NO_MOTION'
-    assert engine.poll(1.171) is plan
+    assert engine.poll(1.231) is plan
 
 
 def test_delayed_frame_keeps_recent_motion_prediction_instead_of_blind_firing():
@@ -87,6 +89,22 @@ def test_delayed_frame_keeps_recent_motion_prediction_instead_of_blind_firing():
     assert plan.timing_mode=='PREDICTED'
     assert plan.target_grade=='GREAT'
     assert plan.press_at>1.110
+
+
+def test_slow_observed_needle_does_not_trigger_start_age_blind_press():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    great=Arc(96,10)
+
+    for at,angle in ((1.0,70),(1.02,70.48),(1.06,71.44),(1.10,72.4),
+                     (1.14,73.36),(1.18,74.32)):
+        engine.observe(measurement(at,angle=angle,great=great),now=at)
+
+    assert engine.active
+    assert engine.planner.current is None
+    engine.observe(measurement(1.22,angle=75.28,great=great),now=1.22)
+
+    assert engine.planner.current is not None
+    assert engine.planner.current.timing_mode=='PREDICTED'
 
 
 def test_confirmed_prompt_starts_check_and_brief_prompt_loss_uses_absence_grace():

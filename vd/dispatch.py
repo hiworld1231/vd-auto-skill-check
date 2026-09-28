@@ -49,6 +49,12 @@ def dispatch(engine, capture, sequence, *, mouse=None, output=None, clock=time.m
                     requested_at=keydown.requested_at,plan=asdict(plan),
                     frame_at=frame.media_time,
                     prefire_motion=asdict(engine.motion.estimate) if engine.motion.estimate else None,
+                    motion_diagnostics=dict(
+                        reason=engine.motion.reason,
+                        samples=len(engine.motion.points),
+                        last_observed_motion_at=engine.motion.last_observed_motion_at,
+                        check_age_ms=(None if engine.started_at is None else
+                                      (frame.media_time-engine.started_at)*1000)),
                     great=asdict(engine.planner.target),
                     good=asdict(engine.good) if engine.good else None,
                     dispatch_lag_ms=(keydown.syn_completed_at-plan.intended_press_at)*1000,
