@@ -53,25 +53,31 @@ def test_vulkan_capture_reads_bgra_and_normalizes_to_solver_frame(tmp_path):
     assert frame.timestamp_kind == "vulkan_monotonic"
 
 
-def test_vulkan_capture_center_crops_square_layer_roi_before_resize(tmp_path):
+def test_vulkan_capture_center_crops_and_pads_without_resizing(tmp_path):
     shm = tmp_path / "vd_layer_shm.dat"
-    w = h = 8
-    top = bytes((0, 0, 255, 255)) * (w * 1)
-    middle = bytes((0, 255, 0, 255)) * (w * 6)
-    bottom = bytes((255, 0, 0, 255)) * (w * 1)
-    write_snapshot(shm, roi=(672, 311, w, h), raw=top + middle + bottom)
+    w = h = 256
+    pixels = np.zeros((h, w, 4), dtype=np.uint8)
+    pixels[:, :, 3] = 255
+    pixels[:8, :, :3] = (0, 0, 255)
+    pixels[8:248, :, :3] = (0, 255, 0)
+    pixels[248:, :, :3] = (255, 0, 0)
+    pixels[128, 128, :3] = (17, 33, 99)
+    write_snapshot(shm, roi=(672, 311, w, h), raw=pixels.tobytes())
 
     with VulkanCapture(shm_path=shm) as capture:
         frame = capture.next(timeout=0.05)
 
     assert frame is not None
-    # 4:3 normalization should discard the square ROI's top/bottom bands,
-    # not stretch all 8 rows into the solver frame.
+    assert frame.image.shape == (240, 320, 3)
+    # 256x256 -> crop 8 rows from top/bottom, then pad 32 columns per side.
     assert tuple(frame.image[0, 160]) == (0, 255, 0)
     assert tuple(frame.image[-1, 160]) == (0, 255, 0)
+    assert tuple(frame.image[120, 0]) == (0, 0, 0)
+    assert tuple(frame.image[120, 31]) == (0, 0, 0)
+    assert tuple(frame.image[120, 160]) == (17, 33, 99)
 
 
-def test_vulkan_capture_reports_normalization_ui_scale(tmp_path):
+def test_vulkan_capture_preserves_raw_ui_scale(tmp_path):
     shm = tmp_path / "vd_layer_shm.dat"
     write_snapshot(shm, roi=(672, 311, 256, 256))
 
@@ -80,8 +86,7 @@ def test_vulkan_capture_reports_normalization_ui_scale(tmp_path):
 
     assert frame is not None
     assert frame.image.shape == (240, 320, 3)
-    # 256x256 is center-cropped to 256x192, then resized to 320x240.
-    assert capture.ui_scale == 1.25
+    assert capture.ui_scale == 1.0
 
 
 def test_vulkan_capture_converts_rgba_to_bgr(tmp_path):
@@ -92,7 +97,7 @@ def test_vulkan_capture_converts_rgba_to_bgr(tmp_path):
         frame = capture.next(timeout=0.05)
 
     assert frame is not None
-    assert tuple(frame.image[0, 0]) == (51, 153, 26)
+    assert tuple(frame.image[120, 160]) == (51, 153, 26)
 
 
 def test_vulkan_capture_waits_for_new_capture_count(tmp_path):
