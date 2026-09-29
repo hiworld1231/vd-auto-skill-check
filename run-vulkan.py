@@ -17,6 +17,29 @@ VARIANTS = {
 }
 
 
+def _print_interrupt_summary(directory):
+    print("\nStopped.", flush=True)
+    manifest_path = directory / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    manifest = json.loads(manifest_path.read_text())
+    summary = dict(
+        recording=str(directory),
+        complete=manifest.get("complete"),
+        frames_written=manifest.get("frames_written"),
+        frames_dropped=manifest.get("frames_dropped"),
+        capture_sequences_skipped=manifest.get("capture_sequences_skipped"),
+        capture_source=manifest.get("capture_source"),
+        capture_source_size=manifest.get("capture_source_size"),
+        capture_frame_size=manifest.get("capture_frame_size"),
+        capture_roi=manifest.get("capture_roi"),
+        measurement_reasons=manifest.get("measurement_reasons"),
+        detector_ui_scale=manifest.get("detector_ui_scale"),
+        performance=manifest.get("performance"),
+    )
+    print(json.dumps(summary, indent=2))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="VD solver using Sober Vulkan shared-memory capture")
     parser.add_argument("--seconds", type=float)
@@ -60,22 +83,27 @@ def main(argv=None):
             flush=True,
         )
 
-    result = runtime.run_session(
-        seconds=args.seconds,
-        synthetic=False,
-        fps=fps,
-        directory=directory,
-        lead_seconds=args.lead_ms / 1000,
-        lead_uncertainty=args.lead_uncertainty_ms / 1000,
-        physical=not args.observe,
-        learn_lead=False if args.observe else not args.no_learn_lead,
-        recording=True,
-        capture_priority=capture_priority,
-        variant=args.variant,
-        capture_source="vulkan",
-        normalize_window_scale=False,
-        video_recording=args.video,
-    )
+    try:
+        result = runtime.run_session(
+            seconds=args.seconds,
+            synthetic=False,
+            fps=fps,
+            directory=directory,
+            lead_seconds=args.lead_ms / 1000,
+            lead_uncertainty=args.lead_uncertainty_ms / 1000,
+            physical=not args.observe,
+            learn_lead=False if args.observe else not args.no_learn_lead,
+            recording=True,
+            capture_priority=capture_priority,
+            variant=args.variant,
+            capture_source="vulkan",
+            normalize_window_scale=False,
+            video_recording=args.video,
+        )
+    except KeyboardInterrupt:
+        _print_interrupt_summary(directory)
+        return
+
     print(json.dumps({k: v for k, v in result.items() if k not in ("rows", "events")}, indent=2))
 
 
