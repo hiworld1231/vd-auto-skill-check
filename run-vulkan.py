@@ -17,7 +17,7 @@ VARIANTS = {
 }
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="VD solver using Sober Vulkan shared-memory capture")
     parser.add_argument("--seconds", type=float)
     parser.add_argument("--variant", choices=VARIANTS, default="quiet")
@@ -26,7 +26,11 @@ def main():
     parser.add_argument("--recording", type=Path)
     parser.add_argument("--no-learn-lead", action="store_true")
     parser.add_argument("--video", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--observe", action="store_true",
+        help="diagnostic mode: run Detector/Engine on every Vulkan frame without opening input devices",
+    )
+    args = parser.parse_args(argv)
 
     if args.seconds is not None and not 0 < args.seconds <= 86400:
         parser.error("seconds must be in (0, 86400]")
@@ -43,11 +47,18 @@ def main():
     # Swap only its capture backend so the solver logic stays identical.
     runtime.PortalCapture = VulkanCapture
 
-    print(
-        "RUN Vulkan: зайди в игру и удерживай LMB; Ctrl+C для остановки; "
-        f"profile={args.variant}; capture=swapchain; lead={args.lead_ms:g} ms.",
-        flush=True,
-    )
+    if args.observe:
+        print(
+            "OBSERVE Vulkan: input отключён; Detector смотрит каждый swapchain-кадр; "
+            f"profile={args.variant}; lead={args.lead_ms:g} ms.",
+            flush=True,
+        )
+    else:
+        print(
+            "RUN Vulkan: зайди в игру и удерживай LMB; Ctrl+C для остановки; "
+            f"profile={args.variant}; capture=swapchain; lead={args.lead_ms:g} ms.",
+            flush=True,
+        )
 
     result = runtime.run_session(
         seconds=args.seconds,
@@ -56,8 +67,8 @@ def main():
         directory=directory,
         lead_seconds=args.lead_ms / 1000,
         lead_uncertainty=args.lead_uncertainty_ms / 1000,
-        physical=True,
-        learn_lead=not args.no_learn_lead,
+        physical=not args.observe,
+        learn_lead=False if args.observe else not args.no_learn_lead,
         recording=True,
         capture_priority=capture_priority,
         variant=args.variant,
