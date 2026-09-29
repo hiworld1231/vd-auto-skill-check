@@ -71,6 +71,19 @@ def test_vulkan_capture_center_crops_square_layer_roi_before_resize(tmp_path):
     assert tuple(frame.image[-1, 160]) == (0, 255, 0)
 
 
+def test_vulkan_capture_reports_normalization_ui_scale(tmp_path):
+    shm = tmp_path / "vd_layer_shm.dat"
+    write_snapshot(shm, roi=(672, 311, 256, 256))
+
+    with VulkanCapture(shm_path=shm) as capture:
+        frame = capture.next(timeout=0.05)
+
+    assert frame is not None
+    assert frame.image.shape == (240, 320, 3)
+    # 256x256 is center-cropped to 256x192, then resized to 320x240.
+    assert capture.ui_scale == 1.25
+
+
 def test_vulkan_capture_converts_rgba_to_bgr(tmp_path):
     shm = tmp_path / "vd_layer_shm.dat"
     write_snapshot(shm, vk_format=37, pixel=(26, 153, 51, 255))
