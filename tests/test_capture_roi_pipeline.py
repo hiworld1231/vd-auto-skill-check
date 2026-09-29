@@ -59,6 +59,26 @@ def test_capture_converts_only_the_selected_roi_before_emitting_bgr_frames():
     assert header["worker_cpu_time_ns"] > 0
 
 
+def test_monitor_capture_scales_1080p_roi_to_1600x900_and_normalizes_output():
+    result = subprocess.run(
+        ["/usr/bin/python", str(PROJECT / "native" / "pipewire_worker.py"),
+         "--synthetic", "--synthetic-size", "1600,900", "--frames", "2",
+         "--roi", "800,420,320,240"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert b"Capture region: x=667 y=350 width=267 height=200 normalized=320x240" in result.stderr
+    match = re.search(rb"Capture negotiated: ([^\r\n]+)", result.stderr)
+    assert match, result.stderr.decode(errors="replace")
+    assert "width=(int)320" in match.group(1).decode()
+    assert "height=(int)240" in match.group(1).decode()
+    header_size, = struct.unpack("!I", result.stdout[:4])
+    header = json.loads(result.stdout[4:4 + header_size])
+    assert (header["source_width"], header["source_height"]) == (1600, 900)
+    assert (header["width"], header["height"]) == (320, 240)
+
+
 def test_window_capture_centers_the_roi_in_the_selected_window():
     result = subprocess.run(
         ["/usr/bin/python", str(PROJECT / "native" / "pipewire_worker.py"),
