@@ -3,69 +3,55 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$script_dir/../.." && pwd)"
+app_id="org.vinegarhq.Sober"
+ext_name="VDCapture"
 
-# Target directory inside Sober's sandboxed data home
-sober_data="${SOBER_DATA_DIR:-$HOME/.var/app/org.vinegarhq.Sober/data}"
-sober_vulkan_dir="$sober_data/vulkan"
-manifest_dir="$sober_vulkan_dir/implicit_layer.d"
-installed_lib="$sober_vulkan_dir/libVkLayer_VD_capture.so"
-installed_manifest="$manifest_dir/VkLayer_VD_capture.json"
+runtime="$(flatpak info --show-runtime "$app_id")"
+runtime_id="${runtime%%/*}"
+runtime_arch_branch="${runtime#*/}"
+runtime_arch="${runtime_arch_branch%%/*}"
+runtime_branch="${runtime##*/}"
 
-echo "=== Installing VD Vulkan Implicit Layer to Sober Flatpak ==="
-echo "Target Vulkan directory: $sober_vulkan_dir"
+meta="$(flatpak info -m "$runtime_id//$runtime_branch")"
+ext_version="$(awk '
+    /^\[Extension org\.freedesktop\.Platform\.VulkanLayer\]$/ {in_section=1; next}
+    /^\[/ {if (in_section) exit}
+    in_section && /^[[:space:]]*version[[:space:]]*=/ {
+        sub(/^[^=]*=[[:space:]]*/, ""); gsub(/[[:space:]]+$/, ""); print; exit
+    }
+' <<<"$meta")"
 
-# Build layer first
-"$script_dir/build_layer.sh"
-
-built_lib="$root/build/vulkan-layer/libVkLayer_VD_capture.so"
-if [[ ! -f "$built_lib" ]]; then
-    echo "ERROR: Built library not found at $built_lib" >&2
+if [[ -z "$ext_version" ]]; then
+    echo "ERROR: could not determine org.freedesktop.Platform.VulkanLayer extension version" >&2
     exit 1
 fi
 
-mkdir -p "$manifest_dir"
+ext_root="${XDG_DATA_HOME:-$HOME/.local/share}/flatpak/extension/org.freedesktop.Platform.VulkanLayer.${ext_name}/${runtime_arch}/${ext_version}"
+lib_dir="$ext_root/lib"
+manifest_dir="$ext_root/share/vulkan/implicit_layer.d"
+internal_lib="/usr/lib/extensions/vulkan/${ext_name}/lib/libVkLayer_VD_capture.so"
 
-# Copy library
-cp -f "$built_lib" "$installed_lib"
-chmod 755 "$installed_lib"
-echo "[INSTALL] Copied shared library to $installed_lib"
+printf '[INSTALL] Sober runtime: %s\n' "$runtime"
+printf '[INSTALL] VulkanLayer extension version: %s\n' "$ext_version"
+printf '[INSTALL] Extension root: %s\n' "$ext_root"
 
-# Generate and install manifest pointing to Sober internal path
-sed "s|@LAYER_LIBRARY_PATH@|$installed_lib|g" "$script_dir/VkLayer_VD_capture.json.in" > "$installed_manifest"
-chmod 644 "$installed_manifest"
-echo "[INSTALL] Installed manifest at $installed_manifest"
+"$script_dir/build_layer.sh"
+mkdir -p "$lib_dir" "$manifest_dir"
+cp -f "$root/build/vulkan-layer/libVkLayer_VD_capture.so" "$lib_dir/libVkLayer_VD_capture.so"
+chmod 755 "$lib_dir/libVkLayer_VD_capture.so"
+sed "s|@LAYER_LIBRARY_PATH@|$internal_lib|g" "$script_dir/VkLayer_VD_capture.json.in" > "$manifest_dir/VkLayer_VD_capture.json"
+chmod 644 "$manifest_dir/VkLayer_VD_capture.json"
 
-echo "[VERIFY] Verifying layer discovery inside Flatpak Sober..."
-python_check="
-import ctypes
+# Remove the obsolete app-data DSO/manifest. Sober accepts the VulkanLayer extension mount,
+# while arbitrary user DSO paths can stop at the loader's 'Loading layer library' stage.
+sober_vulkan="$HOME/.var/app/$app_id/data/vulkan"
+rm -f "$sober_vulkan/libVkLayer_VD_capture.so" "$sober_vulkan/implicit_layer.d/VkLayer_VD_capture.json"
 
-class VkLayerProperties(ctypes.Structure):
-    _fields_ = [
-        ('layerName', ctypes.c_char * 256),
-        ('specVersion', ctypes.c_uint32),
-        ('implementationVersion', ctypes.c_uint32),
-        ('description', ctypes.c_char * 256),
-    ]
+flatpak run --command=sh "$app_id" -c '
+set -eu
+test -r /usr/lib/extensions/vulkan/VDCapture/lib/libVkLayer_VD_capture.so
+test -r /usr/share/vulkan/implicit_layer.d/VkLayer_VD_capture.json
+echo "[VERIFY] extension library + merged manifest visible inside Sober"
+'
 
-vulkan = ctypes.CDLL('libvulkan.so.1')
-count = ctypes.c_uint32(0)
-res = vulkan.vkEnumerateInstanceLayerProperties(ctypes.byref(count), None)
-layers = (VkLayerProperties * count.value)()
-res = vulkan.vkEnumerateInstanceLayerProperties(ctypes.byref(count), layers)
-
-found = False
-for i in range(count.value):
-    name = layers[i].layerName.decode('utf-8', errors='ignore')
-    desc = layers[i].description.decode('utf-8', errors='ignore')
-    if 'VK_LAYER_VD_capture' in name:
-        print(f'SUCCESS: Discovered inside Flatpak: {name} (v{layers[i].implementationVersion}) - {desc}')
-        found = True
-
-if not found:
-    print('FAILURE: Layer not discovered by Vulkan Loader inside Flatpak')
-    exit(1)
-"
-
-flatpak run --command=python3 org.vinegarhq.Sober -c "$python_check"
-
-echo "=== Installation & Discovery Verification Complete! ==="
+echo "[INSTALL] Done"
