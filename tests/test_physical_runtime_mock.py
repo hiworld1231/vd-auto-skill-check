@@ -328,7 +328,7 @@ def test_region_runtime_records_the_compact_roi_and_detector_offset(monkeypatch,
     assert manifest['detector_roi_offset'] == [75,-2]
 
 
-def test_region_runtime_scales_detector_for_1600px_source(monkeypatch, tmp_path):
+def test_region_runtime_keeps_normalized_detector_scale_for_1600px_source(monkeypatch, tmp_path):
     class LowResolutionCapture(FakeCapture):
         def next(self, after=-1, timeout=1.0):
             return replace(super().next(after, timeout), source_size=(1600,900))
@@ -341,7 +341,7 @@ def test_region_runtime_scales_detector_for_1600px_source(monkeypatch, tmp_path)
 
     manifest = json.loads((directory / 'manifest.json').read_text())
     assert manifest['capture_source_size'] == [1600,900]
-    assert manifest['detector_ui_scale'] == 1.2
+    assert manifest['detector_ui_scale'] == 1.0
 
 
 def test_replay_restores_the_recorded_region_detector_offset(monkeypatch, tmp_path):
