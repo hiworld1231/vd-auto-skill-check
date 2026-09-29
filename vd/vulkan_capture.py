@@ -3,6 +3,7 @@ from __future__ import annotations
 import mmap
 from pathlib import Path
 import struct
+import threading
 import time
 
 import cv2
@@ -22,6 +23,16 @@ RGBA_FORMATS = {37, 43}  # VK_FORMAT_R8G8B8A8_UNORM/SRGB
 DEFAULT_SHM = Path.home() / ".var" / "app" / "org.vinegarhq.Sober" / "data" / "vulkan" / "vd_layer_shm.dat"
 
 
+class _CaptureProcessState:
+    """Small compatibility surface used by vd.dispatch for capture liveness."""
+
+    def __init__(self, owner):
+        self.owner = owner
+
+    def poll(self):
+        return 0 if self.owner.stopping else None
+
+
 class VulkanCapture:
     """Read the latest swapchain ROI published by the VD Vulkan layer.
 
@@ -29,6 +40,10 @@ class VulkanCapture:
     swapchain's 4-byte pixel format to BGR, center-crops it to the solver's 4:3
     geometry, then normalizes it back to the canonical 320x240 frame. The existing
     detector/engine therefore stays Vulkan-agnostic.
+
+    It also exposes the same publication/liveness surface as PortalCapture
+    (cv/latest/error/proc/stopping), because vd.dispatch intentionally verifies the
+    exact frame being acted on while holding the capture publication lock.
     """
 
     def __init__(self, roi=None, *, synthetic=False, fps=60, priority=5,
@@ -48,7 +63,11 @@ class VulkanCapture:
 
         self.roi = DEFAULT_ROI
         self.shm_path = Path(shm_path) if shm_path is not None else DEFAULT_SHM
+        self.cv = threading.Condition()
+        self.error = None
+        self.latest = None
         self.stopping = False
+        self.proc = _CaptureProcessState(self)
         self._file = None
         self._mapping = None
 
@@ -169,7 +188,7 @@ class VulkanCapture:
                 received = time.monotonic()
                 image = self._to_bgr(snapshot)
                 timestamp_ns = snapshot["timestamp_ns"]
-                return Frame(
+                frame = Frame(
                     sequence=snapshot["count"],
                     image=image,
                     media_time=timestamp_ns / 1e9 if timestamp_ns else None,
@@ -182,13 +201,19 @@ class VulkanCapture:
                     worker_cpu_time_ns=None,
                     source_size=snapshot["source_size"],
                 )
+                with self.cv:
+                    self.latest = frame
+                    self.cv.notify_all()
+                return frame
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.002)
         return None
 
     def close(self, *, fast=False):
-        self.stopping = True
+        with self.cv:
+            self.stopping = True
+            self.cv.notify_all()
         self._close_mapping()
 
     def __enter__(self):
