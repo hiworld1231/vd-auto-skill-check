@@ -1,6 +1,9 @@
 name: Region resolution regression
 
 on:
+  push:
+    branches:
+      - fix/1600x900-region-scale
   pull_request:
     branches:
       - main
@@ -14,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
+          ref: fix/1600x900-region-scale
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
@@ -55,4 +58,4 @@ jobs:
           git add vd/runtime.py tests/test_physical_runtime_mock.py
           git diff --cached --quiet && exit 0
           git commit -m 'Fix normalized region detector scale'
-          git push origin HEAD:${{ github.head_ref }}
+          git push origin HEAD:fix/1600x900-region-scale
