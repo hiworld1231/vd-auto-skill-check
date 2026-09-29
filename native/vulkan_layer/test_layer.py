@@ -146,13 +146,15 @@ class TestVulkanLayer(unittest.TestCase):
         install = ROOT_DIR / "native" / "vulkan_layer" / "install_sober_layer.sh"
         result = subprocess.run([str(install)], capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, f"Install failed:\n{result.stdout}\n{result.stderr}")
-        self.assertIn("extension library + merged manifest visible inside Sober", result.stdout)
+        self.assertIn("extension library + app-data manifest visible inside Sober", result.stdout)
 
         check = subprocess.run(
             [
                 "flatpak", "run", "--command=sh", "org.vinegarhq.Sober", "-c",
                 "test -r /usr/lib/extensions/vulkan/VDCapture/lib/libVkLayer_VD_capture.so && "
-                "test -r /usr/share/vulkan/implicit_layer.d/VkLayer_VD_capture.json",
+                "test -r \"$XDG_DATA_HOME/vulkan/implicit_layer.d/VkLayer_VD_capture.json\" && "
+                "grep -q /usr/lib/extensions/vulkan/VDCapture/lib/libVkLayer_VD_capture.so "
+                "\"$XDG_DATA_HOME/vulkan/implicit_layer.d/VkLayer_VD_capture.json\"",
             ],
             capture_output=True,
             text=True,
