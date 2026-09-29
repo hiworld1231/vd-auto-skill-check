@@ -1,30 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sober_data="${SOBER_DATA_DIR:-$HOME/.var/app/org.vinegarhq.Sober/data}"
-sober_vulkan_dir="$sober_data/vulkan"
-manifest_dir="$sober_vulkan_dir/implicit_layer.d"
-installed_lib="$sober_vulkan_dir/libVkLayer_VD_capture.so"
-installed_manifest="$manifest_dir/VkLayer_VD_capture.json"
+app_id="org.vinegarhq.Sober"
+ext_base="${XDG_DATA_HOME:-$HOME/.local/share}/flatpak/extension/org.freedesktop.Platform.VulkanLayer.VDCapture"
+sober_vulkan="$HOME/.var/app/$app_id/data/vulkan"
 
-echo "=== Uninstalling VD Vulkan Implicit Layer from Sober Flatpak ==="
-
-if [[ -f "$installed_manifest" ]]; then
-    rm -f "$installed_manifest"
-    echo "[UNINSTALL] Removed manifest $installed_manifest"
-fi
-
-if [[ -f "$installed_lib" ]]; then
-    rm -f "$installed_lib"
-    echo "[UNINSTALL] Removed shared library $installed_lib"
-fi
+rm -rf "$ext_base"
+rm -f "$sober_vulkan/libVkLayer_VD_capture.so" "$sober_vulkan/implicit_layer.d/VkLayer_VD_capture.json"
 
 if [[ "${1:-}" == "--clean-logs" ]]; then
-    rm -f "$sober_vulkan_dir/vd_layer.log" \
-          "$sober_vulkan_dir/vd_layer_status.json" \
-          "$sober_vulkan_dir/vd_layer_status.json.tmp" \
-          "$sober_vulkan_dir/vd_layer_shm.dat"
-    echo "[UNINSTALL] Cleaned up logs and status files"
+    rm -f "$sober_vulkan/vd_layer.log" \
+          "$sober_vulkan/vd_layer_status.json" \
+          "$sober_vulkan"/vd_layer_status.json.*.tmp \
+          "$sober_vulkan/vd_layer_shm.dat"
 fi
 
-echo "=== VD Vulkan Implicit Layer Uninstalled Successfully ==="
+echo "[UNINSTALL] VD Vulkan layer removed"
