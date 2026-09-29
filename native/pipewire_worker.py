@@ -23,8 +23,8 @@ def portal_video_caps(fps):
     return f'video/x-raw,framerate=0/1,max-framerate={fps}/1'
 
 
-def capture_pipeline(source, normalize_window_scale=False):
-    scale = ' ! videoscale ! capsfilter name=scaled_roi' if normalize_window_scale else ''
+def capture_pipeline(source, normalize_output=False):
+    scale = ' ! videoscale ! capsfilter name=scaled_roi' if normalize_output else ''
     return Gst.parse_launch(source +
         ' ! videocrop name=roi' + scale +
         ' ! videoconvert ! video/x-raw,format=BGR' +
@@ -154,11 +154,14 @@ def main():
             source = (f'pipewiresrc fd={fd} path={node} do-timestamp=false'
                       f' ! {portal_video_caps(args.fps)}')
             print(f'Requesting {portal_video_caps(args.fps)}', file=sys.stderr, flush=True)
-        pipeline = capture_pipeline(source, args.normalize_window_scale)
+        normalize_output = args.source == 'monitor' or args.normalize_window_scale
+        pipeline = capture_pipeline(source, normalize_output)
         cropper = pipeline.get_by_name('roi')
         scaler_caps = pipeline.get_by_name('scaled_roi')
-        initial_left=0 if args.source == 'window' else left
-        initial_top=0 if args.source == 'window' else top
+        # Read one uncropped sample first so monitor coordinates can be scaled
+        # from the detector's canonical 1920x1080 geometry to the real source.
+        initial_left = 0
+        initial_top = 0
         cropper.set_property('left', initial_left)
         cropper.set_property('top', initial_top)
         sink = pipeline.get_by_name('frames')
@@ -183,10 +186,17 @@ def main():
             caps = sample.get_caps().get_structure(0)
             w, h = caps.get_value('width'), caps.get_value('height')
             if not crop_configured:
-                source_width=w+initial_left
-                source_height=h+initial_top
+                source_width = w + initial_left
+                source_height = h + initial_top
                 region_width, region_height = width, height
-                if args.normalize_window_scale:
+                if args.source == 'monitor':
+                    scale_x = source_width / 1920
+                    scale_y = source_height / 1080
+                    left = round(left * scale_x)
+                    top = round(top * scale_y)
+                    region_width = max(1, round(width * scale_x))
+                    region_height = max(1, round(height * scale_y))
+                elif args.normalize_window_scale:
                     aspect = source_width / source_height
                     if abs(aspect / (16 / 9) - 1) > .02:
                         raise RuntimeError('Scaled window capture requires a 16:9 source')
@@ -196,11 +206,11 @@ def main():
                     region_width = round(width * scale)
                     region_height = round(height * scale)
                 if args.source == 'window':
-                    left=(source_width-region_width)//2
-                    top=(source_height-region_height)//2
-                right=source_width-left-region_width
-                bottom=source_height-top-region_height
-                if min(left,top,right,bottom) < 0:
+                    left = (source_width - region_width) // 2
+                    top = (source_height - region_height) // 2
+                right = source_width - left - region_width
+                bottom = source_height - top - region_height
+                if min(left, top, right, bottom) < 0:
                     raise RuntimeError(f'ROI outside captured source {source_width}x{source_height}')
                 cropper.set_property('right', right)
                 cropper.set_property('bottom', bottom)
