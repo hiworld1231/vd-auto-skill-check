@@ -136,8 +136,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             source_size=getattr(frame,'source_size',None)
             if source_size is not None:
                 recorder.metadata['capture_source_size']=list(source_size)
-            ui_scale=(1920/source_size[0] if capture_source=='region' and source_size
-                      and source_size[0]>0 else 1.0)
+            # Region capture already normalizes the scaled physical ROI.
+            ui_scale=1.0
             detector_options=dict(
                 roi_offset=REGION_ROI_OFFSET if capture_source=='region' else (0,0))
             if ui_scale!=1:
