@@ -51,14 +51,30 @@ def annotate(image, match, output):
     cv2.imwrite(str(output), rendered)
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Find the prompt template in live Vulkan capture")
-    parser.add_argument("--seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--seconds", type=float, default=None,
+        help="optional timeout; by default run until Ctrl+C",
+    )
     parser.add_argument("--raw-output", type=Path, default=Path("/tmp/vd-prompt-raw.png"))
     parser.add_argument("--normalized-output", type=Path, default=Path("/tmp/vd-prompt-normalized.png"))
-    args = parser.parse_args()
-    if not 0 < args.seconds <= 300:
-        parser.error("seconds must be in (0, 300]")
+    args = parser.parse_args(argv)
+    if args.seconds is not None and not 0 < args.seconds <= 86400:
+        parser.error("seconds must be in (0, 86400]")
+    return args
+
+
+def deadline_for_seconds(seconds, *, now=None):
+    if seconds is None:
+        return None
+    if now is None:
+        now = time.monotonic()
+    return now + seconds
+
+
+def main(argv=None):
+    args = parse_args(argv)
 
     detector = Detector()
     raw_scales = np.linspace(.55, 1.15, 25)
@@ -71,35 +87,44 @@ def main():
     best_norm_meta = None
     frames = 0
     after = -1
-    deadline = time.monotonic() + args.seconds
+    deadline = deadline_for_seconds(args.seconds)
+    interrupted = False
 
-    with VulkanCapture() as capture:
-        while time.monotonic() < deadline:
-            snap = capture._snapshot()
-            if snap is None or snap["count"] <= after:
-                time.sleep(.002)
-                continue
-            after = snap["count"]
-            frames += 1
+    if deadline is None:
+        print("probe: без таймера; вызови skill check и нажми Ctrl+C после него", flush=True)
+    else:
+        print(f"probe: timeout={args.seconds:g}s", flush=True)
 
-            raw = raw_bgr(snap)
-            normalized = capture._to_bgr(snap)
-            raw_match = best_match(cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY), detector.template, raw_scales)
-            norm_match = best_match(cv2.cvtColor(normalized, cv2.COLOR_BGR2GRAY), detector.template,
-                                    normalized_scales)
+    try:
+        with VulkanCapture() as capture:
+            while deadline is None or time.monotonic() < deadline:
+                snap = capture._snapshot()
+                if snap is None or snap["count"] <= after:
+                    time.sleep(.002)
+                    continue
+                after = snap["count"]
+                frames += 1
 
-            if raw_match[0] > best_raw[0]:
-                best_raw = raw_match
-                best_raw_image = raw
-                best_raw_meta = (snap["count"], snap["roi"], snap["source_size"])
-                print(f"raw new best score={raw_match[0]:.3f} scale={raw_match[1]:.3f} "
-                      f"loc={raw_match[2]} frame={snap['count']}", flush=True)
-            if norm_match[0] > best_norm[0]:
-                best_norm = norm_match
-                best_norm_image = normalized
-                best_norm_meta = (snap["count"], snap["roi"], snap["source_size"])
-                print(f"norm new best score={norm_match[0]:.3f} scale={norm_match[1]:.3f} "
-                      f"loc={norm_match[2]} frame={snap['count']}", flush=True)
+                raw = raw_bgr(snap)
+                normalized = capture._to_bgr(snap)
+                raw_match = best_match(cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY), detector.template, raw_scales)
+                norm_match = best_match(cv2.cvtColor(normalized, cv2.COLOR_BGR2GRAY), detector.template,
+                                        normalized_scales)
+
+                if raw_match[0] > best_raw[0]:
+                    best_raw = raw_match
+                    best_raw_image = raw
+                    best_raw_meta = (snap["count"], snap["roi"], snap["source_size"])
+                    print(f"raw new best score={raw_match[0]:.3f} scale={raw_match[1]:.3f} "
+                          f"loc={raw_match[2]} frame={snap['count']}", flush=True)
+                if norm_match[0] > best_norm[0]:
+                    best_norm = norm_match
+                    best_norm_image = normalized
+                    best_norm_meta = (snap["count"], snap["roi"], snap["source_size"])
+                    print(f"norm new best score={norm_match[0]:.3f} scale={norm_match[1]:.3f} "
+                          f"loc={norm_match[2]} frame={snap['count']}", flush=True)
+    except KeyboardInterrupt:
+        interrupted = True
 
     if best_raw_image is not None:
         annotate(best_raw_image, best_raw, args.raw_output)
@@ -107,6 +132,8 @@ def main():
         annotate(best_norm_image, best_norm, args.normalized_output)
 
     print("=== Vulkan prompt probe ===")
+    if interrupted:
+        print("stopped=Ctrl+C")
     print(f"frames={frames}")
     print(f"raw_best score={best_raw[0]:.4f} scale={best_raw[1]} loc={best_raw[2]} size={best_raw[3]} meta={best_raw_meta}")
     print(f"normalized_best score={best_norm[0]:.4f} scale={best_norm[1]} loc={best_norm[2]} size={best_norm[3]} meta={best_norm_meta}")
