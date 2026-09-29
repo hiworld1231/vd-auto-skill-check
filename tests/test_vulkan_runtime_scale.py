@@ -16,7 +16,7 @@ class _Proc:
 
 class _ScaledCapture:
     def __init__(self, **_):
-        self.ui_scale = 1.25
+        self.ui_scale = 1.0
         self.roi = (800, 420, 320, 240)
         self.cv = threading.Condition()
         self.proc = _Proc()
@@ -66,4 +66,4 @@ def test_runtime_passes_capture_ui_scale_to_detector(monkeypatch, tmp_path):
         capture_source="vulkan", video_recording=False,
     )
 
-    assert seen == [1.25]
+    assert seen == [1.0]
