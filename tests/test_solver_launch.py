@@ -30,6 +30,7 @@ def test_run_cli_without_seconds_passes_unlimited_duration(monkeypatch, tmp_path
     assert seen['fps'] == 60
     assert seen['capture_priority'] == 10
     assert seen['variant'] == 'quiet'
+    assert seen['capture_source'] == 'monitor'
     assert seen['video_recording'] is False
     assert seen['lead_seconds'] == .035
     assert seen['lead_uncertainty'] == .020
@@ -78,6 +79,41 @@ def test_explicit_capture_settings_override_the_selected_profile(monkeypatch, tm
     assert seen['fps'] == 50
     assert seen['capture_priority'] == 2
     assert seen['variant'] == 'quiet'
+
+
+def test_window_capture_source_reaches_the_runtime(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run_session(**kwargs):
+        seen.update(kwargs)
+        return {'mode': 'run', 'frames': 0}
+
+    monkeypatch.setattr('vd.runtime.run_session', fake_run_session)
+    monkeypatch.setattr('sys.argv', [str(PROJECT / 'run.py'), 'run',
+                                    '--capture-source', 'window',
+                                    '--normalize-window-scale',
+                                    '--recording', str(tmp_path / 'session')])
+    cli.main()
+
+    assert seen['capture_source'] == 'window'
+    assert seen['normalize_window_scale'] is True
+
+
+def test_region_capture_source_reaches_the_runtime(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_run_session(**kwargs):
+        seen.update(kwargs)
+        return {'mode': 'run', 'frames': 0}
+
+    monkeypatch.setattr('vd.runtime.run_session', fake_run_session)
+    monkeypatch.setattr('sys.argv', [str(PROJECT / 'run.py'), 'run',
+                                    '--capture-source', 'region',
+                                    '--recording', str(tmp_path / 'session')])
+    cli.main()
+
+    assert seen['capture_source'] == 'region'
+    assert seen['normalize_window_scale'] is False
 
 
 def test_no_video_keeps_the_decision_event_log(monkeypatch, tmp_path):

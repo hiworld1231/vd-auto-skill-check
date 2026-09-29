@@ -23,14 +23,15 @@ def portal_video_caps(fps):
     return f'video/x-raw,framerate=0/1,max-framerate={fps}/1'
 
 
-def capture_pipeline(source):
+def capture_pipeline(source, normalize_window_scale=False):
+    scale = ' ! videoscale ! capsfilter name=scaled_roi' if normalize_window_scale else ''
     return Gst.parse_launch(source +
-        ' ! videocrop name=roi'
+        ' ! videocrop name=roi' + scale +
         ' ! videoconvert ! video/x-raw,format=BGR' +
         ' ! appsink name=frames sync=false max-buffers=1 drop=true')
 
 
-def open_portal():
+def open_portal(capture_source):
     import dbus
     from dbus.mainloop.glib import DBusGMainLoop
     DBusGMainLoop(set_as_default=True)
@@ -84,14 +85,16 @@ def open_portal():
     try:
         session = request(portal.CreateSession,
                           session_handle_token='vd_' + uuid.uuid4().hex)['session_handle']
-        request(portal.SelectSources, session, types=dbus.UInt32(1),
+        source_type = 1 if capture_source == 'monitor' else 2
+        request(portal.SelectSources, session, types=dbus.UInt32(source_type),
                 multiple=dbus.Boolean(False), cursor_mode=dbus.UInt32(1))
-        print('Select the game monitor in the KDE screen-sharing dialog.',
+        label = 'game monitor' if capture_source == 'monitor' else 'game window'
+        print(f'Select the {label} in the KDE screen-sharing dialog.',
               file=sys.stderr, flush=True)
         result = request(portal.Start, session, '')
         streams = result['streams']
         if len(streams) != 1:
-            raise RuntimeError('Exactly one monitor is required')
+            raise RuntimeError('Exactly one capture source is required')
         node = int(streams[0][0])
         fd = portal.OpenPipeWireRemote(session, dbus.Dictionary({}, signature='sv')).take()
         def close():
@@ -118,6 +121,10 @@ def main():
     ap.add_argument('--fps', type=int, default=60)
     ap.add_argument('--priority', type=int, default=5,
                     help='minimum nice value for this worker (0=normal, 19=lowest)')
+    ap.add_argument('--source', choices=('monitor', 'window'), default='monitor')
+    ap.add_argument('--normalize-window-scale', action='store_true')
+    ap.add_argument('--synthetic-size', default='1920,1080',
+                    help=argparse.SUPPRESS)
     ap.add_argument('--roi', default='800,420,320,240')
     args = ap.parse_args()
     Gst.init(None)
@@ -130,20 +137,30 @@ def main():
     left, top, width, height = map(int, args.roi.split(','))
     if min(left, top) < 0 or min(width, height) <= 0:
         raise ValueError('Invalid ROI')
+    if args.normalize_window_scale and args.source != 'window':
+        raise ValueError('Window scale normalization requires --source window')
+    synthetic_width, synthetic_height = map(int, args.synthetic_size.split(','))
+    if min(synthetic_width, synthetic_height) <= 0:
+        raise ValueError('Invalid synthetic source size')
     close = lambda: None
     pipeline = None
     try:
         if args.synthetic:
-            source = f'videotestsrc is-live=true pattern=ball ! video/x-raw,width=1920,height=1080,framerate={args.fps}/1'
+            source = (f'videotestsrc is-live=true pattern=ball ! '
+                      f'video/x-raw,width={synthetic_width},height={synthetic_height},'
+                      f'framerate={args.fps}/1')
         else:
-            fd, node, close = open_portal()
+            fd, node, close = open_portal(args.source)
             source = (f'pipewiresrc fd={fd} path={node} do-timestamp=false'
                       f' ! {portal_video_caps(args.fps)}')
             print(f'Requesting {portal_video_caps(args.fps)}', file=sys.stderr, flush=True)
-        pipeline = capture_pipeline(source)
+        pipeline = capture_pipeline(source, args.normalize_window_scale)
         cropper = pipeline.get_by_name('roi')
-        cropper.set_property('left', left)
-        cropper.set_property('top', top)
+        scaler_caps = pipeline.get_by_name('scaled_roi')
+        initial_left=0 if args.source == 'window' else left
+        initial_top=0 if args.source == 'window' else top
+        cropper.set_property('left', initial_left)
+        cropper.set_property('top', initial_top)
         sink = pipeline.get_by_name('frames')
         bus = pipeline.get_bus()
         pipeline.set_state(Gst.State.PLAYING)
@@ -166,10 +183,35 @@ def main():
             caps = sample.get_caps().get_structure(0)
             w, h = caps.get_value('width'), caps.get_value('height')
             if not crop_configured:
-                if w < width or h < height:
-                    raise RuntimeError(f'ROI outside captured monitor {w + left}x{h + top}')
-                cropper.set_property('right', w - width)
-                cropper.set_property('bottom', h - height)
+                source_width=w+initial_left
+                source_height=h+initial_top
+                region_width, region_height = width, height
+                if args.normalize_window_scale:
+                    aspect = source_width / source_height
+                    if abs(aspect / (16 / 9) - 1) > .02:
+                        raise RuntimeError('Scaled window capture requires a 16:9 source')
+                    scale = source_height / 1080
+                    if scale < .5:
+                        raise RuntimeError('Scaled window capture needs at least 960x540')
+                    region_width = round(width * scale)
+                    region_height = round(height * scale)
+                if args.source == 'window':
+                    left=(source_width-region_width)//2
+                    top=(source_height-region_height)//2
+                right=source_width-left-region_width
+                bottom=source_height-top-region_height
+                if min(left,top,right,bottom) < 0:
+                    raise RuntimeError(f'ROI outside captured source {source_width}x{source_height}')
+                cropper.set_property('right', right)
+                cropper.set_property('bottom', bottom)
+                cropper.set_property('left', left)
+                cropper.set_property('top', top)
+                region = f'x={left} y={top} width={region_width} height={region_height}'
+                if scaler_caps is not None:
+                    scaler_caps.set_property('caps', Gst.Caps.from_string(
+                        f'video/x-raw,width={width},height={height}'))
+                    region += f' normalized={width}x{height}'
+                print(f'Capture region: {region}', file=sys.stderr, flush=True)
                 crop_configured = True
                 continue
             if (w, h) != (width, height):
@@ -196,6 +238,7 @@ def main():
                     strides=(video_info.stride[0], 3, 1))
                 payload = pixels.tobytes()
                 header = json.dumps(dict(seq=count, width=width, height=height,
+                    source_width=source_width, source_height=source_height,
                     bytes=len(payload), stride=width * 3,
                     worker_cpu_time_ns=worker_cpu_time_ns,
                     pts_ns=int(b.pts) if pts_valid else None,

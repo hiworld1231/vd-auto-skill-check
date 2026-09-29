@@ -34,3 +34,19 @@ def test_fitted_motion_requires_more_than_four_degrees_of_total_travel():
 
     assert estimates[-1] is None
     assert tracker.reason=='MEASURING_MOTION'
+
+
+def test_speed_jump_discards_old_fit_and_reacquires_frenzy_speed():
+    tracker=MotionTracker()
+    for i,angle in enumerate((0,6,12,18)):
+        estimate=tracker.update(1+i*.02,candidate(angle))
+    assert estimate is not None
+    assert abs(estimate.speed-300)<1
+
+    # The next check accelerates sharply. Do not return a fresh-looking plan
+    # based on the old speed while treating the new angle as an outlier.
+    assert tracker.update(1.08,candidate(44)) is None
+    estimate=tracker.update(1.10,candidate(70))
+
+    assert estimate is not None
+    assert 1200<=estimate.speed<=1400

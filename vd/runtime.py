@@ -7,7 +7,7 @@ from pathlib import Path
 import statistics
 import time
 
-from vd.capture import PortalCapture
+from vd.capture import PortalCapture, REGION_ROI_OFFSET
 from vd.calibration import FreezeObserver, LeadEstimator
 from vd.motion import Motion
 from vd.engine import Engine
@@ -38,16 +38,23 @@ def _timing_summary(samples):
             "p95": round(ordered[p95_index], 3), "max": round(ordered[-1], 3)}
 
 
+def _record_sample(samples, name, value, lifetime_max):
+    samples.append(value)
+    lifetime_max[name]=max(value,lifetime_max.get(name,value))
+
+
 def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncertainty,
                 physical=False, learn_lead=False, recording=True,
-                capture_priority=5, variant='baseline', video_recording=True):
+                capture_priority=5, variant='baseline', capture_source='monitor',
+                normalize_window_scale=False, video_recording=True):
     if physical and synthetic:
         raise ValueError('Physical input is forbidden for synthetic capture')
     if learn_lead and not physical:
         raise ValueError('Learning requires physical input observations')
     engine=Engine(lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty)
-    detector=Detector()
+    detector=None
     reasons=Counter()
+    measurement_reasons=Counter()
     nframes=0
     skipped=0
     last=-1
@@ -64,6 +71,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     frame_age_ms=deque(maxlen=600)
     capture_pipe_age_ms=deque(maxlen=600)
     capture_worker_cpu_percent=deque(maxlen=600)
+    lifetime_max={}
     previous_received_time=None
     previous_worker_cpu_time_ns=None
     previous_worker_received_time=None
@@ -74,7 +82,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
         if recording:
             recorder=stack.enter_context(Recorder(directory,metadata=dict(
                 mode=mode,synthetic=synthetic,variant=variant,requested_fps=fps,
-                capture_priority=capture_priority,
+                capture_priority=capture_priority,capture_source=capture_source,
+                normalize_window_scale=normalize_window_scale,
                 lead_seconds=lead_seconds,lead_uncertainty=lead_uncertainty,
                 learn_lead=learn_lead,
                 video_sampling=('full_rate_during_check_1fps_while_idle'
@@ -118,10 +127,27 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
 
         try:
             capture=stack.enter_context(PortalCapture(synthetic=synthetic,fps=fps,
-                                                     priority=capture_priority))
+                                                     priority=capture_priority,
+                                                     source=capture_source,
+                                                     normalize_window_scale=normalize_window_scale))
             frame=capture.next(timeout=65)
             if frame is None:
                 raise RuntimeError('No first frame')
+            source_size=getattr(frame,'source_size',None)
+            if source_size is not None:
+                recorder.metadata['capture_source_size']=list(source_size)
+            ui_scale=(1920/source_size[0] if capture_source=='region' and source_size
+                      and source_size[0]>0 else 1.0)
+            detector_options=dict(
+                roi_offset=REGION_ROI_OFFSET if capture_source=='region' else (0,0))
+            if ui_scale!=1:
+                detector_options['ui_scale']=ui_scale
+            detector=Detector(**detector_options)
+            recorder.metadata['detector_ui_scale']=ui_scale
+            recorder.metadata['capture_frame_size']=[frame.image.shape[1],frame.image.shape[0]]
+            if getattr(capture, 'roi', None) is not None:
+                recorder.metadata['capture_roi']=list(capture.roi)
+            recorder.metadata['detector_roi_offset']=list(detector.roi_offset)
             started_wall=time.monotonic()
             started_cpu=time.process_time()
             if physical:
@@ -142,12 +168,15 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                 if frame is not None:
                     frame_started=time.perf_counter()
                     if previous_received_time is not None:
-                        frame_delivery_gap_ms.append(
-                            max(0,(frame.received_time-previous_received_time)*1000))
+                        _record_sample(frame_delivery_gap_ms,'frame_delivery_gap_ms',
+                            max(0,(frame.received_time-previous_received_time)*1000),
+                            lifetime_max)
                     previous_received_time=frame.received_time
-                    frame_age_ms.append(max(0,(time.monotonic()-frame.received_time)*1000))
+                    _record_sample(frame_age_ms,'frame_age_ms',
+                        max(0,(time.monotonic()-frame.received_time)*1000),lifetime_max)
                     if frame.media_time is not None:
-                        capture_pipe_age_ms.append(max(0,(frame.received_time-frame.media_time)*1000))
+                        _record_sample(capture_pipe_age_ms,'capture_pipe_age_ms',
+                            max(0,(frame.received_time-frame.media_time)*1000),lifetime_max)
                     worker_cpu_time_ns=getattr(frame,'worker_cpu_time_ns',None)
                     if worker_cpu_time_ns is None:
                         previous_worker_cpu_time_ns=None
@@ -157,7 +186,9 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                             wall=frame.received_time-previous_worker_received_time
                             cpu=worker_cpu_time_ns-previous_worker_cpu_time_ns
                             if wall>0 and cpu>=0:
-                                capture_worker_cpu_percent.append(cpu/1e9/wall*100)
+                                _record_sample(capture_worker_cpu_percent,
+                                    'capture_worker_cpu_percent',cpu/1e9/wall*100,
+                                    lifetime_max)
                         previous_worker_cpu_time_ns=worker_cpu_time_ns
                         previous_worker_received_time=frame.received_time
                     skipped+=max(0,frame.sequence-last-1) if last>=0 else 0
@@ -169,6 +200,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     else:
                         m=detector.measure(frame.image,frame.media_time,center_hint=engine.center)
                         m=retained_target(m,great=engine.target,good=engine.good,center=engine.center)
+                        measurement_reasons[m.reason]+=1
                         now=time.monotonic()
                         if observer is not None:
                             if not -.002<=now-m.timestamp<=engine.planner.max_age:
@@ -189,7 +221,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                                         state=state,events=[])
                         if not held or not engine.active:
                             last_idle_recorded_at=frame.received_time
-                    frame_processing_ms.append((time.perf_counter()-frame_started)*1000)
+                    _record_sample(frame_processing_ms,'frame_processing_ms',
+                        (time.perf_counter()-frame_started)*1000,lifetime_max)
                     nframes+=1
                 else:
                     dispatch(engine,capture,last,mouse=mouse,output=output,clock=time.monotonic)
@@ -207,6 +240,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             engine.cancel('STOPPED',time.monotonic())
             events()
             recorder.metadata['capture_sequences_skipped']=skipped
+            recorder.metadata['measurement_reasons']=dict(measurement_reasons)
             elapsed=max(time.monotonic()-started_wall,1e-9)
             performance=dict(
                 frame_processing_ms=_timing_summary(frame_processing_ms),
@@ -214,6 +248,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                 frame_age_ms=_timing_summary(frame_age_ms),
                 capture_pipe_age_ms=_timing_summary(capture_pipe_age_ms),
                 capture_worker_cpu_percent=_timing_summary(capture_worker_cpu_percent),
+                lifetime_max={key:round(value,3) for key,value in lifetime_max.items()},
                 elapsed_seconds=round(elapsed,3),
                 main_cpu_percent=round(100*(time.process_time()-started_cpu)/elapsed,1),
                 profile_window_frames=frame_processing_ms.maxlen)
@@ -226,6 +261,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                                  ensure_ascii=False),flush=True)
     return dict(mode=mode,frames=nframes,claims=presses,physical_presses=keydowns,
                 capture_sequences_skipped=skipped,reasons=dict(reasons),
+                measurement_reasons=dict(measurement_reasons),
                 performance=performance,
                 recording=str(directory) if recording else None,
                 recording_frames_dropped=recorder.dropped)
@@ -235,7 +271,10 @@ def replay(directory):
     manifest=json.loads((Path(directory)/'manifest.json').read_text())
     engine=Engine(lead_seconds=manifest['lead_seconds'],
                   lead_uncertainty=manifest['lead_uncertainty'])
-    detector=Detector()
+    detector_options=dict(roi_offset=tuple(manifest.get('detector_roi_offset',(0,0))))
+    if manifest.get('detector_ui_scale',1.0)!=1.0:
+        detector_options['ui_scale']=manifest['detector_ui_scale']
+    detector=Detector(**detector_options)
     rows=[]
     events=[]
     previous_decision=None

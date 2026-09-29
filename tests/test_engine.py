@@ -25,7 +25,7 @@ def test_ambiguous_red_candidates_still_get_a_great_attempt():
     engine.observe(ambiguous(1.0,70),now=1.0)
     engine.observe(ambiguous(1.02,76),now=1.02)
     engine.observe(ambiguous(1.04,82),now=1.04)
-    engine.observe(ambiguous(1.06,94),now=1.06)
+    engine.observe(ambiguous(1.06,88),now=1.06)
 
     plan=engine.planner.current
     assert engine.active
@@ -34,7 +34,7 @@ def test_ambiguous_red_candidates_still_get_a_great_attempt():
     assert engine.poll(plan.press_at+.001) is plan
 
 
-def test_visible_check_without_needle_gets_one_blind_attempt():
+def test_visible_check_without_needle_gets_one_blind_attempt_after_startup_grace():
     engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
 
     def no_needle(at):
@@ -43,14 +43,36 @@ def test_visible_check_without_needle_gets_one_blind_attempt():
 
     engine.observe(no_needle(1.0),now=1.0)
     engine.observe(no_needle(1.02),now=1.02)
+    for at in (1.08,1.14,1.20,1.26,1.30):
+        engine.observe(no_needle(at),now=at)
 
     assert engine.active
+    assert engine.planner.current is None
+    engine.observe(no_needle(1.321),now=1.321)
     plan=engine.planner.current
     assert plan is not None
     assert plan.timing_mode=='BLIND_NO_NEEDLE'
     assert plan.target_grade=='GREAT'
-    assert engine.poll(1.02) is plan
-    assert engine.poll(1.02) is None
+    assert engine.poll(1.321) is plan
+    assert engine.poll(1.321) is None
+
+
+def test_small_startup_angle_jitter_does_not_trigger_blind_attempt_before_motion():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    great=Arc(96,10)
+
+    engine.observe(measurement(1.0,angle=70.0,great=great),now=1.0)
+    engine.observe(measurement(1.02,angle=70.7,great=great),now=1.02)
+    engine.observe(measurement(1.08,angle=71.5,great=great),now=1.08)
+    engine.observe(measurement(1.12,angle=71.5,great=great),now=1.12)
+    engine.observe(measurement(1.18,angle=71.5,great=great),now=1.18)
+    engine.observe(measurement(1.24,angle=71.5,great=great),now=1.24)
+
+    assert engine.planner.current is None
+
+    engine.observe(measurement(1.25,angle=75.5,great=great),now=1.25)
+    assert engine.planner.current is not None
+    assert engine.planner.current.timing_mode=='PREDICTED'
 
 
 def test_visible_check_with_stalled_needle_gets_blind_attempt_after_motion_expires():
@@ -58,22 +80,39 @@ def test_visible_check_with_stalled_needle_gets_blind_attempt_after_motion_expir
 
     engine.observe(measurement(1.0,angle=70),now=1.0)
     engine.observe(measurement(1.02,angle=72),now=1.02)
-    engine.observe(measurement(1.08,angle=73),now=1.08)
-    engine.observe(measurement(1.11,angle=73),now=1.11)
-    assert engine.planner.current is None
-    engine.observe(measurement(1.121,angle=73),now=1.121)
-    assert engine.planner.current is None
-    engine.observe(measurement(1.171,angle=73),now=1.171)
-    assert engine.planner.current is None
-    engine.observe(measurement(1.231,angle=73),now=1.231)
+    engine.observe(measurement(1.04,angle=74),now=1.04)
+    engine.observe(measurement(1.06,angle=76),now=1.06)
+    for at in (1.10,1.14,1.18,1.22):
+        engine.observe(measurement(at,angle=76),now=at)
+        if at<1.21:
+            plan=engine.planner.current
+            assert plan is None or plan.timing_mode!='BLIND_NO_MOTION'
 
     plan=engine.planner.current
     assert plan is not None
     assert plan.timing_mode=='BLIND_NO_MOTION'
-    assert engine.poll(1.231) is plan
+    assert engine.poll(1.22) is plan
 
 
-def test_delayed_frame_keeps_recent_motion_prediction_instead_of_blind_firing():
+def test_one_second_capture_gap_restarts_motion_grace_and_reacquires_before_fallback():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    great=Arc(96,10)
+
+    for at,angle in ((1.0,70),(1.02,72),(1.04,74),(1.06,76)):
+        engine.observe(measurement(at,angle=angle,great=great),now=at)
+
+    # The stream resumes with the same frozen image, then the game resumes.
+    engine.observe(measurement(2.10,angle=76,great=great),now=2.10)
+    assert engine.planner.current is None
+    engine.observe(measurement(2.12,angle=82,great=great),now=2.12)
+
+    plan=engine.planner.current
+    assert plan is not None
+    assert plan.timing_mode=='PREDICTED'
+    assert plan.target_grade=='GREAT'
+
+
+def test_delayed_static_frame_discards_stale_prediction_then_reacquires_motion():
     engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
     great=Arc(106.926,10.7)
 
@@ -84,11 +123,15 @@ def test_delayed_frame_keeps_recent_motion_prediction_instead_of_blind_firing():
         engine.observe(moving(at,angle),now=at)
     engine.observe(moving(1.102,5.515),now=1.110)
 
+    assert engine.planner.current is None
+
+    for at,angle in ((1.122,10.048),(1.142,14.581)):
+        engine.observe(moving(at,angle),now=at)
     plan=engine.planner.current
     assert plan is not None
     assert plan.timing_mode=='PREDICTED'
     assert plan.target_grade=='GREAT'
-    assert plan.press_at>1.110
+    assert plan.press_at>1.142
 
 
 def test_slow_observed_needle_does_not_trigger_start_age_blind_press():
@@ -141,6 +184,27 @@ def test_frenzy_target_change_keeps_measured_motion():
     assert engine.planner.current is not None
 
 
+def test_frenzy_speed_jump_cannot_plan_with_the_previous_check_speed():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    for i,angle in enumerate((30,36,42,48,54,60)):
+        engine.observe(measurement(1+i*.02,angle=angle,great=Arc(96,10)),
+                       now=1+i*.02)
+    assert engine.motion.estimate is not None
+    assert abs(engine.motion.estimate.speed-300)<1
+    engine.planner.fired=True
+
+    # A new, distant white sector arrives as the ring accelerates to 1300°/s.
+    engine.observe(measurement(1.12,angle=86,great=Arc(220,10)),now=1.12)
+    assert engine.planner.current is None
+
+    engine.observe(measurement(1.14,angle=112,great=Arc(220,10)),now=1.14)
+    plan=engine.planner.current
+    assert plan is not None
+    assert plan.timing_mode=='PREDICTED'
+    assert abs(engine.motion.estimate.speed-1300)<1
+    assert plan.press_at<1.25
+
+
 def test_small_frenzy_arc_change_still_requires_confirmation():
     engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
     for i,angle in enumerate((30,36,42,48,54,60)):
@@ -167,3 +231,24 @@ def test_frenzy_after_full_turn_aims_at_current_revolution():
     assert engine.generation==2
     assert engine.planner.target_phase>360
     assert engine.planner.current.press_at>1.14
+
+
+def test_frenzy_reacquire_keeps_revolution_after_fit_reset():
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    for i,angle in enumerate((340,350,0,10,20,30)):
+        engine.observe(measurement(1+i*.02,angle=angle,great=Arc(96,10)),now=1+i*.02)
+    assert engine.motion.estimate.phase>360
+    engine.planner.fired=True
+
+    # A reacquisition keeps the turn floor, but clears last_unwrapped.
+    engine.motion.reset_fit()
+    assert engine.motion.last_unwrapped is None
+    assert engine.motion.unwrap_floor>360
+
+    engine.observe(measurement(1.12,angle=40,great=Arc(220,10)),now=1.12)
+    engine.observe(measurement(1.14,angle=75,great=Arc(220,10)),now=1.14)
+
+    plan=engine.planner.current
+    assert plan is not None
+    assert plan.target_phase==585
+    assert plan.press_at>1.14

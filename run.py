@@ -38,6 +38,10 @@ def main():
     parser.add_argument('--seconds', type=float)
     parser.add_argument('--variant', choices=VARIANTS, default='quiet',
                         help='capture profile; explicit --fps/--capture-priority override it')
+    parser.add_argument('--capture-source', choices=('monitor', 'window', 'region'), default='monitor',
+                        help='capture a monitor, game window, or KWin region around the screen center')
+    parser.add_argument('--normalize-window-scale', action='store_true',
+                        help='crop a proportional center region from a smaller 16:9 game window and resize it for the solver')
     parser.add_argument('--fps', type=int, default=None,
                         help='requested maximum portal frame rate; synthetic source uses fixed FPS')
     parser.add_argument('--capture-priority', type=int, choices=range(20), default=None,
@@ -85,6 +89,8 @@ def main():
         parser.error('run does not accept synthetic capture')
     if args.mode=='run' and args.no_recording:
         parser.error('run always records; --no-recording is only for dry-run')
+    if args.normalize_window_scale and args.capture_source != 'window':
+        parser.error('--normalize-window-scale requires --capture-source window')
     if args.learn_lead is True and args.mode!='run':
         parser.error('--learn-lead requires run')
     if not 1<=args.fps<=240:
@@ -103,7 +109,8 @@ def main():
             if args.mode=='run':
                 print(f'RUN: Space при удержании LMB; Ctrl+C для остановки; '
                       f'profile={args.variant} capture={args.fps} FPS/'
-                      f'nice≥{args.capture_priority}; '
+                      f'nice≥{args.capture_priority}; source={args.capture_source}; '
+                      f'geometry={"source-region" if args.capture_source == "region" else "scaled-after-capture" if args.normalize_window_scale else "fixed"}; '
                       f'lead={args.lead_ms:g} ms '
                       f'(CV-калибровка: {"включена" if args.learn_lead is not False else "только наблюдение"}; '
                       f'видеозапись: {"вкл." if args.video_recording else "выкл."}; '
@@ -111,6 +118,8 @@ def main():
                 try:
                     result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
                                capture_priority=args.capture_priority,variant=args.variant,
+                               capture_source=args.capture_source,
+                               normalize_window_scale=args.normalize_window_scale,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
                                physical=True,learn_lead=args.learn_lead is not False,
@@ -125,11 +134,20 @@ def main():
                             frames_written=manifest.get('frames_written'),
                             frames_dropped=manifest.get('frames_dropped'),
                             capture_sequences_skipped=manifest.get('capture_sequences_skipped'),
+                            capture_source=manifest.get('capture_source'),
+                            capture_source_size=manifest.get('capture_source_size'),
+                            capture_frame_size=manifest.get('capture_frame_size'),
+                            capture_roi=manifest.get('capture_roi'),
+                            measurement_reasons=manifest.get('measurement_reasons'),
+                            detector_ui_scale=manifest.get('detector_ui_scale'),
+                            normalize_window_scale=manifest.get('normalize_window_scale'),
                             performance=manifest.get('performance')),indent=2))
                     return
             else:
                 result=run_session(seconds=args.seconds,synthetic=args.synthetic,fps=args.fps,
                                capture_priority=args.capture_priority,variant=args.variant,
+                               capture_source=args.capture_source,
+                               normalize_window_scale=args.normalize_window_scale,
                                directory=directory,lead_seconds=args.lead_ms/1000,
                                lead_uncertainty=args.lead_uncertainty_ms/1000,
                                video_recording=args.video_recording,
@@ -142,7 +160,9 @@ def main():
         return
     rows = []
     with PortalCapture(synthetic=args.synthetic, fps=args.fps,
-                       priority=args.capture_priority) as capture:
+                       priority=args.capture_priority,
+                       source=args.capture_source,
+                       normalize_window_scale=args.normalize_window_scale) as capture:
         # Screen selection can take up to a minute; no input device is opened.
         frame = capture.next(timeout=65)
         if frame is None:
@@ -152,7 +172,9 @@ def main():
             rows.append(dict(sequence=frame.sequence, media_time=frame.media_time,
                 received_time=frame.received_time, consumed_time=frame.consumed_time,
                 timestamp_kind=frame.timestamp_kind, pts_ns=frame.pts_ns,
-                negotiated_caps=frame.negotiated_caps))
+                negotiated_caps=frame.negotiated_caps,
+                capture_source_size=frame.source_size,
+                capture_frame_size=(frame.image.shape[1], frame.image.shape[0])))
             frame = capture.next(frame.sequence, timeout=2)
             if frame is None:
                 raise RuntimeError('Capture stalled')
@@ -160,6 +182,10 @@ def main():
     ages = [(r['received_time']-r['media_time'])*1000 for r in rows if r['media_time'] is not None]
     result = dict(synthetic=args.synthetic, frames=len(rows),
         requested_fps=args.fps,
+        capture_source=args.capture_source,
+        capture_source_size=rows[-1]['capture_source_size'] if rows else None,
+        capture_frame_size=rows[-1]['capture_frame_size'] if rows else None,
+        capture_roi=list(capture.roi),
         negotiated_caps=sorted({r['negotiated_caps'] for r in rows}),
         delivery_gap_median_ms=statistics.median(gaps) if gaps else None,
         delivery_gap_max_ms=max(gaps) if gaps else None,

@@ -1,14 +1,15 @@
 import threading
 import time
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from vd import input as vd_input
-from vd.capture import Frame
-from vd.runtime import run_session
+from vd.capture import Frame, default_roi
+from vd.runtime import replay, run_session
 from vd.dispatch import dispatch
 from vd.engine import Engine
 from vd.motion import Motion
@@ -22,9 +23,12 @@ class FakeProcess:
 
 
 class FakeCapture:
-    def __init__(self, *, synthetic, fps, priority=5):
+    def __init__(self, *, synthetic, fps, priority=5, source='monitor',
+                 normalize_window_scale=False):
         assert synthetic is False
+        assert source in ('monitor', 'window', 'region')
         self.priority = priority
+        self.roi = default_roi(source)
         self.cv = threading.Condition()
         self.proc = FakeProcess()
         self.stopping = False
@@ -42,8 +46,9 @@ class FakeCapture:
         time.sleep(.005)
         self.sequence = after + 1
         now = time.monotonic()
-        frame = Frame(self.sequence, np.zeros((240, 320, 3), dtype=np.uint8), now,
-                      now, now, 'test_clock', False, None, 'test_caps')
+        frame = Frame(self.sequence, np.zeros((self.roi[3], self.roi[2], 3), dtype=np.uint8), now,
+                      now, now, 'test_clock', False, None, 'test_caps',
+                      source_size=(1920,1080))
         with self.cv:
             self.latest = frame
         return frame
@@ -104,6 +109,23 @@ def test_run_mode_initializes_capture_mouse_and_output_without_physical_presses(
     assert result['performance']['elapsed_seconds'] > 0
 
 
+def test_runtime_passes_selected_capture_source_to_portal(monkeypatch, tmp_path):
+    selected=[]
+
+    class SourceCapture(FakeCapture):
+        def __init__(self, *, synthetic, fps, priority=5, source='monitor',
+                     normalize_window_scale=False):
+            selected.append((source, normalize_window_scale))
+            super().__init__(synthetic=synthetic,fps=fps,priority=priority,source=source)
+
+    monkeypatch.setattr('vd.runtime.PortalCapture', SourceCapture)
+    run_session(seconds=.025,synthetic=False,fps=60,directory=tmp_path/'window-source',
+                lead_seconds=.035,lead_uncertainty=.020,recording=False,
+                capture_source='window', normalize_window_scale=True)
+
+    assert selected==[('window', True)]
+
+
 def test_runtime_reports_capture_worker_cpu_share(monkeypatch, tmp_path):
     class CpuCapture:
         def __init__(self, **_):
@@ -135,6 +157,9 @@ def test_runtime_reports_capture_worker_cpu_share(monkeypatch, tmp_path):
             return self.latest
 
     class BlankDetector:
+        def __init__(self, *, roi_offset=(0, 0)):
+            self.roi_offset=roi_offset
+
         def measure(self, image, timestamp, *, center_hint=None):
             return Measurement(timestamp,None,0,None,None,(),'NO_PROMPT')
 
@@ -147,13 +172,16 @@ def test_runtime_reports_capture_worker_cpu_share(monkeypatch, tmp_path):
     cpu=result['performance']['capture_worker_cpu_percent']
     assert cpu['samples']==result['frames']-1
     assert 48<=cpu['p50']<=52
+    assert result['performance']['lifetime_max']['capture_worker_cpu_percent']>=cpu['max']
 
 
 @pytest.mark.parametrize(('speed', 'fps'), ((700, 60), (1300, 60), (700, 30), (1300, 30)))
 def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, tmp_path, speed, fps):
     class TimerCapture:
-        def __init__(self, *, synthetic, fps, priority=5):
+        def __init__(self, *, synthetic, fps, priority=5, source='monitor',
+                     normalize_window_scale=False):
             assert synthetic is False
+            assert source in ('monitor', 'window')
             self.fps = fps
             self.origin = time.monotonic() + .002
             self.next_at = self.origin
@@ -219,6 +247,9 @@ def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, t
         return capture
 
     class SpinnerDetector:
+        def __init__(self, *, roi_offset=(0, 0)):
+            self.roi_offset=roi_offset
+
         def measure(self, image, timestamp, *, center_hint=None):
             angle = (270 + speed * (timestamp - capture.origin)) % 360
             return Measurement(timestamp, (160, 162.5), .99, Arc(40, 10),
@@ -268,13 +299,78 @@ def test_run_session_applies_and_records_capture_profile(monkeypatch, tmp_path):
     directory = tmp_path / 'quiet-profile'
     run_session(seconds=.025, synthetic=False, fps=30, directory=directory,
                 lead_seconds=.06, lead_uncertainty=.015, recording=True,
-                capture_priority=10, variant='deep-quiet')
+                capture_priority=10, variant='deep-quiet',capture_source='window',
+                normalize_window_scale=True)
 
     manifest = json.loads((directory / 'manifest.json').read_text())
-    assert seen == {'synthetic': False, 'fps': 30, 'priority': 10}
+    assert seen == {'synthetic': False, 'fps': 30, 'priority': 10,'source':'window',
+                    'normalize_window_scale': True}
     assert manifest['requested_fps'] == 30
     assert manifest['capture_priority'] == 10
     assert manifest['variant'] == 'deep-quiet'
+    assert manifest['capture_source'] == 'window'
+    assert manifest['normalize_window_scale'] is True
+    assert manifest['capture_source_size'] == [1920,1080]
+    assert manifest['capture_frame_size'] == [320,240]
+    assert manifest['capture_roi'] == [800,420,320,240]
+
+
+def test_region_runtime_records_the_compact_roi_and_detector_offset(monkeypatch, tmp_path):
+    monkeypatch.setattr('vd.runtime.PortalCapture', FakeCapture)
+    directory = tmp_path / 'region'
+    run_session(seconds=.025, synthetic=False, fps=60, directory=directory,
+                lead_seconds=.035, lead_uncertainty=.020, recording=True,
+                capture_source='region', video_recording=False)
+
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    assert manifest['capture_roi'] == [875,418,180,250]
+    assert manifest['capture_frame_size'] == [180,250]
+    assert manifest['detector_roi_offset'] == [75,-2]
+
+
+def test_region_runtime_scales_detector_for_1600px_source(monkeypatch, tmp_path):
+    class LowResolutionCapture(FakeCapture):
+        def next(self, after=-1, timeout=1.0):
+            return replace(super().next(after, timeout), source_size=(1600,900))
+
+    monkeypatch.setattr('vd.runtime.PortalCapture', LowResolutionCapture)
+    directory = tmp_path / 'region-1600'
+    run_session(seconds=.025, synthetic=False, fps=60, directory=directory,
+                lead_seconds=.035, lead_uncertainty=.020, recording=True,
+                capture_source='region', video_recording=False)
+
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    assert manifest['capture_source_size'] == [1600,900]
+    assert manifest['detector_ui_scale'] == 1.2
+
+
+def test_replay_restores_the_recorded_region_detector_offset(monkeypatch, tmp_path):
+    seen = {}
+
+    class OffsetDetector:
+        def __init__(self, *, roi_offset, ui_scale=1.0):
+            seen['roi_offset'] = roi_offset
+            seen['ui_scale'] = ui_scale
+
+        def measure(self, image, timestamp, *, center_hint=None):
+            return Measurement(timestamp, None, 0, None, None, (), 'NO_PROMPT')
+
+    recording = tmp_path / 'region-replay'
+    recording.mkdir()
+    (recording / 'manifest.json').write_text(json.dumps({
+        'lead_seconds': .035, 'lead_uncertainty': .020,
+        'learn_lead': False, 'detector_roi_offset': [80, 0],
+        'detector_ui_scale': 1.2,
+    }))
+    row = {'sequence': 0, 'decision_time': 1.0, 'held': True, 'media_time': 1.0}
+    monkeypatch.setattr('vd.runtime.Detector', OffsetDetector)
+    monkeypatch.setattr('vd.runtime.read_recording',
+                        lambda _: iter(((row, np.zeros((240,180,3), np.uint8)),)))
+
+    replay(recording)
+
+    assert seen['roi_offset'] == (80, 0)
+    assert seen['ui_scale'] == 1.2
 
 
 def test_events_only_run_does_not_submit_video_frames(monkeypatch, tmp_path):
@@ -289,6 +385,7 @@ def test_events_only_run_does_not_submit_video_frames(monkeypatch, tmp_path):
     assert manifest['video_sampling'] == 'disabled'
     assert manifest['frames_written'] == 0
     assert manifest['events_written'] == 0
+    assert manifest['measurement_reasons']['NO_PROMPT'] > 0
 
 
 def test_run_session_without_seconds_keeps_running_until_interrupted(monkeypatch, tmp_path):
@@ -395,25 +492,37 @@ def test_dispatch_never_pulses_if_capture_or_mouse_source_is_unhealthy():
     assert output.pulses == 0
 
 
-def test_dispatch_sends_blind_attempt_and_marks_timing_as_unknown():
+def test_dispatch_sends_blind_attempt_after_startup_grace_and_marks_timing_unknown():
     engine=Engine(lead_seconds=.06,lead_uncertainty=.015)
     for at in (1.0,1.02):
         engine.observe(Measurement(at,(160,162.5),.99,Arc(96,10),Arc(107,42),(),
                                    'NO_LINE_CANDIDATE'),now=at)
-    capture=DispatchCapture(media_time=1.02,sequence=7)
+    early_capture=DispatchCapture(media_time=1.02,sequence=7)
 
     class Output:
         error=None
         def pulse(self):
             self.pulses+=1
-            return SimpleNamespace(requested_at=1.02,syn_completed_at=1.021)
+            return SimpleNamespace(requested_at=1.321,syn_completed_at=1.322)
 
         def __init__(self):
             self.pulses=0
 
     output=Output()
-    result=dispatch(engine,capture,7,mouse=DispatchMouse(held=True),output=output,
-                    clock=lambda:1.02)
+    early=dispatch(engine,early_capture,7,mouse=DispatchMouse(held=True),output=output,
+                   clock=lambda:1.02)
+    assert early is None
+    assert output.pulses==0
+
+    for at in (1.08,1.14,1.20,1.26,1.30):
+        engine.observe(Measurement(at,(160,162.5),.99,Arc(96,10),Arc(107,42),(),
+                                   'NO_LINE_CANDIDATE'),now=at)
+    at=1.321
+    engine.observe(Measurement(at,(160,162.5),.99,Arc(96,10),Arc(107,42),(),
+                               'NO_LINE_CANDIDATE'),now=at)
+    capture=DispatchCapture(media_time=at,sequence=8)
+    result=dispatch(engine,capture,8,mouse=DispatchMouse(held=True),output=output,
+                    clock=lambda:at)
     events=engine.take_events()
     keydown=next(event for event in events if event['kind']=='KEYDOWN')
 

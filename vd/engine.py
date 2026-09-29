@@ -13,7 +13,8 @@ from vd.vision import same_arc
 
 
 CHAIN_FAST_SHIFT_DEGREES=25
-BLIND_ATTEMPT_DELAY=.15
+BLIND_INITIAL_DELAY=.30
+BLIND_STALL_DELAY=.15
 
 
 class Engine:
@@ -31,6 +32,7 @@ class Engine:
         self.last_visible=None
         self.last_timestamp=None
         self.started_at=None
+        self.last_reliable_motion_at=None
         self.chain=0
         self.reason='WAITING_FOR_RING'
         self.events=[]
@@ -59,6 +61,7 @@ class Engine:
         self.pending=None
         self.pending_at=None
         self.last_visible=None
+        self.last_reliable_motion_at=None
         self.motion.reset()
         self.chain=0
 
@@ -123,12 +126,18 @@ class Engine:
             self.center=m.center
             initial=(self.pending[2] if pending_matches and self.pending[2] is not None else
                      strongest.angle if strongest is not None else m.great.center)
-            if continuing_chain and self.motion.last_unwrapped is not None:
-                initial=self.motion.last_unwrapped+delta(initial,self.motion.last_unwrapped)
+            if continuing_chain:
+                # A fit reset clears last_unwrapped but preserves its turn in unwrap_floor.
+                phase_floor=(self.motion.last_unwrapped
+                             if self.motion.last_unwrapped is not None
+                             else self.motion.unwrap_floor)
+                if phase_floor is not None:
+                    initial=phase_floor+delta(initial,phase_floor)
             self.planner.begin(m.great,initial,m.good)
             if not continuing_chain:
                 self.motion.reset()
                 self.motion.unwrap_floor=initial
+                self.last_reliable_motion_at=None
             self.active=True
             self.started_at=m.timestamp
             self.pending=None
@@ -137,18 +146,29 @@ class Engine:
         else:
             self.pending=None
             self.pending_at=None
+        previous_motion_frame=self.motion.last_frame
+        capture_gap=(previous_motion_frame is not None
+                     and m.timestamp-previous_motion_frame>self.motion.max_gap)
         estimate=self.motion.update(m.timestamp,m.candidates)
+        if capture_gap:
+            # A prediction made before a capture stall cannot authorize a
+            # blind press on the first frame after capture resumes. Give the
+            # needle a chance to move and rebuild its fit first.
+            self.last_reliable_motion_at=m.timestamp
+        if estimate is not None:
+            self.last_reliable_motion_at=estimate.last_motion_at
         if self.planner.fired:
             self.reason='OBSERVING_AFTER_PRESS'
             return
         plan=self.planner.update(estimate,frame_at=m.timestamp,now=now)
         if plan is None:
-            no_needle_to_track=not m.candidates and not self.motion.points
-            last_motion_at=(self.motion.last_observed_motion_at
-                            if self.motion.last_observed_motion_at is not None
-                            else self.started_at)
-            motion_timed_out=m.timestamp-last_motion_at>=BLIND_ATTEMPT_DELAY
-            if no_needle_to_track or motion_timed_out:
+            if self.last_reliable_motion_at is None:
+                reference_at=self.started_at
+                delay=BLIND_INITIAL_DELAY
+            else:
+                reference_at=self.last_reliable_motion_at
+                delay=BLIND_STALL_DELAY
+            if m.timestamp-reference_at>=delay:
                 mode='BLIND_NO_NEEDLE' if not m.candidates else 'BLIND_NO_MOTION'
                 plan=self.planner.attempt_now(frame_at=m.timestamp,now=now,
                                               timing_mode=mode)

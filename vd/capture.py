@@ -10,6 +10,12 @@ import time
 from collections import deque
 
 import numpy as np
+from vd.kwin_region import ensure_kwin_region_worker
+
+
+DEFAULT_ROI = (800, 420, 320, 240)
+REGION_ROI = (875, 418, 180, 250)
+REGION_ROI_OFFSET = (75, -2)
 
 
 @dataclass(frozen=True)
@@ -24,16 +30,47 @@ class Frame:
     pts_ns: int | None
     negotiated_caps: str
     worker_cpu_time_ns: int | None = None
+    source_size: tuple[int, int] | None = None
+
+
+def default_roi(source):
+    return REGION_ROI if source == 'region' else DEFAULT_ROI
+
+
+def capture_worker_command(roi, *, fps, priority, source, normalize_window_scale,
+                           synthetic):
+    roi_text = ','.join(map(str, roi))
+    if source == 'region':
+        if normalize_window_scale or synthetic:
+            raise ValueError('KWin region capture cannot be normalized or synthetic')
+        worker = ensure_kwin_region_worker()
+        return [str(worker), '--roi', roi_text, '--fps', str(fps),
+                '--priority', str(priority)]
+    worker = Path(__file__).resolve().parents[1] / 'native' / 'pipewire_worker.py'
+    command = ['/usr/bin/python', str(worker), '--roi', roi_text,
+               '--fps', str(fps), '--priority', str(priority), '--source', source]
+    if normalize_window_scale:
+        command.append('--normalize-window-scale')
+    if synthetic:
+        command.append('--synthetic')
+    return command
 
 
 class PortalCapture:
     """Own one worker and one replaceable frame; never build a frame queue."""
-    def __init__(self, roi=(800, 420, 320, 240), *, synthetic=False, fps=60, priority=5):
+    def __init__(self, roi=None, *, synthetic=False, fps=60, priority=5,
+                 source='monitor', normalize_window_scale=False):
         if type(fps) is not int or not 1 <= fps <= 240:
             raise ValueError('FPS must be an integer in [1, 240]')
         if type(priority) is not int or not 0 <= priority <= 19:
             raise ValueError('Capture priority must be an integer in [0, 19]')
-        self.roi = tuple(roi)
+        if source not in ('monitor', 'window', 'region'):
+            raise ValueError('Capture source must be monitor, window, or region')
+        if normalize_window_scale and source != 'window':
+            raise ValueError('Window scale normalization requires window capture')
+        if source == 'region' and synthetic:
+            raise ValueError('KWin region capture does not support synthetic frames')
+        self.roi = tuple(default_roi(source) if roi is None else roi)
         if len(self.roi) != 4 or any(type(x) is not int for x in self.roi):
             raise ValueError('ROI must contain four integers')
         if min(self.roi[:2]) < 0 or min(self.roi[2:]) <= 0:
@@ -43,11 +80,9 @@ class PortalCapture:
         self.error = None
         self.stopping = False
         self.stderr = deque(maxlen=15)
-        worker = Path(__file__).resolve().parents[1] / 'native' / 'pipewire_worker.py'
-        command = ['/usr/bin/python', str(worker), '--roi', ','.join(map(str, self.roi)),
-                   '--fps', str(fps), '--priority', str(priority)]
-        if synthetic:
-            command.append('--synthetic')
+        command = capture_worker_command(self.roi, fps=fps, priority=priority,
+            source=source, normalize_window_scale=normalize_window_scale,
+            synthetic=synthetic)
         self.proc = subprocess.Popen(command, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, bufsize=0)
         self.reader = threading.Thread(target=self._read, name='VD-frame-reader', daemon=True)
@@ -90,7 +125,8 @@ class PortalCapture:
                     h['received_ns'] / 1e9, time.monotonic(),
                     h['timestamp_kind'], bool(h['synthetic']),
                     h['pts_ns'], h['negotiated_caps'],
-                    h.get('worker_cpu_time_ns'))
+                    h.get('worker_cpu_time_ns'),
+                    (int(h['source_width']),int(h['source_height'])))
                 with self.cv:
                     self.latest = frame
                     self.cv.notify_all()

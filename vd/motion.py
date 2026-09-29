@@ -91,10 +91,23 @@ class MotionTracker:
         if self.estimate is not None:
             innovation=abs(delta(angle,self.estimate.phase_at(timestamp)%360))
             if innovation>max(5.0,3*self.estimate.residual):
-                # Keep the preceding fit only for its original freshness lease.
-                # A rejected pixel must not move the unwrap anchor or renew it.
+                # Do not schedule against a stale speed after an abrupt change.
+                # Keep this plausible forward sample as the first point of a
+                # fresh fit; the next frame must confirm the new trajectory.
+                step=delta(angle,self.last_angle) if self.last_angle is not None else None
+                floor=self.last_unwrapped
+                self.reset_fit()
+                if floor is not None and step is not None and .5<step<=90:
+                    unwrapped=floor+step
+                    self.last_frame=timestamp
+                    self.last_angle=angle
+                    self.last_unwrapped=unwrapped
+                    self.last_accepted_at=timestamp
+                    self.last_observed_motion_at=timestamp
+                    self.unwrap_floor=unwrapped
+                    self.points.append((timestamp,unwrapped))
                 self.reason='PHASE_OUTLIER'
-                return self.estimate
+                return None
         if self.last_angle is None:
             # Reacquisition drops the fit, not the turn already observed.
             # Otherwise a post-wrap frame could turn a passed target into an
