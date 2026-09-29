@@ -138,9 +138,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                 recorder.metadata['capture_source_size']=list(source_size)
             ui_scale=float(getattr(capture,'ui_scale',1.0))
             detector_options=dict(
-                roi_offset=REGION_ROI_OFFSET if capture_source=='region' else (0,0))
-            if ui_scale!=1:
-                detector_options['ui_scale']=ui_scale
+                roi_offset=REGION_ROI_OFFSET if capture_source=='region' else (0,0),
+                ui_scale=ui_scale)
             detector=Detector(**detector_options)
             recorder.metadata['detector_ui_scale']=ui_scale
             recorder.metadata['capture_frame_size']=[frame.image.shape[1],frame.image.shape[0]]
