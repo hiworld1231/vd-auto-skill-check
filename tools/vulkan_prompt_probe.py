@@ -3,7 +3,15 @@
 
 import argparse
 from pathlib import Path
+import sys
 import time
+
+# When this file is executed directly, Python puts tools/ on sys.path rather
+# than the repository root. Add the root explicitly so `import vd` works the
+# same way it does under pytest and the project entry points.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import cv2
 import numpy as np
