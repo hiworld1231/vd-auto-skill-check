@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/1600x900-region-scale
+  pull_request:
+    branches:
+      - main
 
 jobs:
   test:
