@@ -26,9 +26,9 @@ class VulkanCapture:
     """Read the latest swapchain ROI published by the VD Vulkan layer.
 
     The layer publishes a physical-resolution center ROI. This reader converts the
-    swapchain's 4-byte pixel format to BGR and normalizes the ROI back to the
-    solver's canonical 320x240 frame so the existing detector/engine need no
-    Vulkan-specific coordinate logic.
+    swapchain's 4-byte pixel format to BGR, center-crops it to the solver's 4:3
+    geometry, then normalizes it back to the canonical 320x240 frame. The existing
+    detector/engine therefore stays Vulkan-agnostic.
     """
 
     def __init__(self, roi=None, *, synthetic=False, fps=60, priority=5,
@@ -126,6 +126,21 @@ class VulkanCapture:
         return None
 
     @staticmethod
+    def _center_crop_aspect(image, target_w, target_h):
+        height, width = image.shape[:2]
+        lhs = width * target_h
+        rhs = height * target_w
+        if lhs == rhs:
+            return image
+        if lhs > rhs:
+            crop_w = max(1, height * target_w // target_h)
+            x = max(0, (width - crop_w) // 2)
+            return image[:, x:x + crop_w]
+        crop_h = max(1, width * target_h // target_w)
+        y = max(0, (height - crop_h) // 2)
+        return image[y:y + crop_h, :]
+
+    @staticmethod
     def _to_bgr(snapshot):
         _x, _y, width, height = snapshot["roi"]
         pixels = np.frombuffer(snapshot["raw"], np.uint8).reshape(height, width, 4)
@@ -138,7 +153,8 @@ class VulkanCapture:
             raise RuntimeError(f"Unsupported Vulkan swapchain format: {vk_format}")
 
         target_w, target_h = DEFAULT_ROI[2:]
-        if (width, height) != (target_w, target_h):
+        bgr = VulkanCapture._center_crop_aspect(bgr, target_w, target_h)
+        if (bgr.shape[1], bgr.shape[0]) != (target_w, target_h):
             bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
         else:
             bgr = np.array(bgr, copy=True)
