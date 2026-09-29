@@ -62,6 +62,7 @@ class VulkanCapture:
             raise ValueError("Vulkan capture currently uses the canonical solver ROI")
 
         self.roi = DEFAULT_ROI
+        self.ui_scale = 1.0
         self.shm_path = Path(shm_path) if shm_path is not None else DEFAULT_SHM
         self.cv = threading.Condition()
         self.error = None
@@ -159,8 +160,7 @@ class VulkanCapture:
         y = max(0, (height - crop_h) // 2)
         return image[y:y + crop_h, :]
 
-    @staticmethod
-    def _to_bgr(snapshot):
+    def _to_bgr(self, snapshot):
         _x, _y, width, height = snapshot["roi"]
         pixels = np.frombuffer(snapshot["raw"], np.uint8).reshape(height, width, 4)
         vk_format = snapshot["format"]
@@ -172,8 +172,12 @@ class VulkanCapture:
             raise RuntimeError(f"Unsupported Vulkan swapchain format: {vk_format}")
 
         target_w, target_h = DEFAULT_ROI[2:]
-        bgr = VulkanCapture._center_crop_aspect(bgr, target_w, target_h)
-        if (bgr.shape[1], bgr.shape[0]) != (target_w, target_h):
+        bgr = self._center_crop_aspect(bgr, target_w, target_h)
+        source_h, source_w = bgr.shape[:2]
+        scale_x = target_w / source_w
+        scale_y = target_h / source_h
+        self.ui_scale = (scale_x + scale_y) / 2
+        if (source_w, source_h) != (target_w, target_h):
             bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
         else:
             bgr = np.array(bgr, copy=True)
