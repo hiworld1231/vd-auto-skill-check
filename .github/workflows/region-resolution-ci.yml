@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - fix/1600x900-region-scale
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: write
@@ -29,13 +26,8 @@ jobs:
 
           runtime = Path('vd/runtime.py')
           text = runtime.read_text()
-          old = """            ui_scale=(1920/source_size[0] if capture_source=='region' and source_size
-                                and source_size[0]>0 else 1.0)
-"""
-          new = """            # Region capture already scales the physical display ROI back to the
-            # canonical ROI dimensions before frames reach the detector.
-            ui_scale=1.0
-"""
+          old = "            ui_scale=(1920/source_size[0] if capture_source=='region' and source_size\n                      and source_size[0]>0 else 1.0)\n"
+          new = "            # Region capture already normalizes the scaled physical ROI.\n            ui_scale=1.0\n"
           assert old in text, 'runtime region scale block changed unexpectedly'
           runtime.write_text(text.replace(old, new, 1))
 
