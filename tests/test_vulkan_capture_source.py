@@ -101,3 +101,22 @@ def test_vulkan_capture_rejects_missing_pixel_ready_flag(tmp_path):
 
     with VulkanCapture(shm_path=shm) as capture:
         assert capture.next(timeout=0.02) is None
+
+
+def test_vulkan_capture_implements_dispatch_capture_contract(tmp_path):
+    shm = tmp_path / "vd_layer_shm.dat"
+    write_snapshot(shm)
+
+    capture = VulkanCapture(shm_path=shm)
+    frame = capture.next(timeout=0.05)
+
+    assert frame is not None
+    assert capture.latest is frame
+    assert capture.error is None
+    assert capture.proc.poll() is None
+    with capture.cv:
+        assert capture.latest.sequence == frame.sequence
+
+    capture.close()
+    assert capture.stopping is True
+    assert capture.proc.poll() is not None
