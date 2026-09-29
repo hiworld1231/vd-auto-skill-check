@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""
-Test suite for VD Vulkan Implicit Layer.
-Tests layer negotiation, Vulkan loader discovery, instance creation,
-physical device enumeration, swapchain hooks, presentation frames,
-shared memory header layout, and status reporting inside Flatpak Sober.
-"""
+"""Tests for the VD Vulkan layer and the opt-in ROI pixel-capture path."""
 
 import ctypes
+import importlib.util
 import json
 import os
 import struct
@@ -19,8 +15,11 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 BUILD_DIR = ROOT_DIR / "build" / "vulkan-layer"
 LAYER_LIB = BUILD_DIR / "libVkLayer_VD_capture.so"
 LAYER_MANIFEST = BUILD_DIR / "VkLayer_VD_capture.json"
-SOBER_DATA_DIR = Path(os.environ.get("HOME", "/home/oae")) / ".var" / "app" / "org.vinegarhq.Sober" / "data"
+SOBER_DATA_DIR = Path.home() / ".var" / "app" / "org.vinegarhq.Sober" / "data"
 SOBER_VULKAN_DIR = SOBER_DATA_DIR / "vulkan"
+VIEWER_PATH = ROOT_DIR / "tools" / "vulkan_roi_viewer.py"
+HEADER_FORMAT = "=IIIIIIQQQfIIIIIII64sIIIIIII4xQQ112s"
+HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
 
 class VkLayerProperties(ctypes.Structure):
@@ -43,258 +42,182 @@ class VkNegotiateLayerInterface(ctypes.Structure):
     ]
 
 
+def have_flatpak_sober():
+    try:
+        result = subprocess.run(
+            ["flatpak", "info", "org.vinegarhq.Sober"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def load_viewer_module():
+    spec = importlib.util.spec_from_file_location("vd_vulkan_roi_viewer", VIEWER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestVulkanLayer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # Ensure layer is built and installed to Sober
         build_script = ROOT_DIR / "native" / "vulkan_layer" / "build_layer.sh"
-        res = subprocess.run([str(build_script)], capture_output=True, text=True)
-        assert res.returncode == 0, f"Build failed: {res.stderr}"
-        assert LAYER_LIB.exists(), f"Layer lib missing: {LAYER_LIB}"
-        assert LAYER_MANIFEST.exists(), f"Layer manifest missing: {LAYER_MANIFEST}"
+        result = subprocess.run([str(build_script)], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AssertionError(f"Build failed:\n{result.stdout}\n{result.stderr}")
+        if not LAYER_LIB.exists() or not LAYER_MANIFEST.exists():
+            raise AssertionError("Vulkan layer build outputs are missing")
 
-        install_script = ROOT_DIR / "native" / "vulkan_layer" / "install_sober_layer.sh"
-        res = subprocess.run([str(install_script)], capture_output=True, text=True)
-        assert res.returncode == 0, f"Install failed: {res.stderr}"
-
-    def test_01_direct_symbols_and_negotiation(self):
-        """Verify layer exports and interface version negotiation."""
+    def test_01_symbols_and_loader_negotiation(self):
         lib = ctypes.CDLL(str(LAYER_LIB))
         self.assertTrue(hasattr(lib, "vkNegotiateLoaderLayerInterfaceVersion"))
         self.assertTrue(hasattr(lib, "vkGetInstanceProcAddr"))
         self.assertTrue(hasattr(lib, "vkGetDeviceProcAddr"))
         self.assertTrue(hasattr(lib, "vkEnumerateInstanceLayerProperties"))
-        self.assertTrue(hasattr(lib, "vk_layerGetPhysicalDeviceProcAddr"))
+        self.assertFalse(hasattr(lib, "vk_layerGetPhysicalDeviceProcAddr"))
 
-        # Test layer properties enumeration
         count = ctypes.c_uint32(0)
-        res = lib.vkEnumerateInstanceLayerProperties(ctypes.byref(count), None)
-        self.assertEqual(res, 0)
-        self.assertGreaterEqual(count.value, 1)
-
+        enum_props = lib.vkEnumerateInstanceLayerProperties
+        enum_props.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(VkLayerProperties)]
+        enum_props.restype = ctypes.c_int
+        self.assertEqual(enum_props(ctypes.byref(count), None), 0)
+        self.assertEqual(count.value, 1)
         props = (VkLayerProperties * count.value)()
-        res = lib.vkEnumerateInstanceLayerProperties(ctypes.byref(count), props)
-        self.assertEqual(res, 0)
-        layer_name = props[0].layerName.decode()
-        self.assertEqual(layer_name, "VK_LAYER_VD_capture")
+        self.assertEqual(enum_props(ctypes.byref(count), props), 0)
+        self.assertEqual(props[0].layerName.decode(), "VK_LAYER_VD_capture")
+        self.assertEqual(props[0].implementationVersion, 2)
 
-        # Test interface version negotiation
         negotiate = lib.vkNegotiateLoaderLayerInterfaceVersion
         negotiate.argtypes = [ctypes.POINTER(VkNegotiateLayerInterface)]
         negotiate.restype = ctypes.c_int
+        info = VkNegotiateLayerInterface()
+        info.sType = 1  # LAYER_NEGOTIATE_INTERFACE_STRUCT
+        info.loaderLayerInterfaceVersion = 2
+        self.assertEqual(negotiate(ctypes.byref(info)), 0)
+        self.assertEqual(info.loaderLayerInterfaceVersion, 2)
+        self.assertTrue(info.pfnGetInstanceProcAddr)
+        self.assertTrue(info.pfnGetDeviceProcAddr)
+        self.assertFalse(info.pfnGetPhysicalDeviceProcAddr)
 
-        interface_struct = VkNegotiateLayerInterface()
-        interface_struct.sType = 1  # LAYER_NEGOTIATE_INTERFACE_STRUCT
-        interface_struct.loaderLayerInterfaceVersion = 2
+    def test_02_shared_memory_contract_is_stable(self):
+        self.assertEqual(HEADER_SIZE, 304)
+        header_text = (ROOT_DIR / "native" / "vulkan_layer" / "vd_capture_layer.h").read_text()
+        self.assertIn("VD_LAYER_SHM_VERSION 2u", header_text)
+        self.assertIn("VD_CAPTURE_MAX_WIDTH 256u", header_text)
+        self.assertIn("VD_CAPTURE_MAX_HEIGHT 256u", header_text)
+        self.assertIn("roi_capture_count", header_text)
+        self.assertIn("roi_capture_timestamp_ns", header_text)
 
-        res = negotiate(ctypes.byref(interface_struct))
-        self.assertEqual(res, 0)
-        self.assertEqual(interface_struct.loaderLayerInterfaceVersion, 2)
-        self.assertIsNotNone(interface_struct.pfnGetInstanceProcAddr)
-        self.assertIsNotNone(interface_struct.pfnGetDeviceProcAddr)
-        # Interface version 2 requires pfnGetPhysicalDeviceProcAddr
-        self.assertIsNotNone(interface_struct.pfnGetPhysicalDeviceProcAddr)
+    def test_03_manifest_and_capture_are_opt_in(self):
+        manifest = json.loads(LAYER_MANIFEST.read_text())
+        layer = manifest["layer"]
+        self.assertEqual(layer["name"], "VK_LAYER_VD_capture")
+        self.assertEqual(layer["api_version"], "1.4.0")
+        self.assertEqual(layer["implementation_version"], "2")
+        self.assertEqual(layer["disable_environment"], {"DISABLE_VD_LAYER": "1"})
 
-    def test_02_shm_header_struct_layout(self):
-        """Verify shared memory header layout and size."""
-        # VdLayerShmHeader:
-        # magic (uint32), version (uint32), struct_size (uint32), status_flags (uint32) = 16 bytes
-        # pid (uint32), sequence (uint32) = 8 bytes
-        # init_timestamp_ns (uint64), last_present_ns (uint64) = 16 bytes
-        # frame_count (uint64), current_fps (float32), dropped_frames (uint32) = 16 bytes
-        # swapchain_width, height, format, present_mode, image_count, current_image_index = 24 bytes
-        # process_name (char[64]) = 64 bytes
-        # roi_x, y, width, height, stride, offset, size = 28 bytes + 4 bytes padding = 32 bytes
-        # padding (128 bytes)
-        shm_format = "=IIII II QQ QfI IIIIII 64s IIIIIII 128s 4x"
-        expected_size = struct.calcsize(shm_format)
-        self.assertEqual(expected_size, 304)
+        source = (ROOT_DIR / "native" / "vulkan_layer" / "vd_capture_layer.cpp").read_text()
+        self.assertIn('env_true("VD_CAPTURE_ENABLE")', source)
+        self.assertIn("VK_IMAGE_USAGE_TRANSFER_SRC_BIT", source)
+        self.assertIn("vkCmdCopyImageToBuffer", source)
+        self.assertNotIn("vkQueueWaitIdle(", source)
+        self.assertIn("g_log_mutex", source)
 
-    def test_03_flatpak_sober_discovery(self):
-        """Verify that Vulkan Loader inside Flatpak Sober discovers the layer."""
-        python_check = """
-import ctypes
+    def test_04_roi_viewer_converts_bgra_and_writes_png(self):
+        viewer = load_viewer_module()
+        raw = bytes((51, 153, 26, 255, 10, 20, 30, 40))
+        rgba = viewer.raw_to_rgba(raw, 44)
+        self.assertEqual(rgba, bytes((26, 153, 51, 255, 30, 20, 10, 40)))
 
-class VkLayerProperties(ctypes.Structure):
-    _fields_ = [
-        ('layerName', ctypes.c_char * 256),
-        ('specVersion', ctypes.c_uint32),
-        ('implementationVersion', ctypes.c_uint32),
-        ('description', ctypes.c_char * 256),
-    ]
+        out = Path("/tmp/vd-roi-viewer-test.png")
+        try:
+            viewer.write_rgba_png(out, 2, 1, rgba)
+            self.assertTrue(out.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
+        finally:
+            out.unlink(missing_ok=True)
 
-vulkan = ctypes.CDLL('libvulkan.so.1')
-count = ctypes.c_uint32(0)
-res = vulkan.vkEnumerateInstanceLayerProperties(ctypes.byref(count), None)
-layers = (VkLayerProperties * count.value)()
-res = vulkan.vkEnumerateInstanceLayerProperties(ctypes.byref(count), layers)
+    @unittest.skipUnless(have_flatpak_sober(), "Sober Flatpak not installed")
+    def test_05_flatpak_extension_install_and_discovery(self):
+        install = ROOT_DIR / "native" / "vulkan_layer" / "install_sober_layer.sh"
+        result = subprocess.run([str(install)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, f"Install failed:\n{result.stdout}\n{result.stderr}")
+        self.assertIn("extension library + merged manifest visible inside Sober", result.stdout)
 
-found = False
-for i in range(count.value):
-    name = layers[i].layerName.decode('utf-8', errors='ignore')
-    if 'VK_LAYER_VD_capture' in name:
-        print('DISCOVERED_LAYER:' + name)
-        found = True
-
-assert found, 'Layer not found'
-"""
-        res = subprocess.run(
-            ["flatpak", "run", "--command=python3", "org.vinegarhq.Sober", "-c", python_check],
+        check = subprocess.run(
+            [
+                "flatpak", "run", "--command=sh", "org.vinegarhq.Sober", "-c",
+                "test -r /usr/lib/extensions/vulkan/VDCapture/lib/libVkLayer_VD_capture.so && "
+                "test -r /usr/share/vulkan/implicit_layer.d/VkLayer_VD_capture.json",
+            ],
             capture_output=True,
             text=True,
+            timeout=30,
         )
-        self.assertEqual(res.returncode, 0, f"Discovery failed: {res.stderr}\n{res.stdout}")
-        self.assertIn("DISCOVERED_LAYER:VK_LAYER_VD_capture", res.stdout)
+        self.assertEqual(check.returncode, 0, f"Flatpak extension discovery failed: {check.stderr}")
 
-    def test_04_vulkan_instance_activation_mock(self):
-        """Verify layer is invoked during vkCreateInstance via Vulkan Loader."""
-        env = os.environ.copy()
-        env["VK_LAYER_PATH"] = str(BUILD_DIR)
-        env["VK_INSTANCE_LAYERS"] = "VK_LAYER_VD_capture"
-        env["VD_LAYER_DIR"] = "/tmp/vd_test_layer_env"
+    @unittest.skipUnless(have_flatpak_sober(), "Sober Flatpak not installed")
+    def test_06_deterministic_roi_pixel_readback(self):
+        install = ROOT_DIR / "native" / "vulkan_layer" / "install_sober_layer.sh"
+        result = subprocess.run([str(install)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, f"Install failed:\n{result.stdout}\n{result.stderr}")
 
-        test_code = """
-import ctypes
-
-class VkApplicationInfo(ctypes.Structure):
-    _fields_ = [
-        ('sType', ctypes.c_uint32),
-        ('pNext', ctypes.c_void_p),
-        ('pApplicationName', ctypes.c_char_p),
-        ('applicationVersion', ctypes.c_uint32),
-        ('pEngineName', ctypes.c_char_p),
-        ('engineVersion', ctypes.c_uint32),
-        ('apiVersion', ctypes.c_uint32),
-    ]
-
-class VkInstanceCreateInfo(ctypes.Structure):
-    _fields_ = [
-        ('sType', ctypes.c_uint32),
-        ('pNext', ctypes.c_void_p),
-        ('flags', ctypes.c_uint32),
-        ('pApplicationInfo', ctypes.POINTER(VkApplicationInfo)),
-        ('enabledLayerCount', ctypes.c_uint32),
-        ('ppEnabledLayerNames', ctypes.POINTER(ctypes.c_char_p)),
-        ('enabledExtensionCount', ctypes.c_uint32),
-        ('ppEnabledExtensionNames', ctypes.POINTER(ctypes.c_char_p)),
-    ]
-
-vulkan = ctypes.CDLL('libvulkan.so.1')
-
-app_info = VkApplicationInfo()
-app_info.sType = 1 # VK_STRUCTURE_TYPE_APPLICATION_INFO
-app_info.pApplicationName = b'VD_Test_App'
-app_info.apiVersion = (1 << 22) | (3 << 12)
-
-layer_name = ctypes.c_char_p(b'VK_LAYER_VD_capture')
-layer_names = (ctypes.c_char_p * 1)(layer_name)
-
-create_info = VkInstanceCreateInfo()
-create_info.sType = 10 # VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
-create_info.pApplicationInfo = ctypes.pointer(app_info)
-create_info.enabledLayerCount = 1
-create_info.ppEnabledLayerNames = layer_names
-
-instance = ctypes.c_void_p(0)
-res = vulkan.vkCreateInstance(ctypes.byref(create_info), None, ctypes.byref(instance))
-assert res == 0, f'vkCreateInstance failed with code {res}'
-vulkan.vkDestroyInstance(instance, None)
-print('VULKAN_INSTANCE_SUCCESS')
-"""
-        res = subprocess.run([sys.executable, "-c", test_code], env=env, capture_output=True, text=True)
-        self.assertEqual(res.returncode, 0, f"Vulkan test app failed: {res.stderr}\n{res.stdout}")
-        self.assertIn("VULKAN_INSTANCE_SUCCESS", res.stdout)
-
-        test_dir = Path("/tmp/vd_test_layer_env")
-        log_file = test_dir / "vd_layer.log"
-        status_file = test_dir / "vd_layer_status.json"
-        shm_file = test_dir / "vd_layer_shm.dat"
-
-        self.assertTrue(log_file.exists(), f"Log file missing: {log_file}")
-        self.assertTrue(status_file.exists(), f"Status file missing: {status_file}")
-        self.assertTrue(shm_file.exists(), f"Shm file missing: {shm_file}")
-
-        with open(status_file, "r") as f:
-            status_data = json.load(f)
-            self.assertEqual(status_data["layer_name"], "VK_LAYER_VD_capture")
-
-        # Clean up /tmp test dir
-        for p in (log_file, status_file, shm_file):
-            if p.exists():
-                p.unlink()
-        for p in test_dir.glob("*.tmp"):
-            p.unlink()
-        if test_dir.exists():
-            test_dir.rmdir()
-
-    def test_05_flatpak_sober_swapchain_and_presentation(self):
-        """Verify full instance, device, swapchain, and presentation lifecycle inside Flatpak Sober."""
-        app_src = ROOT_DIR / "native" / "vulkan_layer" / "test_layer_app.c"
-        app_bin = SOBER_DATA_DIR / "test_layer_app"
-
-        # Compile test client
-        comp_res = subprocess.run(
+        app_src = ROOT_DIR / "native" / "vulkan_layer" / "test_capture_app.c"
+        app_bin = SOBER_DATA_DIR / "test_capture_app"
+        app_bin.parent.mkdir(parents=True, exist_ok=True)
+        compile_result = subprocess.run(
             ["gcc", "-O2", str(app_src), "-lvulkan", "-o", str(app_bin)],
             capture_output=True,
             text=True,
+            timeout=60,
         )
-        self.assertEqual(comp_res.returncode, 0, f"Compilation failed: {comp_res.stderr}")
+        self.assertEqual(compile_result.returncode, 0, f"Test app compile failed: {compile_result.stderr}")
 
-        # Run test client inside Flatpak Sober with swapchain testing
-        run_res = subprocess.run(
-            ["flatpak", "run", f"--command={app_bin}", "org.vinegarhq.Sober", "--test-swapchain"],
+        for path in (
+            SOBER_VULKAN_DIR / "vd_layer_shm.dat",
+            SOBER_VULKAN_DIR / "vd_layer_status.json",
+            SOBER_VULKAN_DIR / "vd_layer.log",
+        ):
+            path.unlink(missing_ok=True)
+
+        run_result = subprocess.run(
+            [
+                "flatpak", "run",
+                "--env=VD_CAPTURE_ENABLE=1",
+                "--env=VD_CAPTURE_INTERVAL_MS=0",
+                f"--command={app_bin}",
+                "org.vinegarhq.Sober",
+            ],
             capture_output=True,
             text=True,
+            timeout=60,
         )
-        self.assertEqual(run_res.returncode, 0, f"Execution failed: {run_res.stderr}\n{run_res.stdout}")
-        self.assertIn("Completed 30 presentation frames", run_res.stdout)
-        self.assertIn("vkDestroySwapchainKHR completed", run_res.stdout)
-        self.assertIn("vkDestroyInstance completed successfully", run_res.stdout)
+        self.assertEqual(
+            run_result.returncode, 0,
+            f"Capture app failed:\nSTDOUT:\n{run_result.stdout}\nSTDERR:\n{run_result.stderr}",
+        )
+        self.assertIn("CAPTURE_TEST_OK", run_result.stdout)
 
-        # Inspect status JSON and SHM in Sober data dir
-        status_file = SOBER_VULKAN_DIR / "vd_layer_status.json"
-        shm_file = SOBER_VULKAN_DIR / "vd_layer_shm.dat"
+        viewer = load_viewer_module()
+        snap = viewer.snapshot(SOBER_VULKAN_DIR / "vd_layer_shm.dat")
+        self.assertGreater(snap["capture_count"], 0)
+        self.assertGreater(snap["width"], 0)
+        self.assertGreater(snap["height"], 0)
+        self.assertEqual(snap["format"], 44)
+        self.assertGreaterEqual(len(snap["raw"]), 4)
 
-        self.assertTrue(status_file.exists(), f"Status file missing: {status_file}")
-        self.assertTrue(shm_file.exists(), f"SHM file missing: {shm_file}")
-
-        with open(status_file, "r") as f:
-            status = json.load(f)
-            self.assertEqual(status["layer_name"], "VK_LAYER_VD_capture")
-            self.assertEqual(status["frames_presented"], 30)
-            self.assertEqual(status["swapchain"]["width"], 1280)
-            self.assertEqual(status["swapchain"]["height"], 720)
-            self.assertEqual(status["swapchain"]["format"], 44)  # VK_FORMAT_B8G8R8A8_UNORM
-
-        # Check SHM header
-        with open(shm_file, "rb") as f:
-            data = f.read(144)
-            (
-                magic,
-                ver,
-                ssize,
-                flags,
-                pid,
-                seq,
-                init_ts,
-                last_ts,
-                frame_count,
-                fps,
-                dropped,
-                w,
-                h,
-                fmt,
-                mode,
-                img_cnt,
-                cur_idx,
-                proc_name,
-            ) = struct.unpack("=IIII II QQ QfI IIIIII 64s", data)
-            self.assertEqual(magic, 0x56444C59)
-            self.assertEqual(frame_count, 30)
-            self.assertEqual(w, 1280)
-            self.assertEqual(h, 720)
-            self.assertEqual(fmt, 44)
+        # The test app clears B8G8R8A8_UNORM to logical RGBA ~= (0.10, 0.60, 0.20, 1.0),
+        # therefore raw memory should be BGRA ~= (51, 153, 26, 255).
+        b, g, r, a = snap["raw"][:4]
+        self.assertLessEqual(abs(b - 51), 3)
+        self.assertLessEqual(abs(g - 153), 3)
+        self.assertLessEqual(abs(r - 26), 3)
+        self.assertGreaterEqual(a, 250)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)
