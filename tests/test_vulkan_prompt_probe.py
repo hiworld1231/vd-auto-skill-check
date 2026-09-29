@@ -1,5 +1,7 @@
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 
 import cv2
 import numpy as np
@@ -39,3 +41,17 @@ def test_probe_has_no_timer_by_default():
 def test_probe_explicit_timer_still_has_a_deadline():
     assert probe.deadline_for_seconds(None, now=100.0) is None
     assert probe.deadline_for_seconds(30.0, now=100.0) == 130.0
+
+
+def test_probe_can_be_launched_directly_from_tools_path():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "vulkan_prompt_probe.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Find the prompt template in live Vulkan capture" in result.stdout
