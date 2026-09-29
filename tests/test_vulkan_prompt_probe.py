@@ -29,3 +29,13 @@ def test_best_match_recovers_known_template_location_and_scale():
     assert scale == 1.0
     assert location == (x, y)
     assert size == (template.shape[1], template.shape[0])
+
+
+def test_probe_has_no_timer_by_default():
+    args = probe.parse_args([])
+    assert args.seconds is None
+
+
+def test_probe_explicit_timer_still_has_a_deadline():
+    assert probe.deadline_for_seconds(None, now=100.0) is None
+    assert probe.deadline_for_seconds(30.0, now=100.0) == 130.0
