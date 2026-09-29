@@ -6,7 +6,6 @@ import struct
 import threading
 import time
 
-import cv2
 import numpy as np
 
 from vd.capture import DEFAULT_ROI, Frame
@@ -37,9 +36,9 @@ class VulkanCapture:
     """Read the latest swapchain ROI published by the VD Vulkan layer.
 
     The layer publishes a physical-resolution center ROI. This reader converts the
-    swapchain's 4-byte pixel format to BGR, center-crops it to the solver's 4:3
-    geometry, then normalizes it back to the canonical 320x240 frame. The existing
-    detector/engine therefore stays Vulkan-agnostic.
+    swapchain's 4-byte pixel format to BGR and places those pixels into the solver's
+    canonical 320x240 frame using center crop/padding only. It never rescales the
+    game UI, so the detector keeps the physical UI scale reported by the layer.
 
     It also exposes the same publication/liveness surface as PortalCapture
     (cv/latest/error/proc/stopping), because vd.dispatch intentionally verifies the
@@ -146,19 +145,25 @@ class VulkanCapture:
         return None
 
     @staticmethod
-    def _center_crop_aspect(image, target_w, target_h):
+    def _center_crop_or_pad(image, target_w, target_h):
         height, width = image.shape[:2]
-        lhs = width * target_h
-        rhs = height * target_w
-        if lhs == rhs:
-            return image
-        if lhs > rhs:
-            crop_w = max(1, height * target_w // target_h)
-            x = max(0, (width - crop_w) // 2)
-            return image[:, x:x + crop_w]
-        crop_h = max(1, width * target_h // target_w)
-        y = max(0, (height - crop_h) // 2)
-        return image[y:y + crop_h, :]
+
+        if width > target_w:
+            x = (width - target_w) // 2
+            image = image[:, x:x + target_w]
+        if height > target_h:
+            y = (height - target_h) // 2
+            image = image[y:y + target_h, :]
+
+        height, width = image.shape[:2]
+        if (width, height) == (target_w, target_h):
+            return np.array(image, copy=True)
+
+        output = np.zeros((target_h, target_w, image.shape[2]), dtype=image.dtype)
+        x = max(0, (target_w - width) // 2)
+        y = max(0, (target_h - height) // 2)
+        output[y:y + height, x:x + width] = image
+        return output
 
     def _to_bgr(self, snapshot):
         _x, _y, width, height = snapshot["roi"]
@@ -172,15 +177,8 @@ class VulkanCapture:
             raise RuntimeError(f"Unsupported Vulkan swapchain format: {vk_format}")
 
         target_w, target_h = DEFAULT_ROI[2:]
-        bgr = self._center_crop_aspect(bgr, target_w, target_h)
-        source_h, source_w = bgr.shape[:2]
-        scale_x = target_w / source_w
-        scale_y = target_h / source_h
-        self.ui_scale = (scale_x + scale_y) / 2
-        if (source_w, source_h) != (target_w, target_h):
-            bgr = cv2.resize(bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-        else:
-            bgr = np.array(bgr, copy=True)
+        bgr = self._center_crop_or_pad(bgr, target_w, target_h)
+        self.ui_scale = 1.0
         bgr.flags.writeable = False
         return bgr
 
