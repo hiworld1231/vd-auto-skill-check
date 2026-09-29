@@ -17,11 +17,13 @@ VERSION = 2
 
 def write_snapshot(path: Path, *, vk_format=44, capture_count=7, capture_ts_ns=None,
                    swapchain=(1600, 878), roi=(667, 341, 4, 3),
-                   pixel=(51, 153, 26, 255)):
+                   pixel=(51, 153, 26, 255), raw=None):
     capture_ts_ns = capture_ts_ns or time.monotonic_ns()
     x, y, w, h = roi
     stride = w * 4
-    raw = bytes(pixel) * (w * h)
+    if raw is None:
+        raw = bytes(pixel) * (w * h)
+    assert len(raw) == stride * h
     values = (
         MAGIC, VERSION, HEADER_SIZE, 0b1111, 3, 2,
         capture_ts_ns - 1_000_000, capture_ts_ns, capture_count, 60.0,
@@ -49,6 +51,24 @@ def test_vulkan_capture_reads_bgra_and_normalizes_to_solver_frame(tmp_path):
     assert frame.source_size == (1600, 878)
     assert capture.roi == DEFAULT_ROI
     assert frame.timestamp_kind == "vulkan_monotonic"
+
+
+def test_vulkan_capture_center_crops_square_layer_roi_before_resize(tmp_path):
+    shm = tmp_path / "vd_layer_shm.dat"
+    w = h = 8
+    top = bytes((0, 0, 255, 255)) * (w * 1)
+    middle = bytes((0, 255, 0, 255)) * (w * 6)
+    bottom = bytes((255, 0, 0, 255)) * (w * 1)
+    write_snapshot(shm, roi=(672, 311, w, h), raw=top + middle + bottom)
+
+    with VulkanCapture(shm_path=shm) as capture:
+        frame = capture.next(timeout=0.05)
+
+    assert frame is not None
+    # 4:3 normalization should discard the square ROI's top/bottom bands,
+    # not stretch all 8 rows into the solver frame.
+    assert tuple(frame.image[0, 160]) == (0, 255, 0)
+    assert tuple(frame.image[-1, 160]) == (0, 255, 0)
 
 
 def test_vulkan_capture_converts_rgba_to_bgr(tmp_path):
