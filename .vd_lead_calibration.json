@@ -1,0 +1,21 @@
+{
+  "calibration_model": "v6-keydown-syn-great-center-predictive-unc-v2",
+  "fingerprint": {
+    "calibration_model": "v6-keydown-syn-great-center-predictive-unc-v2",
+    "capture_backend": "GSR_VFR",
+    "detector": "hybrid",
+    "fps": 120,
+    "input_backend": "EVDEV_UINPUT",
+    "region": {
+      "height": 240,
+      "left": 800,
+      "top": 420,
+      "width": 320
+    }
+  },
+  "lead_ms": 127.4997381432058,
+  "saved_at_epoch": 1790272512.040196,
+  "schema_version": 1,
+  "trusted_sample_count": 12,
+  "uncertainty_ms": 9.234463385060117
+}
