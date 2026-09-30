@@ -157,8 +157,9 @@ def test_runtime_reports_capture_worker_cpu_share(monkeypatch, tmp_path):
             return self.latest
 
     class BlankDetector:
-        def __init__(self, *, roi_offset=(0, 0)):
+        def __init__(self, *, roi_offset=(0, 0), ui_scale=1.0):
             self.roi_offset=roi_offset
+            self.ui_scale=ui_scale
 
         def measure(self, image, timestamp, *, center_hint=None):
             return Measurement(timestamp,None,0,None,None,(),'NO_PROMPT')
@@ -247,8 +248,9 @@ def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, t
         return capture
 
     class SpinnerDetector:
-        def __init__(self, *, roi_offset=(0, 0)):
+        def __init__(self, *, roi_offset=(0, 0), ui_scale=1.0):
             self.roi_offset=roi_offset
+            self.ui_scale=ui_scale
 
         def measure(self, image, timestamp, *, center_hint=None):
             angle = (270 + speed * (timestamp - capture.origin)) % 360
