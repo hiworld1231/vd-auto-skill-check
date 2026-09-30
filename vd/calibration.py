@@ -19,6 +19,7 @@ class Landing:
     uncertainty: float | None
     eligible: bool
     reason: str
+    dispatch_lag: float = 0.0
 
 
 class FreezeObserver:
@@ -131,14 +132,17 @@ class LeadEstimator:
         if not physical or not landing.eligible:
             self.reason='NONPHYSICAL' if not physical else landing.reason
             return False
-        if (not all(math.isfinite(v) for v in (at,landing.latency,landing.uncertainty))
-                or not 0<=landing.latency<=.250 or not 0<=landing.uncertainty<=.040):
+        total_latency=landing.latency+landing.dispatch_lag
+        if (not all(math.isfinite(v) for v in
+                    (at,landing.latency,landing.uncertainty,landing.dispatch_lag))
+                or landing.dispatch_lag<0 or not 0<=total_latency<=.250
+                or not 0<=landing.uncertainty<=.040):
             self.reason='INVALID_ESTIMATE'
             return False
         if self.samples and (at<=self.samples[-1][0] or at-self.samples[-1][0]>120):
             self.samples=[]
         self.samples=[s for s in self.samples if at-s[0]<=120]
-        self.samples.append((at,landing.latency,landing.uncertainty))
+        self.samples.append((at,total_latency,landing.uncertainty))
         self.samples=self.samples[-4:]
         if len(self.samples)<2:
             self.reason='COLLECTING'
