@@ -133,7 +133,8 @@ class Engine:
                              else self.motion.unwrap_floor)
                 if phase_floor is not None:
                     initial=phase_floor+delta(initial,phase_floor)
-            self.planner.begin(m.great,initial,m.good)
+            self.planner.begin(m.great,initial,m.good,
+                               allow_trailing_good=not continuing_chain)
             if not continuing_chain:
                 self.motion.reset()
                 self.motion.unwrap_floor=initial
