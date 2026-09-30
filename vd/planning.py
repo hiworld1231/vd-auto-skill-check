@@ -43,6 +43,8 @@ class Planner:
         self.fired=False
         self.current=None
         self.reason='NO_GENERATION'
+        self.target_occurrence_latched=False
+        self.latched_good_start=None
 
     def begin(self, target: Arc, initial_phase: float, good: Arc | None = None):
         if not (math.isfinite(initial_phase) and math.isfinite(target.start)
@@ -56,7 +58,11 @@ class Planner:
         self.fired=False
         self.target=target
         self.good=good
-        # Fix this occurrence once. Passing it must not schedule a full turn.
+        self.target_occurrence_latched=False
+        self.latched_good_start=None
+        # Fix the normally upcoming GREAT occurrence. update() can move this
+        # back one revolution only when observed geometry proves the needle is
+        # already inside this occurrence's GREAT/trailing GOOD success tail.
         self.target_phase=initial_phase+(target.center-initial_phase)%360
 
     def invalidate(self, reason):
@@ -68,6 +74,26 @@ class Planner:
         horizon=max(0,(phase-motion.phase)/motion.speed)
         return (max(.75,3*motion.residual)+motion.speed_scatter*horizon
                 +motion.speed*self.lead_uncertainty)
+
+    def _visible_success_occurrence(self, phase):
+        """Return the current GREAT/adjacent-GOOD occurrence containing phase."""
+        if self.good is None:
+            return None
+        gap=(self.good.start-(self.target.start+self.target.width))%360
+        if gap>8:
+            return None
+        target_start=float(self.target.start)
+        while target_start>phase:
+            target_start-=360
+        while target_start+360<=phase:
+            target_start+=360
+        target_end=target_start+self.target.width
+        good_start=target_end+gap
+        good_end=good_start+self.good.width
+        if (target_start<=phase<=target_end
+                or good_start<=phase<=good_end):
+            return target_start,good_start,good_end
+        return None
 
     def update(self, motion: Motion | None, *, frame_at: float, now: float):
         self.invalidate('NO_MOTION')
@@ -85,15 +111,43 @@ class Planner:
             self.reason='INVALID_MOTION'
             return None
 
-        # Every visible check gets a GREAT attempt. Uncertainty is diagnostic,
-        # never permission to redirect the press to GOOD or abandon the check.
-        aim=self.target_phase
-        window_start=self.target_phase-self.target.width/2
-        window_width=self.target.width
-        grade='GREAT'
+        if self.target_occurrence_latched:
+            good_end=self.latched_good_start+self.good.width
+            if motion.phase>good_end+.25:
+                self.reason='TARGET_PASSED'
+                return None
+        else:
+            occurrence=self._visible_success_occurrence(motion.phase)
+            if occurrence is not None:
+                target_start,good_start,_=occurrence
+                self.target_phase=target_start+self.target.width/2
+                self.target_occurrence_latched=True
+                self.latched_good_start=good_start
+
+        # GREAT remains the normal target. The only GOOD fallback is when
+        # reliable motion proves this exact one-sweep occurrence is already in
+        # its trailing success tail; once latched it can never jump to +360.
+        if self.target_occurrence_latched:
+            target_start=self.target_phase-self.target.width/2
+            target_end=target_start+self.target.width
+            if motion.phase<=target_end:
+                aim=self.target_phase
+                window_start=target_start
+                window_width=self.target.width
+                grade='GREAT'
+            else:
+                aim=self.latched_good_start+self.good.width/2
+                window_start=self.latched_good_start
+                window_width=self.good.width
+                grade='GOOD'
+        else:
+            aim=self.target_phase
+            window_start=self.target_phase-self.target.width/2
+            window_width=self.target.width
+            grade='GREAT'
         uncertainty=self._uncertainty(motion,aim)
         intended_press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
-        # This is the nominal white-sector exit time for diagnostics. Model
+        # This is the nominal target-sector exit time for diagnostics. Model
         # uncertainty is reported separately and does not erase the window.
         latest_press_at=intended_press_at+window_width/(2*motion.speed)
         press_at=max(now,intended_press_at)
