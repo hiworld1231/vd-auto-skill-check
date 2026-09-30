@@ -65,3 +65,15 @@ def test_lead_estimator_rejects_two_inconsistent_measurements():
     assert not estimator.observe(second, at=2.0, physical=True)
     assert estimator.lead == .060
     assert estimator.reason == 'INCONSISTENT_RESPONSE'
+
+
+def test_lead_estimator_includes_measured_dispatch_lag():
+    estimator = LeadEstimator(.035, .020)
+    first = Landing('CV_GREAT', 40, .010, .008, True, 'CV_FREEZE_ESTIMATE',
+                    dispatch_lag=.008)
+    second = Landing('CV_GREAT', 40, .012, .008, True, 'CV_FREEZE_ESTIMATE',
+                     dispatch_lag=.006)
+
+    assert not estimator.observe(first, at=1.0, physical=True)
+    assert estimator.observe(second, at=2.0, physical=True)
+    assert abs(estimator.lead - .018) < 1e-9
