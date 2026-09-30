@@ -43,10 +43,12 @@ class Planner:
         self.fired=False
         self.current=None
         self.reason='NO_GENERATION'
+        self.allow_trailing_good=True
         self.target_occurrence_latched=False
         self.latched_good_start=None
 
-    def begin(self, target: Arc, initial_phase: float, good: Arc | None = None):
+    def begin(self, target: Arc, initial_phase: float, good: Arc | None = None, *,
+              allow_trailing_good=True):
         if not (math.isfinite(initial_phase) and math.isfinite(target.start)
                 and math.isfinite(target.width) and 0<target.width<180):
             raise ValueError('Invalid generation geometry')
@@ -58,11 +60,12 @@ class Planner:
         self.fired=False
         self.target=target
         self.good=good
+        self.allow_trailing_good=bool(allow_trailing_good)
         self.target_occurrence_latched=False
         self.latched_good_start=None
         # Fix the normally upcoming GREAT occurrence. update() can move this
-        # back one revolution only when observed geometry proves the needle is
-        # already inside this occurrence's GREAT/trailing GOOD success tail.
+        # back one revolution only for a non-chain check when observed geometry
+        # proves the needle is already inside this occurrence's success tail.
         self.target_phase=initial_phase+(target.center-initial_phase)%360
 
     def invalidate(self, reason):
@@ -111,22 +114,24 @@ class Planner:
             self.reason='INVALID_MOTION'
             return None
 
-        if self.target_occurrence_latched:
-            good_end=self.latched_good_start+self.good.width
-            if motion.phase>good_end+.25:
-                self.reason='TARGET_PASSED'
-                return None
-        else:
-            occurrence=self._visible_success_occurrence(motion.phase)
-            if occurrence is not None:
-                target_start,good_start,_=occurrence
-                self.target_phase=target_start+self.target.width/2
-                self.target_occurrence_latched=True
-                self.latched_good_start=good_start
+        if self.allow_trailing_good:
+            if self.target_occurrence_latched:
+                good_end=self.latched_good_start+self.good.width
+                if motion.phase>good_end+.25:
+                    self.reason='TARGET_PASSED'
+                    return None
+            else:
+                occurrence=self._visible_success_occurrence(motion.phase)
+                if occurrence is not None:
+                    target_start,good_start,_=occurrence
+                    self.target_phase=target_start+self.target.width/2
+                    self.target_occurrence_latched=True
+                    self.latched_good_start=good_start
 
-        # GREAT remains the normal target. The only GOOD fallback is when
-        # reliable motion proves this exact one-sweep occurrence is already in
-        # its trailing success tail; once latched it can never jump to +360.
+        # GREAT remains the normal target. GOOD is only a rescue path for a
+        # non-chain check first observed in the current occurrence's trailing
+        # success tail. Chained Frenzy generations retain their established
+        # next-GREAT behavior, including when the new target appears in GOOD.
         if self.target_occurrence_latched:
             target_start=self.target_phase-self.target.width/2
             target_end=target_start+self.target.width
