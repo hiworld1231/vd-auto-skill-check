@@ -1,7 +1,7 @@
 """Independent capture/CV/engine integration. No physical input in dry-run."""
 from collections import Counter, deque
 from contextlib import ExitStack
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import statistics
@@ -65,6 +65,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     mode='run' if physical else 'dry-run'
     observer=None
     observer_generation=None
+    observer_dispatch_lag=0.0
     estimator=LeadEstimator(lead_seconds,lead_uncertainty)
     frame_processing_ms=deque(maxlen=600)
     frame_delivery_gap_ms=deque(maxlen=600)
@@ -94,7 +95,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             recorder=_NullRecorder()
 
         def events():
-            nonlocal presses,keydowns,observer,observer_generation
+            nonlocal presses,keydowns,observer,observer_generation,observer_dispatch_lag
             for event in engine.take_events():
                 event['physical_input']=(None if event['kind']=='INPUT_FAILED'
                                          else event['kind']=='KEYDOWN')
@@ -110,9 +111,12 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                             good=Arc(**event['good']) if event['good'] else None,
                             chain=event['chain'],late_dispatch=event['outside_target_window'])
                         observer_generation=event['generation']
+                        observer_dispatch_lag=max(
+                            0.0,event['at']-event['plan']['intended_press_at'])
                 print(json.dumps(event),flush=True)
                 if event['kind']=='END' and observer is not None and observer_generation==event['generation']:
-                    landing=observer.finish(event['reason'])
+                    landing=replace(observer.finish(event['reason']),
+                                    dispatch_lag=observer_dispatch_lag)
                     updated=estimator.observe(landing,at=event['at'],physical=physical)
                     diagnostic=dict(kind='CV_LANDING',at=event['at'],generation=event['generation'],
                         physical_input=False,game_outcome_measured=False,landing=asdict(landing),
@@ -124,6 +128,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                         engine.planner.lead=estimator.lead
                         engine.planner.lead_uncertainty=estimator.uncertainty
                     observer=None
+                    observer_dispatch_lag=0.0
 
         try:
             capture=stack.enter_context(PortalCapture(synthetic=synthetic,fps=fps,
