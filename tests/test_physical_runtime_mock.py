@@ -227,6 +227,7 @@ def test_runtime_timer_dispatch_hits_success_window_between_capture_frames(monke
 
         def __init__(self):
             self.keydowns = []
+            self.dispatch_windows = []
 
         def __enter__(self):
             return self
@@ -237,6 +238,7 @@ def test_runtime_timer_dispatch_hits_success_window_between_capture_frames(monke
         def pulse(self):
             at = time.monotonic()
             self.keydowns.append(at)
+            self.dispatch_windows.append((capture.latest.media_time, at, capture.next_at))
             return vd_input.Keydown(at, at)
 
     capture = None
@@ -272,8 +274,8 @@ def test_runtime_timer_dispatch_hits_success_window_between_capture_frames(monke
     assert len(output.keydowns) == 1
     phase = (270 + speed * (output.keydowns[0] - capture.origin)) % 360
     assert Arc(40, 10).contains(phase) or Arc(51, 42).contains(phase)
-    frame_phase = (output.keydowns[0] - capture.origin) * fps
-    assert abs(frame_phase - round(frame_phase)) > .05
+    previous_frame_at, keydown_at, next_frame_at = output.dispatch_windows[0]
+    assert previous_frame_at < keydown_at < next_frame_at
 
 
 def test_no_recording_skips_video_writer_and_still_reports_performance(monkeypatch, tmp_path, capsys):
