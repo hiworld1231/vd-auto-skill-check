@@ -68,6 +68,23 @@ def test_good_aim_crossed_by_fresh_frame_presses_now_instead_of_moving_later():
     assert crossed.latest_press_at>crossed.press_at
 
 
+def test_latched_good_upgrades_to_great_when_motion_becomes_safe_before_great():
+    p=Planner(lead_seconds=0,lead_uncertainty=.003)
+    p.begin(Arc(20,10),300,Arc(31,42))
+
+    noisy=p.update(Motion(1.00,300,280,0,20,1.00,6),frame_at=1.00,now=1.00)
+    fallback_aim=p.good_aim
+    improved=p.update(Motion(1.20,356,280,0,2,1.20,12),frame_at=1.20,now=1.20)
+
+    assert noisy is not None
+    assert noisy.target_grade=='GOOD'
+    assert fallback_aim is not None
+    assert improved is not None
+    assert improved.target_grade=='GREAT'
+    assert improved.target_phase==pytest.approx(p.occurrence.great_center)
+    assert p.good_aim==fallback_aim
+
+
 def test_latched_success_occurrence_never_rearms_next_rotation():
     p=Planner(lead_seconds=.035,lead_uncertainty=.020)
     p.begin(Arc(20,10),40,Arc(31,42))
