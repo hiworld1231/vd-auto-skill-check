@@ -20,6 +20,14 @@ class _NoMotionTracker:
         return None
 
 
+class _GreatTailMotionTracker(_NoMotionTracker):
+    def update(self, timestamp, candidates):
+        self.last_frame = timestamp
+        self.estimate = Motion(timestamp, 102.0, 400.0, 0.0, 0.0, timestamp, 9)
+        self.reason = 'MEASURED'
+        return self.estimate
+
+
 def _armed_engine_with_pending_great():
     engine = Engine(lead_seconds=0, lead_uncertainty=.003)
     great = Arc(96, 10)
@@ -59,6 +67,20 @@ def test_fresh_observation_without_new_motion_preserves_pending_great_until_disp
     )
 
     assert engine.planner.current is plan
+    assert engine.poll(plan.press_at + .0001, held=True, capture_alive=True) is plan
+
+
+def test_committed_great_survives_fresh_frame_after_center_while_window_is_reachable():
+    engine, plan, great, good, center = _armed_engine_with_pending_great()
+    engine.motion = _GreatTailMotionTracker()
+
+    engine.observe(
+        Measurement(1.04, center, .99, great, good, (), 'OK'),
+        now=1.04,
+    )
+
+    assert engine.planner.current is plan
+    assert engine.planner.current.target_grade == 'GREAT'
     assert engine.poll(plan.press_at + .0001, held=True, capture_alive=True) is plan
 
 
