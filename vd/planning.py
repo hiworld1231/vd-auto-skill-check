@@ -122,6 +122,7 @@ class Planner:
         intended_press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
         latest_press_at=motion.at+(window_end-motion.phase)/motion.speed-self.lead
         press_at=max(now,intended_press_at)
+        self.version+=1
         self.current=Plan(self.generation,self.version,press_at,intended_press_at,valid_until,
                           aim,uncertainty,latest_press_at,grade,
                           window_start,window_end-window_start)
@@ -129,8 +130,17 @@ class Planner:
         return self.current
 
     def update(self, motion: Motion | None, *, frame_at: float, now: float):
-        self.invalidate('NO_MOTION')
-        if self.target is None or self.occurrence is None or self.fired or motion is None:
+        existing=self.current
+        if self.target is None or self.occurrence is None or self.fired:
+            return None
+        if motion is None:
+            if existing is not None and now<=existing.valid_until:
+                self.reason='PLANNED'
+                return existing
+            if existing is not None and now>existing.valid_until:
+                self.invalidate('OBSERVATION_EXPIRED')
+            else:
+                self.reason='NO_MOTION'
             return None
         if not all(math.isfinite(v) for v in (frame_at,now,motion.at,motion.phase,
                 motion.speed,motion.residual,motion.speed_scatter,motion.last_motion_at)):
@@ -147,7 +157,7 @@ class Planner:
         occ=self.occurrence
         effect_phase=motion.phase_at(now+self.lead)
         if effect_phase>occ.success_end+self.EPS:
-            self.reason='TARGET_PASSED'
+            self.invalidate('TARGET_PASSED')
             return None
 
         # GOOD is a stable fallback, not a permanent downgrade. Re-evaluate
@@ -159,6 +169,21 @@ class Planner:
         great_allowed=(great_uncertainty<=great_limit
                        or (self.great_committed and great_uncertainty<=
                            great_limit+self.GREAT_HYSTERESIS_DEGREES))
+
+        # A committed GREAT remains a live dispatch promise through the rest
+        # of the same GREAT window. Crossing its center between capture frames
+        # is not a reason to throw away a plan whose scheduled dispatch is still
+        # valid; otherwise a fresh frame can demote a correct GREAT into GOOD
+        # milliseconds before KEYDOWN.
+        if (existing is not None and existing.target_grade=='GREAT'
+                and effect_phase<=occ.great_end+self.EPS
+                and now<=existing.latest_press_at+.001
+                and great_uncertainty<=great_limit+self.GREAT_HYSTERESIS_DEGREES
+                and effect_phase>occ.great_center+self.EPS):
+            self.great_committed=True
+            self.reason='PLANNED'
+            return existing
+
         if effect_phase<=occ.great_center+self.EPS and great_allowed:
             self.great_committed=True
             return self._make_plan(
@@ -166,7 +191,7 @@ class Planner:
                 window_start=occ.great_start,window_end=occ.great_end,
                 grade='GREAT',uncertainty=great_uncertainty)
         if (self.great_committed and
-                (effect_phase>occ.great_center+self.EPS or
+                (effect_phase>occ.great_end+self.EPS or
                  great_uncertainty>great_limit+self.GREAT_HYSTERESIS_DEGREES)):
             self.great_committed=False
 
@@ -175,7 +200,7 @@ class Planner:
         # remaining tail and push the deadline forward indefinitely.
         if self.good_aim is not None:
             if occ.good_start is None or effect_phase>=occ.good_end-self.EPS:
-                self.reason='TARGET_PASSED'
+                self.invalidate('TARGET_PASSED')
                 return None
             remaining_start=max(occ.good_start,effect_phase)
             if effect_phase>self.good_aim+self.EPS:
@@ -208,7 +233,7 @@ class Planner:
                 window_start=max(occ.great_start,effect_phase),window_end=occ.great_end,
                 grade='GREAT',uncertainty=self._uncertainty(motion,aim))
 
-        self.reason='TARGET_PASSED'
+        self.invalidate('TARGET_PASSED')
         return None
 
     def attempt_now(self, *, frame_at: float, now: float, timing_mode: str):
