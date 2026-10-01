@@ -208,9 +208,9 @@ def test_continuous_frenzy_ring_gets_two_success_claims():
     assert all(e['plan']['target_grade'] in ('GREAT','GOOD') for e in claims)
 
 
-@pytest.mark.parametrize('speed', [278, 550, 700, 1000, 1300])
+@pytest.mark.parametrize('speed', [278, 500, 750, 1000, 1300, 1500])
 @pytest.mark.parametrize('fps', [60, 40, 30])
-def test_twenty_continuous_frenzy_checks_each_get_one_success_attempt(speed, fps):
+def test_twenty_continuous_frenzy_checks_have_no_miss(speed, fps):
     detector=Detector()
     engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
     target=40
@@ -243,8 +243,6 @@ def test_twenty_continuous_frenzy_checks_each_get_one_success_attempt(speed, fps
                 success=great or good
                 outcomes.append(success)
                 if success:
-                    # The bench shows the next check 150 ms after the Space
-                    # response has been applied.
                     next_target_at=event['at']+.035+.15
                 else:
                     missed=True
