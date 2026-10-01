@@ -35,6 +35,38 @@ def test_remaining_good_aims_at_center_of_reachable_tail():
     assert plan.target_phase==66.5
 
 
+def test_good_aim_does_not_run_away_on_each_fresh_observation():
+    p=Planner(lead_seconds=0,lead_uncertainty=.020)
+    p.begin(Arc(20,10),40,Arc(31,42))
+
+    first=p.update(Motion(1.00,40,280,0,0,1.00,6),frame_at=1.00,now=1.00)
+    second=p.update(Motion(1.02,45.6,280,0,0,1.02,7),frame_at=1.02,now=1.02)
+    third=p.update(Motion(1.04,51.2,280,0,0,1.04,8),frame_at=1.04,now=1.04)
+
+    assert first is not None and first.target_grade=='GOOD'
+    assert second is not None and second.target_grade=='GOOD'
+    assert third is not None and third.target_grade=='GOOD'
+    assert second.target_phase==pytest.approx(first.target_phase)
+    assert third.target_phase==pytest.approx(first.target_phase)
+    assert third.press_at < second.press_at < first.press_at
+
+
+def test_good_aim_crossed_by_fresh_frame_presses_now_instead_of_moving_later():
+    p=Planner(lead_seconds=0,lead_uncertainty=.020)
+    p.begin(Arc(20,10),40,Arc(31,42))
+
+    first=p.update(Motion(1.00,40,280,0,0,1.00,6),frame_at=1.00,now=1.00)
+    assert first is not None and first.target_grade=='GOOD'
+
+    crossed=p.update(Motion(1.07,61,280,0,0,1.07,8),frame_at=1.07,now=1.07)
+
+    assert crossed is not None
+    assert crossed.target_grade=='GOOD'
+    assert crossed.press_at==pytest.approx(1.07)
+    assert crossed.target_phase<=61.25
+    assert crossed.latest_press_at>crossed.press_at
+
+
 def test_latched_success_occurrence_never_rearms_next_rotation():
     p=Planner(lead_seconds=.035,lead_uncertainty=.020)
     p.begin(Arc(20,10),40,Arc(31,42))
