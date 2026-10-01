@@ -175,7 +175,10 @@ def test_synthetic_bench_frames_drive_detector_motion_and_one_planner_claim():
         angle = (270 + 278 * at) % 360
         measured = detector.measure(bench_frame((160, 162.5), angle), at)
         engine.observe(measured, now=at, held=True)
-        engine.poll(at, held=True)
+        plan=engine.planner.current
+        wake=(plan.press_at if plan is not None and at<=plan.press_at<at+1/60
+              else at)
+        engine.poll(wake, held=True)
         events.extend(engine.take_events())
 
     kinds = [event['kind'] for event in events]
@@ -198,7 +201,10 @@ def test_continuous_frenzy_ring_gets_two_success_claims():
         measured=retained_target(measured,great=engine.target,good=engine.good,
                                  center=engine.center)
         engine.observe(measured,now=at,held=True)
-        engine.poll(at,held=True)
+        plan=engine.planner.current
+        wake=(plan.press_at if plan is not None and at<=plan.press_at<at+1/60
+              else at)
+        engine.poll(wake,held=True)
         new=engine.take_events()
         events.extend(new)
         if target==40 and any(e['kind']=='PRESS_CLAIM' for e in new):
@@ -221,7 +227,11 @@ def test_twenty_continuous_frenzy_checks_have_no_miss(speed, fps):
     for index in range(fps*60):
         at=index/fps
         if next_target_at is not None and at>=next_target_at:
-            target=(target+150)%360
+            # Keep the next geometry on the same physical sweep but still
+            # ahead of the needle at 1500 deg/s. A +150 degree shift becomes
+            # physically stale at high speed and only passed under the old
+            # forbidden +360 re-arm behavior.
+            target=(target+330)%360
             next_target_at=None
         angle=(270+speed*at)%360
         measured=detector.measure(bench_frame((160,162.5),angle,target),at,
@@ -253,3 +263,41 @@ def test_twenty_continuous_frenzy_checks_have_no_miss(speed, fps):
     assert all(event['plan']['target_grade'] in ('GREAT','GOOD') for event in claims)
     assert all(event['plan']['timing_mode']=='PREDICTED' for event in claims)
     assert outcomes==[True]*20
+
+
+def test_late_frenzy_geometry_does_not_rearm_another_revolution():
+    detector=Detector()
+    engine=Engine(lead_seconds=.035,lead_uncertainty=.020)
+    speed=1300
+    fps=60
+    target=40
+    next_target_at=None
+    claims=[]
+    changed=False
+    for index in range(fps*2):
+        at=index/fps
+        if next_target_at is not None and at>=next_target_at and not changed:
+            target=(target+150)%360
+            changed=True
+        angle=(270+speed*at)%360
+        measured=detector.measure(bench_frame((160,162.5),angle,target),at,
+                                  center_hint=engine.center)
+        measured=retained_target(measured,great=engine.target,good=engine.good,
+                                 center=engine.center)
+        engine.observe(measured,now=at,held=True)
+        plan=engine.planner.current
+        wake=(plan.press_at if plan is not None and at<=plan.press_at<at+1/fps
+              else at)
+        engine.poll(wake,held=True)
+        for event in engine.take_events():
+            if event['kind']=='PRESS_CLAIM':
+                claims.append(event)
+                if len(claims)==1:
+                    next_target_at=event['at']+.035+.15
+        if changed and engine.generation>=2 and engine.planner.reason=='TARGET_PASSED':
+            break
+
+    assert changed
+    assert engine.generation==2
+    assert len(claims)==1
+    assert engine.planner.reason=='TARGET_PASSED'
