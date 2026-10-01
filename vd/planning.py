@@ -147,6 +147,17 @@ class Planner:
             self.reason='TARGET_PASSED'
             return None
 
+        # GOOD is a stable fallback, not a permanent downgrade. Re-evaluate
+        # GREAT on every fresh observation while its center is still reachable;
+        # a noisy early estimate may become safe before the needle gets there.
+        great_uncertainty=self._uncertainty(motion,occ.great_center)
+        if (effect_phase<=occ.great_center+self.EPS
+                and great_uncertainty<=self.target.width/2):
+            return self._make_plan(
+                motion,frame_at=frame_at,now=now,aim=occ.great_center,
+                window_start=occ.great_start,window_end=occ.great_end,
+                grade='GREAT',uncertainty=great_uncertainty)
+
         # Once this generation falls back to GOOD, keep one fixed aim. Without
         # this latch each fresh frame would choose the midpoint of a shorter
         # remaining tail and push the deadline forward indefinitely.
@@ -166,14 +177,6 @@ class Planner:
                 motion,frame_at=frame_at,now=now,aim=aim,
                 window_start=remaining_start,window_end=occ.good_end,
                 grade='GOOD',uncertainty=self._uncertainty(motion,aim))
-
-        great_uncertainty=self._uncertainty(motion,occ.great_center)
-        if (effect_phase<=occ.great_center+self.EPS
-                and great_uncertainty<=self.target.width/2):
-            return self._make_plan(
-                motion,frame_at=frame_at,now=now,aim=occ.great_center,
-                window_start=occ.great_start,window_end=occ.great_end,
-                grade='GREAT',uncertainty=great_uncertainty)
 
         if occ.good_start is not None and effect_phase<occ.good_end-self.EPS:
             remaining_start=max(occ.good_start,effect_phase)
