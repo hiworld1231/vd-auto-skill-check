@@ -78,6 +78,17 @@ class Planner:
         return (max(.75,3*motion.residual)+motion.speed_scatter*horizon
                 +motion.speed*self.lead_uncertainty)
 
+    def _adjacent_good_occurrence(self):
+        """Return GOOD beside the selected GREAT occurrence, unwrapped."""
+        if self.good is None or self.target is None or self.target_phase is None:
+            return None
+        gap=(self.good.start-(self.target.start+self.target.width))%360
+        if gap>8:
+            return None
+        target_start=self.target_phase-self.target.width/2
+        good_start=target_start+self.target.width+gap
+        return good_start,good_start+self.good.width
+
     def _visible_success_occurrence(self, phase):
         """Return the current GREAT/adjacent-GOOD occurrence containing phase."""
         if self.good is None:
@@ -128,10 +139,11 @@ class Planner:
                     self.target_occurrence_latched=True
                     self.latched_good_start=good_start
 
-        # GREAT remains the normal target. GOOD is only a rescue path for a
-        # non-chain check first observed in the current occurrence's trailing
-        # success tail. Chained Frenzy generations retain their established
-        # next-GREAT behavior, including when the new target appears in GOOD.
+        # GREAT is preferred when the fitted timing envelope actually fits it.
+        # If the adjacent GOOD sector is wider and GREAT is already a timing
+        # gamble, aim at GOOD instead of pretending a sub-frame white window is
+        # reliable. The same policy applies to chained checks; only the old
+        # "already inside trailing GOOD" occurrence rewind remains chain-gated.
         if self.target_occurrence_latched:
             target_start=self.target_phase-self.target.width/2
             target_end=target_start+self.target.width
@@ -150,7 +162,23 @@ class Planner:
             window_start=self.target_phase-self.target.width/2
             window_width=self.target.width
             grade='GREAT'
+
         uncertainty=self._uncertainty(motion,aim)
+        if grade=='GREAT' and uncertainty>window_width/2:
+            adjacent=self._adjacent_good_occurrence()
+            if adjacent is not None:
+                good_start,good_end=adjacent
+                # Do not jump to a GOOD sector that is already gone. If it is
+                # still ahead (or currently under the needle), its much wider
+                # window is preferable to a GREAT whose modeled envelope does
+                # not fit inside the white arc.
+                if motion.phase<=good_end:
+                    aim=(good_start+good_end)/2
+                    window_start=good_start
+                    window_width=self.good.width
+                    grade='GOOD'
+                    uncertainty=self._uncertainty(motion,aim)
+
         intended_press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
         # This is the nominal target-sector exit time for diagnostics. Model
         # uncertainty is reported separately and does not erase the window.
