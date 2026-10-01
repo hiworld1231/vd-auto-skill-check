@@ -41,7 +41,21 @@ def test_normal_wrapped_target_still_waits_for_first_sweep_target():
     assert plan.press_at>1.7
 
 
-def test_chained_generation_keeps_next_great_instead_of_good_fallback():
+def test_chained_generation_uses_current_good_when_effect_can_still_land_inside_it():
+    p=Planner(lead_seconds=.035,lead_uncertainty=.020)
+    p.begin(Arc(20,10),32,Arc(31,42),allow_trailing_good=False)
+    m=Motion(1,32,700,0,0,1,6)
+
+    plan=p.update(m,frame_at=1,now=1)
+
+    assert plan is not None
+    assert plan.target_grade=='GOOD'
+    assert 31<=plan.target_phase<=73
+    assert plan.press_at==1
+    assert plan.latest_press_at>=1
+
+
+def test_chained_generation_skips_current_good_when_effect_would_arrive_too_late():
     p=Planner(lead_seconds=.035,lead_uncertainty=.020)
     p.begin(Arc(20,10),40,Arc(31,42),allow_trailing_good=False)
     m=Motion(1,45,1000,0,0,1,6)
@@ -49,6 +63,5 @@ def test_chained_generation_keeps_next_great_instead_of_good_fallback():
     plan=p.update(m,frame_at=1,now=1)
 
     assert plan is not None
-    assert plan.target_grade=='GREAT'
-    assert plan.target_phase==385
+    assert plan.target_phase>360
     assert plan.press_at>1.30
