@@ -63,9 +63,6 @@ class Planner:
         self.allow_trailing_good=bool(allow_trailing_good)
         self.target_occurrence_latched=False
         self.latched_good_start=None
-        # Fix the normally upcoming GREAT occurrence. update() can move this
-        # back one revolution only for a non-chain check when observed geometry
-        # proves the needle is already inside this occurrence's success tail.
         self.target_phase=initial_phase+(target.center-initial_phase)%360
 
     def invalidate(self, reason):
@@ -125,64 +122,67 @@ class Planner:
             self.reason='INVALID_MOTION'
             return None
 
-        if self.allow_trailing_good:
-            if self.target_occurrence_latched:
-                good_end=self.latched_good_start+self.good.width
-                if motion.phase>good_end+.25:
-                    self.reason='TARGET_PASSED'
-                    return None
-            else:
-                occurrence=self._visible_success_occurrence(motion.phase)
-                if occurrence is not None:
-                    target_start,good_start,_=occurrence
+        # Compare windows against where the needle is expected to be when an
+        # input sent *now* can actually take effect. This matters when capture
+        # cadence is low: a chained target may first be observed inside GOOD,
+        # yet that same GOOD can still be reachable after the timing lead.
+        effect_phase_now=motion.phase_at(now)+motion.speed*self.lead
+
+        if self.target_occurrence_latched:
+            good_end=self.latched_good_start+self.good.width
+            if effect_phase_now>good_end+.25:
+                self.reason='TARGET_PASSED'
+                return None
+        else:
+            occurrence=self._visible_success_occurrence(motion.phase)
+            if occurrence is not None:
+                target_start,good_start,good_end=occurrence
+                # A normal one-shot check must never re-arm the next rotation.
+                # A chained check may use the visible occurrence only when an
+                # input sent now can still land inside its success tail.
+                if self.allow_trailing_good or effect_phase_now<=good_end+.25:
                     self.target_phase=target_start+self.target.width/2
                     self.target_occurrence_latched=True
                     self.latched_good_start=good_start
+                    if effect_phase_now>good_end+.25:
+                        self.reason='TARGET_PASSED'
+                        return None
 
-        # GREAT is preferred when the fitted timing envelope actually fits it.
-        # If the adjacent GOOD sector is wider and GREAT is already a timing
-        # gamble, aim at GOOD instead of pretending a sub-frame white window is
-        # reliable. The same policy applies to chained checks; only the old
-        # "already inside trailing GOOD" occurrence rewind remains chain-gated.
-        if self.target_occurrence_latched:
-            target_start=self.target_phase-self.target.width/2
-            target_end=target_start+self.target.width
-            if motion.phase<=target_end:
+        target_start=self.target_phase-self.target.width/2
+        target_end=target_start+self.target.width
+        great_uncertainty=self._uncertainty(motion,self.target_phase)
+        great_reachable=effect_phase_now<=target_end+.25
+
+        if great_reachable and great_uncertainty<=self.target.width/2:
+            aim=self.target_phase
+            window_start=target_start
+            window_width=self.target.width
+            grade='GREAT'
+            uncertainty=great_uncertainty
+        else:
+            adjacent=self._adjacent_good_occurrence()
+            if adjacent is not None and effect_phase_now<=adjacent[1]+.25:
+                good_start,good_end=adjacent
+                aim=(good_start+good_end)/2
+                window_start=good_start
+                window_width=self.good.width
+                grade='GOOD'
+                uncertainty=self._uncertainty(motion,aim)
+            elif self.target_occurrence_latched:
+                self.reason='TARGET_PASSED'
+                return None
+            else:
+                # No adjacent rescue sector exists. Preserve the historical
+                # one-attempt contract rather than silently dropping the check.
                 aim=self.target_phase
                 window_start=target_start
                 window_width=self.target.width
                 grade='GREAT'
-            else:
-                aim=self.latched_good_start+self.good.width/2
-                window_start=self.latched_good_start
-                window_width=self.good.width
-                grade='GOOD'
-        else:
-            aim=self.target_phase
-            window_start=self.target_phase-self.target.width/2
-            window_width=self.target.width
-            grade='GREAT'
-
-        uncertainty=self._uncertainty(motion,aim)
-        if grade=='GREAT' and uncertainty>window_width/2:
-            adjacent=self._adjacent_good_occurrence()
-            if adjacent is not None:
-                good_start,good_end=adjacent
-                # Do not jump to a GOOD sector that is already gone. If it is
-                # still ahead (or currently under the needle), its much wider
-                # window is preferable to a GREAT whose modeled envelope does
-                # not fit inside the white arc.
-                if motion.phase<=good_end:
-                    aim=(good_start+good_end)/2
-                    window_start=good_start
-                    window_width=self.good.width
-                    grade='GOOD'
-                    uncertainty=self._uncertainty(motion,aim)
+                uncertainty=great_uncertainty
 
         intended_press_at=motion.at+(aim-motion.phase)/motion.speed-self.lead
-        # This is the nominal target-sector exit time for diagnostics. Model
-        # uncertainty is reported separately and does not erase the window.
-        latest_press_at=intended_press_at+window_width/(2*motion.speed)
+        window_end=window_start+window_width
+        latest_press_at=motion.at+(window_end-motion.phase)/motion.speed-self.lead
         press_at=max(now,intended_press_at)
         self.current=Plan(self.generation,self.version,press_at,intended_press_at,valid_until,
                           aim,uncertainty,latest_press_at,grade,
@@ -215,8 +215,6 @@ class Planner:
                 or plan.version!=self.version or now<plan.press_at
                 or now>plan.valid_until):
             return False
-        # The deadline is a target, not a veto. Dispatch records lateness so
-        # a visible check still receives its single attempt.
         self.fired=True
         self.invalidate('CLAIMED')
         return True
