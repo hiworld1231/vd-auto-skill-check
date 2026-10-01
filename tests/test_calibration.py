@@ -1,4 +1,4 @@
-from vd.calibration import FreezeObserver, Landing, LeadEstimator
+from vd.calibration import FreezeObserver, LeadEstimator
 from vd.motion import Motion
 from vd.vision import Arc, Measurement, Needle
 
@@ -41,52 +41,55 @@ def test_needle_loss_before_a_stable_suffix_stays_unconfirmed():
     assert not landing.eligible
 
 
-def test_lead_estimator_uses_dispatch_delay_not_visual_freeze_latency():
+def test_lead_estimator_uses_dispatch_delay_without_visual_landing():
     estimator = LeadEstimator(.060, .015)
-    first = Landing('CV_MISS', 104.04, .033633, .020419, True,
-                    'CV_FREEZE_ESTIMATE', dispatch_lag=.004)
-    second = Landing('CV_MISS', 34.71, .036445, .021414, True,
-                     'CV_FREEZE_ESTIMATE', dispatch_lag=.006)
 
-    assert not estimator.observe(first, at=1.0, physical=True)
+    assert not estimator.observe_dispatch(at=1.0, dispatch_lag=.004,
+                                          physical=True, eligible=True)
     assert estimator.lead == .060
-    assert estimator.observe(second, at=2.0, physical=True)
+    assert estimator.observe_dispatch(at=2.0, dispatch_lag=.006,
+                                      physical=True, eligible=True)
     assert abs(estimator.lead - .005) < 1e-9
     assert abs(estimator.uncertainty - .003) < 1e-9
     assert estimator.reason == 'FRESH_DISPATCH_GROUP'
 
 
-def test_lead_estimator_can_learn_from_unconfirmed_visual_landing():
+def test_lead_estimator_does_not_need_confirmed_visual_landing():
     estimator = LeadEstimator(.035, .020)
-    first = Landing('UNCONFIRMED', None, None, None, False,
-                    'NO_STABLE_SUFFIX', dispatch_lag=.003)
-    second = Landing('UNCONFIRMED', None, None, None, False,
-                     'NO_STABLE_SUFFIX', dispatch_lag=.005)
 
-    assert not estimator.observe(first, at=1.0, physical=True)
-    assert estimator.observe(second, at=2.0, physical=True)
+    assert not estimator.observe_dispatch(at=1.0, dispatch_lag=.003,
+                                          physical=True, eligible=True)
+    assert estimator.observe_dispatch(at=2.0, dispatch_lag=.005,
+                                      physical=True, eligible=True)
     assert abs(estimator.lead - .004) < 1e-9
     assert abs(estimator.uncertainty - .003) < 1e-9
 
 
 def test_lead_estimator_rejects_inconsistent_dispatch_delays():
     estimator = LeadEstimator(.060, .015)
-    first = Landing('CV_GREAT', 100, .035, .010, True, 'CV_FREEZE_ESTIMATE',
-                    dispatch_lag=.004)
-    second = Landing('CV_MISS', 130, .065, .010, True, 'CV_FREEZE_ESTIMATE',
-                     dispatch_lag=.040)
 
-    assert not estimator.observe(first, at=1.0, physical=True)
-    assert not estimator.observe(second, at=2.0, physical=True)
+    assert not estimator.observe_dispatch(at=1.0, dispatch_lag=.004,
+                                          physical=True, eligible=True)
+    assert not estimator.observe_dispatch(at=2.0, dispatch_lag=.040,
+                                          physical=True, eligible=True)
     assert estimator.lead == .060
     assert estimator.reason == 'INCONSISTENT_DISPATCH'
 
 
 def test_lead_estimator_never_learns_from_nonphysical_replay():
     estimator = LeadEstimator(.035, .020)
-    landing = Landing('CV_GREAT', 40, .010, .008, True,
-                      'CV_FREEZE_ESTIMATE', dispatch_lag=.004)
 
-    assert not estimator.observe(landing, at=1.0, physical=False)
+    assert not estimator.observe_dispatch(at=1.0, dispatch_lag=.004,
+                                          physical=False, eligible=True)
     assert estimator.lead == .035
     assert estimator.reason == 'NONPHYSICAL'
+
+
+def test_late_clamped_plan_is_not_learned_as_dispatch_delay():
+    estimator = LeadEstimator(.035, .020)
+
+    assert not estimator.observe_dispatch(at=1.0, dispatch_lag=.032,
+                                          physical=True, eligible=False)
+    assert estimator.samples == []
+    assert estimator.lead == .035
+    assert estimator.reason == 'INELIGIBLE_DISPATCH'
