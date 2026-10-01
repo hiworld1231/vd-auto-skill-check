@@ -80,9 +80,6 @@ class Engine:
         if m.timestamp>now+.002 or now-m.timestamp>self.planner.max_age:
             self.reason='STALE_FRAME'
             return
-        # The center hint is useful for tracking an already confirmed ring,
-        # but background texture can also form convincing arcs. Never start or
-        # refresh a check unless the original Space prompt is actually visible.
         visible=m.prompt_score>=.80 and m.center is not None and m.great is not None
         if not visible:
             self.pending=None
@@ -97,10 +94,12 @@ class Engine:
                  or math.dist(self.center,m.center)>3)
         if shifted:
             self.reason='CONFIRMING_GEOMETRY'
+            previous_target=self.target
+            previous_occurrence=self.planner.occurrence
             continuing_chain=(self.active and self.planner.fired
                               and math.dist(self.center,m.center)<=3)
-            large_chain_shift=(continuing_chain and
-                               abs(delta(m.great.start,self.target.start))
+            large_chain_shift=(continuing_chain and previous_target is not None and
+                               abs(delta(m.great.start,previous_target.start))
                                >=CHAIN_FAST_SHIFT_DEGREES)
             if not continuing_chain:
                 self.motion.reset_fit()
@@ -126,15 +125,18 @@ class Engine:
             self.center=m.center
             initial=(self.pending[2] if pending_matches and self.pending[2] is not None else
                      strongest.angle if strongest is not None else m.great.center)
+            occurrence_start=None
             if continuing_chain:
-                # A fit reset clears last_unwrapped but preserves its turn in unwrap_floor.
                 phase_floor=(self.motion.last_unwrapped
                              if self.motion.last_unwrapped is not None
                              else self.motion.unwrap_floor)
                 if phase_floor is not None:
                     initial=phase_floor+delta(initial,phase_floor)
+                if previous_target is not None and previous_occurrence is not None:
+                    forward_shift=(m.great.start-previous_target.start)%360
+                    occurrence_start=previous_occurrence.great_start+forward_shift
             self.planner.begin(m.great,initial,m.good,
-                               allow_trailing_good=not continuing_chain)
+                               occurrence_start=occurrence_start)
             if not continuing_chain:
                 self.motion.reset()
                 self.motion.unwrap_floor=initial
@@ -152,9 +154,6 @@ class Engine:
                      and m.timestamp-previous_motion_frame>self.motion.max_gap)
         estimate=self.motion.update(m.timestamp,m.candidates)
         if capture_gap:
-            # A prediction made before a capture stall cannot authorize a
-            # blind press on the first frame after capture resumes. Give the
-            # needle a chance to move and rebuild its fit first.
             self.last_reliable_motion_at=m.timestamp
         if estimate is not None:
             self.last_reliable_motion_at=estimate.last_motion_at
