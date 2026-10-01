@@ -121,18 +121,20 @@ class FreezeObserver:
 
 
 class LeadEstimator:
-    """Learn only real dispatch lateness; CV freeze remains outcome evidence."""
+    """Learn scheduler/output delay only; visual freeze never calibrates lead."""
     def __init__(self, lead, uncertainty):
         self.lead=lead
         self.uncertainty=uncertainty
         self.samples=[]
         self.reason='INITIAL_MODEL'
 
-    def observe(self, landing, *, at, physical):
+    def observe_dispatch(self, *, at, dispatch_lag, physical, eligible=True):
         if not physical:
             self.reason='NONPHYSICAL'
             return False
-        dispatch_lag=landing.dispatch_lag
+        if not eligible:
+            self.reason='INELIGIBLE_DISPATCH'
+            return False
         if (not all(math.isfinite(v) for v in (at,dispatch_lag))
                 or not 0<=dispatch_lag<=.250):
             self.reason='INVALID_DISPATCH'
@@ -155,3 +157,8 @@ class LeadEstimator:
         self.uncertainty=max(.003,scatter)
         self.reason='FRESH_DISPATCH_GROUP'
         return True
+
+    def observe(self, landing, *, at, physical):
+        """Compatibility wrapper for old callers and recordings."""
+        return self.observe_dispatch(at=at,dispatch_lag=landing.dispatch_lag,
+                                     physical=physical,eligible=True)
