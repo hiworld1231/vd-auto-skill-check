@@ -57,6 +57,7 @@ class Planner:
         self.target=None
         self.good=None
         self.occurrence=None
+        self.good_aim=None
         self.fired=False
         self.current=None
         self.reason='NO_GENERATION'
@@ -89,6 +90,7 @@ class Planner:
         self.fired=False
         self.target=target
         self.good=good
+        self.good_aim=None
 
         if occurrence_start is None:
             next_start=initial_phase+(target.start-initial_phase)%360
@@ -145,6 +147,26 @@ class Planner:
             self.reason='TARGET_PASSED'
             return None
 
+        # Once this generation falls back to GOOD, keep one fixed aim. Without
+        # this latch each fresh frame would choose the midpoint of a shorter
+        # remaining tail and push the deadline forward indefinitely.
+        if self.good_aim is not None:
+            if occ.good_start is None or effect_phase>=occ.good_end-self.EPS:
+                self.reason='TARGET_PASSED'
+                return None
+            remaining_start=max(occ.good_start,effect_phase)
+            if effect_phase>self.good_aim+self.EPS:
+                # The fixed aim was crossed between observations. The current
+                # effect phase is still inside GOOD, so dispatch immediately
+                # instead of moving the target farther into the tail.
+                aim=effect_phase
+            else:
+                aim=self.good_aim
+            return self._make_plan(
+                motion,frame_at=frame_at,now=now,aim=aim,
+                window_start=remaining_start,window_end=occ.good_end,
+                grade='GOOD',uncertainty=self._uncertainty(motion,aim))
+
         great_uncertainty=self._uncertainty(motion,occ.great_center)
         if (effect_phase<=occ.great_center+self.EPS
                 and great_uncertainty<=self.target.width/2):
@@ -155,11 +177,11 @@ class Planner:
 
         if occ.good_start is not None and effect_phase<occ.good_end-self.EPS:
             remaining_start=max(occ.good_start,effect_phase)
-            aim=(remaining_start+occ.good_end)/2
+            self.good_aim=(remaining_start+occ.good_end)/2
             return self._make_plan(
-                motion,frame_at=frame_at,now=now,aim=aim,
+                motion,frame_at=frame_at,now=now,aim=self.good_aim,
                 window_start=remaining_start,window_end=occ.good_end,
-                grade='GOOD',uncertainty=self._uncertainty(motion,aim))
+                grade='GOOD',uncertainty=self._uncertainty(motion,self.good_aim))
 
         # If no adjacent GOOD was detected, GREAT is the only known success
         # sector. Keep one attempt while the occurrence is still physically
