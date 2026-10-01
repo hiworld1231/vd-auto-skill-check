@@ -66,6 +66,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
     observer=None
     observer_generation=None
     observer_dispatch_lag=0.0
+    observer_calibration_applied=False
     estimator=LeadEstimator(lead_seconds,lead_uncertainty)
     frame_processing_ms=deque(maxlen=600)
     frame_delivery_gap_ms=deque(maxlen=600)
@@ -95,7 +96,8 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
             recorder=_NullRecorder()
 
         def events():
-            nonlocal presses,keydowns,observer,observer_generation,observer_dispatch_lag
+            nonlocal presses,keydowns,observer,observer_generation
+            nonlocal observer_dispatch_lag,observer_calibration_applied
             for event in engine.take_events():
                 event['physical_input']=(None if event['kind']=='INPUT_FAILED'
                                          else event['kind']=='KEYDOWN')
@@ -104,6 +106,20 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     presses+=1
                 if event['kind']=='KEYDOWN':
                     keydowns+=1
+                    observer_dispatch_lag=max(
+                        0.0,event['at']-event['plan']['intended_press_at'])
+                    clean_deadline=(abs(event['plan']['press_at']
+                                        -event['plan']['intended_press_at'])<=.001)
+                    eligible=(event['plan']['timing_mode']=='PREDICTED'
+                              and clean_deadline
+                              and not event['outside_target_window'])
+                    updated=estimator.observe_dispatch(
+                        at=event['at'],dispatch_lag=observer_dispatch_lag,
+                        physical=physical,eligible=eligible)
+                    observer_calibration_applied=updated and learn_lead
+                    if observer_calibration_applied:
+                        engine.planner.lead=estimator.lead
+                        engine.planner.lead_uncertainty=estimator.uncertainty
                     if event['prefire_motion'] is not None:
                         observer=FreezeObserver(motion=Motion(**event['prefire_motion']),
                             press_at=event['at'],frame_at=event['frame_at'],
@@ -111,24 +127,20 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                             good=Arc(**event['good']) if event['good'] else None,
                             chain=event['chain'],late_dispatch=event['outside_target_window'])
                         observer_generation=event['generation']
-                        observer_dispatch_lag=max(
-                            0.0,event['at']-event['plan']['intended_press_at'])
                 print(json.dumps(event),flush=True)
                 if event['kind']=='END' and observer is not None and observer_generation==event['generation']:
                     landing=replace(observer.finish(event['reason']),
                                     dispatch_lag=observer_dispatch_lag)
-                    updated=estimator.observe(landing,at=event['at'],physical=physical)
                     diagnostic=dict(kind='CV_LANDING',at=event['at'],generation=event['generation'],
                         physical_input=False,game_outcome_measured=False,landing=asdict(landing),
-                        calibration_reason=estimator.reason,calibration_applied=updated and learn_lead,
+                        calibration_reason=estimator.reason,
+                        calibration_applied=observer_calibration_applied,
                         estimated_lead=estimator.lead,estimated_uncertainty=estimator.uncertainty)
                     recorder.event(diagnostic)
                     print(json.dumps(diagnostic),flush=True)
-                    if updated and learn_lead:
-                        engine.planner.lead=estimator.lead
-                        engine.planner.lead_uncertainty=estimator.uncertainty
                     observer=None
                     observer_dispatch_lag=0.0
+                    observer_calibration_applied=False
 
         try:
             capture=stack.enter_context(PortalCapture(synthetic=synthetic,fps=fps,
