@@ -73,7 +73,6 @@ class Engine:
             self.reason='NONINCREASING_TIME'
             return
         self.last_timestamp=m.timestamp
-        self.planner.invalidate('NEW_OBSERVATION')
         if not held:
             self.cancel('LMB_RELEASED',now)
             return
@@ -161,7 +160,7 @@ class Engine:
             self.reason='OBSERVING_AFTER_PRESS'
             return
         plan=self.planner.update(estimate,frame_at=m.timestamp,now=now)
-        if plan is None:
+        if plan is None and self.planner.current is None:
             if self.last_reliable_motion_at is None:
                 reference_at=self.started_at
                 delay=BLIND_INITIAL_DELAY
