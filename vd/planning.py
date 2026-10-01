@@ -42,6 +42,7 @@ class Plan:
 
 class Planner:
     EPS=.25
+    GREAT_HYSTERESIS_DEGREES=1.0
 
     def __init__(self, *, lead_seconds, lead_uncertainty=.015, max_age=.080):
         if not all(math.isfinite(v) for v in (lead_seconds,lead_uncertainty,max_age)):
@@ -58,6 +59,7 @@ class Planner:
         self.good=None
         self.occurrence=None
         self.good_aim=None
+        self.great_committed=False
         self.fired=False
         self.current=None
         self.reason='NO_GENERATION'
@@ -91,6 +93,7 @@ class Planner:
         self.target=target
         self.good=good
         self.good_aim=None
+        self.great_committed=False
 
         if occurrence_start is None:
             next_start=initial_phase+(target.start-initial_phase)%360
@@ -148,15 +151,24 @@ class Planner:
             return None
 
         # GOOD is a stable fallback, not a permanent downgrade. Re-evaluate
-        # GREAT on every fresh observation while its center is still reachable;
-        # a noisy early estimate may become safe before the needle gets there.
+        # GREAT on every fresh observation while its center is still reachable.
+        # Once GREAT is selected, allow a small uncertainty excursion so one
+        # noisy frame cannot flip the plan back to GOOD immediately.
         great_uncertainty=self._uncertainty(motion,occ.great_center)
-        if (effect_phase<=occ.great_center+self.EPS
-                and great_uncertainty<=self.target.width/2):
+        great_limit=self.target.width/2
+        great_allowed=(great_uncertainty<=great_limit
+                       or (self.great_committed and great_uncertainty<=
+                           great_limit+self.GREAT_HYSTERESIS_DEGREES))
+        if effect_phase<=occ.great_center+self.EPS and great_allowed:
+            self.great_committed=True
             return self._make_plan(
                 motion,frame_at=frame_at,now=now,aim=occ.great_center,
                 window_start=occ.great_start,window_end=occ.great_end,
                 grade='GREAT',uncertainty=great_uncertainty)
+        if (self.great_committed and
+                (effect_phase>occ.great_center+self.EPS or
+                 great_uncertainty>great_limit+self.GREAT_HYSTERESIS_DEGREES)):
+            self.great_committed=False
 
         # Once this generation falls back to GOOD, keep one fixed aim. Without
         # this latch each fresh frame would choose the midpoint of a shorter
