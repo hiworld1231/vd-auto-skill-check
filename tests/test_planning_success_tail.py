@@ -85,6 +85,39 @@ def test_latched_good_upgrades_to_great_when_motion_becomes_safe_before_great():
     assert p.good_aim==fallback_aim
 
 
+def test_committed_great_survives_small_uncertainty_excursion():
+    p=Planner(lead_seconds=0,lead_uncertainty=.003)
+    p.begin(Arc(20,10),300,Arc(31,42))
+
+    fallback=p.update(Motion(1.00,300,280,0,20,1.00,6),frame_at=1.00,now=1.00)
+    safe=p.update(Motion(1.20,356,280,0,2,1.20,12),frame_at=1.20,now=1.20)
+    slightly_noisy=p.update(Motion(1.22,361.6,280,1.45,2,1.22,13),
+                            frame_at=1.22,now=1.22)
+
+    assert fallback is not None and fallback.target_grade=='GOOD'
+    assert safe is not None and safe.target_grade=='GREAT'
+    assert slightly_noisy is not None
+    assert slightly_noisy.uncertainty_degrees>p.target.width/2
+    assert slightly_noisy.uncertainty_degrees<p.target.width/2+1
+    assert slightly_noisy.target_grade=='GREAT'
+    assert slightly_noisy.target_phase==pytest.approx(p.occurrence.great_center)
+
+
+def test_committed_great_falls_back_when_uncertainty_really_worsens():
+    p=Planner(lead_seconds=0,lead_uncertainty=.003)
+    p.begin(Arc(20,10),300,Arc(31,42))
+
+    p.update(Motion(1.00,300,280,0,20,1.00,6),frame_at=1.00,now=1.00)
+    safe=p.update(Motion(1.20,356,280,0,2,1.20,12),frame_at=1.20,now=1.20)
+    degraded=p.update(Motion(1.24,367.2,280,2.0,2,1.24,14),
+                      frame_at=1.24,now=1.24)
+
+    assert safe is not None and safe.target_grade=='GREAT'
+    assert degraded is not None
+    assert degraded.uncertainty_degrees>p.target.width/2+1
+    assert degraded.target_grade=='GOOD'
+
+
 def test_latched_success_occurrence_never_rearms_next_rotation():
     p=Planner(lead_seconds=.035,lead_uncertainty=.020)
     p.begin(Arc(20,10),40,Arc(31,42))
