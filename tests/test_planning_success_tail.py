@@ -85,6 +85,32 @@ def test_latched_good_upgrades_to_great_when_motion_becomes_safe_before_great():
     assert p.good_aim==fallback_aim
 
 
+def test_safe_remaining_great_after_center_upgrades_good_fallback():
+    p=Planner(lead_seconds=0,lead_uncertainty=.003)
+    p.begin(Arc(20,10),300,Arc(31,42))
+
+    fallback=p.update(Motion(1.00,300,280,0,20,1.00,6),frame_at=1.00,now=1.00)
+    late_safe=p.update(Motion(1.30,386,280,.20,1,1.30,14),frame_at=1.30,now=1.30)
+
+    assert fallback is not None and fallback.target_grade=='GOOD'
+    assert late_safe is not None
+    assert p.occurrence.great_center < 386 < p.occurrence.great_end
+    assert late_safe.target_grade=='GREAT'
+    assert 386 < late_safe.target_phase < p.occurrence.great_end
+    assert late_safe.target_window_start==pytest.approx(386)
+
+
+def test_remaining_great_tail_too_narrow_for_uncertainty_stays_good():
+    p=Planner(lead_seconds=0,lead_uncertainty=.003)
+    p.begin(Arc(20,10),300,Arc(31,42))
+
+    p.update(Motion(1.00,300,280,0,20,1.00,6),frame_at=1.00,now=1.00)
+    too_late=p.update(Motion(1.31,389.4,280,.35,1,1.31,14),frame_at=1.31,now=1.31)
+
+    assert too_late is not None
+    assert too_late.target_grade=='GOOD'
+
+
 def test_committed_great_survives_small_uncertainty_excursion():
     p=Planner(lead_seconds=0,lead_uncertainty=.003)
     p.begin(Arc(20,10),300,Arc(31,42))
