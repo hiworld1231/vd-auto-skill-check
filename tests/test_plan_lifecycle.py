@@ -19,6 +19,13 @@ class _NoMotionTracker:
         self.reason = 'NO_NEEDLE'
         return None
 
+    def reset(self):
+        self.last_frame = None
+        self.last_unwrapped = None
+        self.unwrap_floor = None
+        self.estimate = None
+        self.reason = 'EMPTY'
+
 
 class _GreatTailMotionTracker(_NoMotionTracker):
     def update(self, timestamp, candidates):
