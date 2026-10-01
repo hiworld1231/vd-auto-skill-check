@@ -121,7 +121,7 @@ class FreezeObserver:
 
 
 class LeadEstimator:
-    """Two fresh, consistent real-press observations; never learn from replay."""
+    """Learn only real dispatch lateness; CV freeze remains outcome evidence."""
     def __init__(self, lead, uncertainty):
         self.lead=lead
         self.uncertainty=uncertainty
@@ -129,20 +129,18 @@ class LeadEstimator:
         self.reason='INITIAL_MODEL'
 
     def observe(self, landing, *, at, physical):
-        if not physical or not landing.eligible:
-            self.reason='NONPHYSICAL' if not physical else landing.reason
+        if not physical:
+            self.reason='NONPHYSICAL'
             return False
-        total_latency=landing.latency+landing.dispatch_lag
-        if (not all(math.isfinite(v) for v in
-                    (at,landing.latency,landing.uncertainty,landing.dispatch_lag))
-                or landing.dispatch_lag<0 or not 0<=total_latency<=.250
-                or not 0<=landing.uncertainty<=.040):
-            self.reason='INVALID_ESTIMATE'
+        dispatch_lag=landing.dispatch_lag
+        if (not all(math.isfinite(v) for v in (at,dispatch_lag))
+                or not 0<=dispatch_lag<=.250):
+            self.reason='INVALID_DISPATCH'
             return False
         if self.samples and (at<=self.samples[-1][0] or at-self.samples[-1][0]>120):
             self.samples=[]
         self.samples=[s for s in self.samples if at-s[0]<=120]
-        self.samples.append((at,total_latency,landing.uncertainty))
+        self.samples.append((at,dispatch_lag))
         self.samples=self.samples[-4:]
         if len(self.samples)<2:
             self.reason='COLLECTING'
@@ -150,10 +148,10 @@ class LeadEstimator:
         values=[s[1] for s in self.samples]
         center=statistics.median(values)
         if max(values)-min(values)>.025:
-            self.reason='INCONSISTENT_RESPONSE'
+            self.reason='INCONSISTENT_DISPATCH'
             return False
         scatter=1.4826*statistics.median(abs(v-center) for v in values)
         self.lead=center
-        self.uncertainty=max(.003,scatter,statistics.median(s[2] for s in self.samples))
-        self.reason='FRESH_CV_GROUP'
+        self.uncertainty=max(.003,scatter)
+        self.reason='FRESH_DISPATCH_GROUP'
         return True
