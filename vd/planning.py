@@ -163,9 +163,10 @@ class Planner:
             return None
 
         # GOOD is a stable fallback, not a permanent downgrade. Re-evaluate
-        # GREAT on every fresh observation while its center is still reachable.
-        # Once GREAT is selected, allow a small uncertainty excursion so one
-        # noisy frame cannot flip the plan back to GOOD immediately.
+        # GREAT on every fresh observation while some safe part of the GREAT
+        # window is still reachable. Once GREAT is selected, allow a small
+        # uncertainty excursion so one noisy frame cannot flip the plan back
+        # to GOOD immediately.
         great_uncertainty=self._uncertainty(motion,occ.great_center)
         great_limit=self.target.width/2
         great_allowed=(great_uncertainty<=great_limit
@@ -192,6 +193,24 @@ class Planner:
                 motion,frame_at=frame_at,now=now,aim=occ.great_center,
                 window_start=occ.great_start,window_end=occ.great_end,
                 grade='GREAT',uncertainty=great_uncertainty)
+
+        # Confidence can become usable on the first frame after the center.
+        # The old rule treated the center as a hard deadline and threw away the
+        # still-valid trailing half of GREAT. Instead, use the midpoint of the
+        # remaining GREAT tail only when the current uncertainty actually fits
+        # inside that reduced window.
+        if occ.great_center+self.EPS<effect_phase<occ.great_end-self.EPS:
+            remaining_start=max(occ.great_start,effect_phase)
+            remaining_aim=(remaining_start+occ.great_end)/2
+            remaining_uncertainty=self._uncertainty(motion,remaining_aim)
+            remaining_limit=(occ.great_end-remaining_start)/2
+            if remaining_uncertainty<=remaining_limit:
+                self.great_committed=True
+                return self._make_plan(
+                    motion,frame_at=frame_at,now=now,aim=remaining_aim,
+                    window_start=remaining_start,window_end=occ.great_end,
+                    grade='GREAT',uncertainty=remaining_uncertainty)
+
         if (self.great_committed and
                 (effect_phase>occ.great_end+self.EPS or
                  great_uncertainty>great_limit+self.GREAT_HYSTERESIS_DEGREES)):
