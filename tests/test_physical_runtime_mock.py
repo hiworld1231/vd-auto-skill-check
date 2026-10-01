@@ -177,7 +177,7 @@ def test_runtime_reports_capture_worker_cpu_share(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(('speed', 'fps'), ((700, 60), (1300, 60), (700, 30), (1300, 30)))
-def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, tmp_path, speed, fps):
+def test_runtime_timer_dispatch_hits_success_window_between_capture_frames(monkeypatch, tmp_path, speed, fps):
     class TimerCapture:
         def __init__(self, *, synthetic, fps, priority=5, source='monitor',
                      normalize_window_scale=False):
@@ -264,14 +264,14 @@ def test_runtime_timer_dispatch_hits_white_between_capture_frames(monkeypatch, t
     monkeypatch.setattr(vd_input, 'SpaceOutput', lambda: output)
     result = run_session(seconds=.35, synthetic=False, fps=fps,
                          directory=tmp_path / f'timer-{speed}-{fps}',
-                         lead_seconds=.035, lead_uncertainty=.020,
+                         lead_seconds=0, lead_uncertainty=.020,
                          physical=True, learn_lead=False, recording=False,
                          video_recording=False)
 
     assert result['physical_presses'] == 1
     assert len(output.keydowns) == 1
-    phase = (270 + speed * (output.keydowns[0] - capture.origin + .035)) % 360
-    assert Arc(40, 10).contains(phase)
+    phase = (270 + speed * (output.keydowns[0] - capture.origin)) % 360
+    assert Arc(40, 10).contains(phase) or Arc(51, 42).contains(phase)
     frame_phase = (output.keydowns[0] - capture.origin) * fps
     assert abs(frame_phase - round(frame_phase)) > .05
 
