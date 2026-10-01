@@ -48,7 +48,8 @@ def test_good_aim_does_not_run_away_on_each_fresh_observation():
     assert third is not None and third.target_grade=='GOOD'
     assert second.target_phase==pytest.approx(first.target_phase)
     assert third.target_phase==pytest.approx(first.target_phase)
-    assert third.press_at < second.press_at < first.press_at
+    assert second.press_at==pytest.approx(first.press_at)
+    assert third.press_at==pytest.approx(first.press_at)
 
 
 def test_good_aim_crossed_by_fresh_frame_presses_now_instead_of_moving_later():
