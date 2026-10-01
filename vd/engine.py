@@ -95,6 +95,8 @@ class Engine:
             self.reason='CONFIRMING_GEOMETRY'
             previous_target=self.target
             previous_occurrence=self.planner.occurrence
+            if self.planner.current is not None:
+                self.planner.invalidate('GEOMETRY_PENDING')
             continuing_chain=(self.active and self.planner.fired
                               and math.dist(self.center,m.center)<=3)
             large_chain_shift=(continuing_chain and previous_target is not None and
