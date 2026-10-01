@@ -133,14 +133,16 @@ class Planner:
         existing=self.current
         if self.target is None or self.occurrence is None or self.fired:
             return None
+        if existing is not None and (now>existing.valid_until
+                                     or existing.press_at>existing.valid_until):
+            self.invalidate('OBSERVATION_EXPIRED' if now>existing.valid_until
+                            else 'PLAN_NOT_DISPATCHABLE')
+            existing=None
         if motion is None:
-            if existing is not None and now<=existing.valid_until:
+            if existing is not None:
                 self.reason='PLANNED'
                 return existing
-            if existing is not None and now>existing.valid_until:
-                self.invalidate('OBSERVATION_EXPIRED')
-            else:
-                self.reason='NO_MOTION'
+            self.reason='NO_MOTION'
             return None
         if not all(math.isfinite(v) for v in (frame_at,now,motion.at,motion.phase,
                 motion.speed,motion.residual,motion.speed_scatter,motion.last_motion_at)):
