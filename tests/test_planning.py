@@ -73,17 +73,33 @@ def test_small_scheduler_delay_is_recorded_but_does_not_block_attempt():
     assert p.claim(plan,now=1.0019,held=True,capture_alive=True)
 
 
-def test_narrow_great_remains_the_only_target():
-    p=Planner(lead_seconds=.060,lead_uncertainty=.015)
-    p.begin(Arc(120.87349400366959,10.728950934823914),66,
-            Arc(132.41010851560065,42.14130537921591))
-    m=Motion(12403.950864845,66.51839764396223,251.15077255039893,
-             1.7121848764034837,44.415726752027744,12403.950864845,5)
-    plan=p.update(m,frame_at=m.at,now=m.at)
+def test_uncertain_adjacent_great_falls_back_to_wider_good_window():
+    p=Planner(lead_seconds=.005,lead_uncertainty=.003)
+    p.begin(Arc(120,10),66,Arc(131,42),allow_trailing_good=False)
+    m=Motion(1,70,1000,1.5,200,1,2)
+
+    plan=p.update(m,frame_at=1,now=1)
+
+    assert plan is not None
+    assert plan.target_grade=='GOOD'
+    assert plan.target_phase==152
+    assert plan.target_window_start==131
+    assert plan.target_window_width==42
+    assert plan.uncertainty_degrees < plan.target_window_width/2
+
+
+def test_precise_high_speed_motion_keeps_great_target():
+    p=Planner(lead_seconds=.005,lead_uncertainty=.001)
+    p.begin(Arc(120,10),66,Arc(131,42),allow_trailing_good=False)
+    m=Motion(1,70,1000,.1,2,1,8)
+
+    plan=p.update(m,frame_at=1,now=1)
+
     assert plan is not None
     assert plan.target_grade=='GREAT'
-    assert plan.target_window_width<11
-    assert plan.uncertainty_degrees>plan.target_window_width/2
+    assert plan.target_phase==125
+    assert plan.target_window_width==10
+    assert plan.uncertainty_degrees < plan.target_window_width/2
 
 
 def test_great_remains_preferred_when_its_envelope_is_safe():
@@ -102,16 +118,6 @@ def test_remote_good_arc_cannot_expand_target_permission():
     plan=p.update(m,frame_at=1,now=1)
     assert plan.target_grade=='GREAT'
     assert plan.target_window_width==8
-
-
-def test_uncertain_white_still_gets_a_great_attempt():
-    p=Planner(lead_seconds=.060,lead_uncertainty=.015)
-    p.begin(Arc(120,10),66,Arc(131,42))
-    m=Motion(1,66,251,1.8,45,1,5)
-    plan=p.update(m,frame_at=1,now=1)
-    assert plan is not None
-    assert plan.target_grade=='GREAT'
-    assert plan.target_phase==125
 
 
 def test_late_white_attempt_is_not_silently_dropped():
