@@ -93,3 +93,16 @@ def test_late_clamped_plan_is_not_learned_as_dispatch_delay():
     assert estimator.samples == []
     assert estimator.lead == .035
     assert estimator.reason == 'INELIGIBLE_DISPATCH'
+
+
+def test_lead_estimator_uncertainty_covers_recent_scheduler_tail():
+    estimator = LeadEstimator(.035, .020)
+    lags = (.0011, .0004, .0040, .0113)
+
+    for index, lag in enumerate(lags, 1):
+        estimator.observe_dispatch(at=float(index), dispatch_lag=lag,
+                                   physical=True, eligible=True)
+
+    assert estimator.reason == 'FRESH_DISPATCH_GROUP'
+    max_observed_error = max(abs(lag - estimator.lead) for lag in lags)
+    assert estimator.uncertainty >= max_observed_error
