@@ -148,13 +148,25 @@ class LeadEstimator:
             self.reason='COLLECTING'
             return False
         values=[s[1] for s in self.samples]
-        center=statistics.median(values)
-        if max(values)-min(values)>.025:
+        low=min(values)
+        high=max(values)
+        if high-low>.025:
             self.reason='INCONSISTENT_DISPATCH'
             return False
-        scatter=1.4826*statistics.median(abs(v-center) for v in values)
+
+        # Dispatch latency on a normal desktop is not Gaussian. Most keydowns
+        # are cheap, but scheduler/uinput stalls occasionally create a long
+        # positive tail. Median/MAD alone therefore understates the exact error
+        # that matters for a narrow GREAT window. Use the Chebyshev center of
+        # the recent accepted interval: it minimizes the worst observed timing
+        # error, while the half-range explicitly carries that tail into planner
+        # uncertainty for the next checks.
+        center=(low+high)/2
+        median=statistics.median(values)
+        scatter=1.4826*statistics.median(abs(v-median) for v in values)
+        envelope=(high-low)/2
         self.lead=center
-        self.uncertainty=max(.003,scatter)
+        self.uncertainty=max(.003,scatter,envelope)
         self.reason='FRESH_DISPATCH_GROUP'
         return True
 
