@@ -111,8 +111,7 @@ def run_session(*, seconds, synthetic, fps, directory, lead_seconds, lead_uncert
                     clean_deadline=(abs(event['plan']['press_at']
                                         -event['plan']['intended_press_at'])<=.001)
                     eligible=(event['plan']['timing_mode']=='PREDICTED'
-                              and clean_deadline
-                              and not event['outside_target_window'])
+                              and clean_deadline)
                     updated=estimator.observe_dispatch(
                         at=event['at'],dispatch_lag=observer_dispatch_lag,
                         physical=physical,eligible=eligible)
