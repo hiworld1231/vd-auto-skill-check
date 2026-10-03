@@ -43,6 +43,10 @@ class Plan:
 class Planner:
     EPS=.25
     GREAT_HYSTERESIS_DEGREES=1.0
+    # At the live 40-60 Hz capture cadence, a GREAT window shorter than 25 ms
+    # can pass entirely between two observations. Once a safe GREAT timer is
+    # committed, do not throw it away merely because the next fit gets noisy.
+    SUBFRAME_GREAT_SECONDS=.025
 
     def __init__(self, *, lead_seconds, lead_uncertainty=.015, max_age=.080):
         if not all(math.isfinite(v) for v in (lead_seconds,lead_uncertainty,max_age)):
@@ -172,6 +176,23 @@ class Planner:
         great_allowed=(great_uncertainty<=great_limit
                        or (self.great_committed and great_uncertainty<=
                            great_limit+self.GREAT_HYSTERESIS_DEGREES))
+
+        # On fast checks the entire GREAT sector can be shorter than one capture
+        # period. In that regime there may be no later frame on which to recover
+        # from one noisy fit. Preserve a previously safe timer only when the
+        # fresh mean trajectory still predicts that the actual scheduled effect
+        # time lands inside the same immutable GREAT occurrence. A real speed or
+        # phase change therefore still invalidates this protection.
+        if (existing is not None and existing.target_grade=='GREAT'
+                and self.great_committed
+                and self.target.width/motion.speed<=self.SUBFRAME_GREAT_SECONDS
+                and effect_phase<=occ.great_end+self.EPS
+                and now<=existing.latest_press_at+.001):
+            scheduled_effect_at=max(now,existing.intended_press_at)+self.lead
+            scheduled_phase=motion.phase_at(scheduled_effect_at)
+            if occ.great_start-self.EPS<=scheduled_phase<=occ.great_end+self.EPS:
+                self.reason='PLANNED'
+                return existing
 
         # A committed GREAT remains a live dispatch promise through the rest
         # of the same GREAT window. Crossing its center between capture frames
