@@ -18,7 +18,7 @@ STATUS_PIXELS_READY = 1 << 3
 HEADER_FORMAT = "=IIIIIIQQQfIIIIIII64sIIIIIII4xQQ112s"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 BGRA_FORMATS = {44, 50}  # VK_FORMAT_B8G8R8A8_UNORM/SRGB
-RGBA_FORMATS = {37, 43}  # VK_FORMAT_R8G8B8A8_UNORM/SRGB
+RGBA_FORMATS = {37, 43}  # VK_FORMAT_R8G8R8A8_UNORM/SRGB
 DEFAULT_SHM = Path.home() / ".var" / "app" / "org.vinegarhq.Sober" / "data" / "vulkan" / "vd_layer_shm.dat"
 
 
@@ -207,9 +207,13 @@ class VulkanCapture:
                     self.latest = frame
                     self.cv.notify_all()
                 return frame
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= deadline:
                 return None
-            time.sleep(0.002)
+            # Runtime uses this timeout as a dispatch deadline. Never add a fixed
+            # 2 ms polling overshoot when the requested wake-up is sooner than
+            # the normal capture poll interval.
+            time.sleep(min(0.002, deadline - now))
         return None
 
     def close(self, *, fast=False):
