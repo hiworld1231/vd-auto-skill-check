@@ -50,6 +50,20 @@ class Engine:
         return events
 
     def cancel(self, reason, now):
+        if self.active and not self.planner.fired and reason=='RING_ENDED':
+            self.emit('MISSED_END_DIAGNOSTIC',now,
+                      end_reason=reason,
+                      planner_reason_before_end=self.planner.reason,
+                      motion_reason_before_end=self.motion.reason,
+                      plan_before_end=(asdict(self.planner.current)
+                                       if self.planner.current else None),
+                      motion_before_end=(asdict(self.motion.estimate)
+                                         if self.motion.estimate else None),
+                      occurrence_before_end=(asdict(self.planner.occurrence)
+                                             if self.planner.occurrence else None),
+                      started_at=self.started_at,
+                      last_reliable_motion_at=self.last_reliable_motion_at,
+                      last_visible=self.last_visible)
         self.planner.invalidate(reason)
         self.reason=reason
         if self.active:
