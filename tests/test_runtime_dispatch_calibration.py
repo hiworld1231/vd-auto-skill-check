@@ -3,6 +3,7 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from vd import input as vd_input
 from vd.capture import Frame
@@ -151,5 +152,5 @@ def test_runtime_learns_scheduler_late_dispatch_when_plan_deadline_was_clean(mon
 
     assert observed
     assert observed[0]['physical'] is True
-    assert observed[0]['dispatch_lag'] >= .008
+    assert observed[0]['dispatch_lag'] == pytest.approx(.008, abs=1e-9)
     assert observed[0]['eligible'] is True
