@@ -11,6 +11,14 @@ import cv2
 import numpy as np
 
 
+def configure_realtime_opencv():
+    """Bound OpenCV's worker pool inside the latency-sensitive solver process."""
+    cv2.setNumThreads(1)
+
+
+configure_realtime_opencv()
+
+
 @dataclass(frozen=True)
 class Arc:
     start: float
